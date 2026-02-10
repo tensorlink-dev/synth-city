@@ -1,0 +1,12 @@
+openai>=1.12.0
+pydantic>=2.5.0
+httpx>=0.27.0
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.12.0
+arch>=6.2.0
+torch>=2.1.0
+bittensor>=7.0.0
+python-dotenv>=1.0.0
+websockets>=12.0
+aiohttp>=3.9.0
