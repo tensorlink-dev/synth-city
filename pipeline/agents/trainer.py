@@ -1,4 +1,4 @@
-"""Trainer agent — fits model parameters on historical data."""
+"""Trainer agent — executes experiments via ResearchSession."""
 
 from __future__ import annotations
 
@@ -18,14 +18,13 @@ class TrainerAgent(BaseAgentWrapper):
 
     def build_tools(self, task: dict[str, Any]) -> tuple[dict[str, Callable], list[dict]]:
         tool_names = [
-            "read_file",
-            "write_file",
-            "get_historical_data",
-            "compute_returns_stats",
-            "check_shapes",
-            "run_training_local",
-            "run_python",
-            "submit_basilica_job",
+            "create_experiment",
+            "validate_experiment",
+            "run_experiment",
+            "run_preset",
+            "sweep_presets",
+            "compare_results",
+            "session_summary",
         ]
         return build_toolset(*tool_names)
 
@@ -35,10 +34,5 @@ class TrainerAgent(BaseAgentWrapper):
             context.append({
                 "role": "user",
                 "content": f"## Planner Output\n\n```json\n{task['plan']}\n```",
-            })
-        if "model_path" in task:
-            context.append({
-                "role": "user",
-                "content": f"The model to train/improve is at: `{task['model_path']}`",
             })
         return context

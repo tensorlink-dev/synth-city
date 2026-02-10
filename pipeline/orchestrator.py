@@ -3,21 +3,19 @@ Pipeline orchestrator — conditional retry loops with temperature escalation,
 stall detection, and dynamic context injection.
 
 This is the top-level controller that chains agents together:
-    Planner → Trainer → CodeChecker → (Debugger if failed) → repeat
+    Planner → Trainer → CodeChecker → (Debugger if failed) → Publisher
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
-from config import WORKSPACE_DIR
 from pipeline.agents.code_checker import CodeCheckerAgent
 from pipeline.agents.debugger import DebuggerAgent
 from pipeline.agents.planner import PlannerAgent
+from pipeline.agents.publisher import PublisherAgent
 from pipeline.agents.trainer import TrainerAgent
 from pipeline.providers.simple_agent import AgentResult
 
@@ -25,13 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class PipelineOrchestrator:
-    """Orchestrates the full Planner → Train → Check → Debug cycle.
+    """Orchestrates the full Planner → Train → Check → Debug → Publish cycle.
 
     Key features:
         - **Retry with escalation**: failed steps retry with increasing
           temperature (0.1 → 0.2 → 0.3 …).
-        - **Stall detection**: if the Debugger writes the same file content
-          twice in a row, inject a CRITICAL WARNING.
+        - **Stall detection**: if a Debugger produces the same experiment config
+          as the previous attempt, inject a CRITICAL WARNING.
         - **Ephemeral compression**: large context from earlier agents is
           summarised before being passed to later agents.
     """
@@ -41,10 +39,12 @@ class PipelineOrchestrator:
         max_retries: int = 5,
         base_temperature: float = 0.1,
         temperature_step: float = 0.1,
+        publish: bool = False,
     ) -> None:
         self.max_retries = max_retries
         self.base_temperature = base_temperature
         self.temperature_step = temperature_step
+        self.publish = publish
 
     # ---------------------------------------------------------------- main
     def run(self, task: dict[str, Any]) -> dict[str, Any]:
@@ -53,16 +53,12 @@ class PipelineOrchestrator:
         Parameters
         ----------
         task : dict
-            Must contain at least:
-                - ``target_assets``: list of asset symbols to target
-                - ``current_model_path``: path to the current model file (optional)
-            Optional:
+            Optional keys:
                 - ``crps_scores``: recent CRPS scores JSON
                 - ``channel``: prompt channel selector
+                - ``prior_comparison``: prior experiment comparison
         """
         task.setdefault("channel", "default")
-        task.setdefault("target_assets", ["BTC", "ETH", "SOL"])
-
         results: dict[str, Any] = {"stages": [], "success": False}
 
         # Stage 1: Plan
@@ -78,7 +74,7 @@ class PipelineOrchestrator:
         plan_data = plan_result.structured or {}
         task["plan"] = json.dumps(plan_data, indent=2) if isinstance(plan_data, dict) else str(plan_data)
 
-        # Stage 2: Train
+        # Stage 2: Train (execute experiments from the plan)
         logger.info("=== STAGE 2: TRAINER ===")
         train_result = self._run_with_retry(
             TrainerAgent,
@@ -91,17 +87,33 @@ class PipelineOrchestrator:
             logger.error("Trainer failed after retries — aborting pipeline")
             return results
 
-        # Extract model path from trainer result
-        model_path = self._extract_model_path(train_result)
-        if model_path:
-            task["model_path"] = model_path
+        # Extract best experiment and metrics from trainer result
+        best = self._extract_best(train_result)
+        if best:
+            task["best_experiment"] = best.get("experiment", "")
+            task["best_metrics"] = best.get("metrics", "")
+            task["comparison"] = best.get("comparison", "")
+            task["experiment"] = best.get("experiment", "")
 
-        # Stage 3: Check → Debug loop
+        # Stage 3: Check → Debug loop on the best experiment
         logger.info("=== STAGE 3: CHECK/DEBUG LOOP ===")
         check_debug_result = self._check_debug_loop(task)
         results["stages"].append(check_debug_result)
         results["success"] = check_debug_result.get("passed", False)
-        results["model_path"] = task.get("model_path")
+
+        # Stage 4: Publish (optional)
+        if self.publish and results["success"]:
+            logger.info("=== STAGE 4: PUBLISHER ===")
+            pub_result = self._run_publisher(task)
+            results["stages"].append({"agent": "publisher", "success": pub_result.success})
+            results["published"] = pub_result.success
+            if pub_result.structured:
+                results["publish_info"] = pub_result.structured
+
+        # Attach best experiment info to results
+        if best:
+            results["best_experiment"] = best.get("experiment")
+            results["best_crps"] = best.get("crps")
 
         return results
 
@@ -109,9 +121,8 @@ class PipelineOrchestrator:
     def _run_planner(self, task: dict[str, Any]) -> AgentResult:
         agent = PlannerAgent(temperature=self.base_temperature)
         task["user_message"] = (
-            f"Analyse the current model and market conditions for assets: "
-            f"{', '.join(task['target_assets'])}. "
-            f"Produce an improvement plan."
+            "Discover the available components and produce an experiment plan "
+            "to find the best architecture for SN50 CRPS."
         )
         return agent.run(task)
 
@@ -158,14 +169,13 @@ class PipelineOrchestrator:
     # ----------------------------------------------------------- check/debug
     def _check_debug_loop(self, task: dict[str, Any]) -> dict[str, Any]:
         """Alternating CodeChecker → Debugger loop with stall detection."""
-        file_hashes: list[str] = []
+        prev_experiment_json: str | None = None
         stage_results: list[dict] = []
 
         for attempt in range(self.max_retries):
             # Check
-            temp = self.base_temperature + (attempt * self.temperature_step)
             checker = CodeCheckerAgent(temperature=self.base_temperature)
-            task["user_message"] = f"Validate the model at: `{task.get('model_path', 'model.py')}`"
+            task["user_message"] = "Validate the best experiment config and its results."
             check_result = checker.run(task)
 
             stage_results.append({
@@ -175,33 +185,29 @@ class PipelineOrchestrator:
             })
 
             if check_result.success:
-                # Check if the structured result indicates pass
                 structured = check_result.structured or {}
                 passed = structured.get("success", True) if isinstance(structured, dict) else True
                 if passed:
                     return {"passed": True, "attempts": attempt + 1, "stages": stage_results}
 
             # Debug
+            temp = self.base_temperature + (attempt * self.temperature_step)
             logger.info("CodeChecker failed — running Debugger (attempt %d)", attempt + 1)
             task["error_report"] = check_result.raw_text[:3000]
 
-            # Stall detection: hash the model file
-            model_path = task.get("model_path", "model.py")
-            current_hash = self._hash_file(model_path)
-            if current_hash and current_hash in file_hashes:
-                # STALL DETECTED — inject warning
-                logger.warning("STALL DETECTED: Debugger did not modify the file")
+            # Stall detection: compare experiment JSON across attempts
+            current_exp = task.get("best_experiment", "")
+            if current_exp and current_exp == prev_experiment_json:
+                logger.warning("STALL DETECTED: experiment config unchanged")
                 task["user_message"] = (
-                    "⚠️ CRITICAL WARNING: The model file has NOT changed since the last "
-                    "attempt. You MUST take a DIFFERENT approach. Re-read the error "
-                    "carefully and try a fundamentally different fix strategy.\n\n"
+                    "CRITICAL WARNING: The experiment config has NOT changed since the last "
+                    "attempt. You MUST take a DIFFERENT approach — change blocks, head, "
+                    "d_model, or learning rate.\n\n"
                     f"Error report:\n{task['error_report']}"
                 )
             else:
-                task["user_message"] = f"Fix the model. Error report:\n{task['error_report']}"
-
-            if current_hash:
-                file_hashes.append(current_hash)
+                task["user_message"] = f"Fix the experiment. Error report:\n{task['error_report']}"
+            prev_experiment_json = current_exp
 
             debugger = DebuggerAgent(temperature=temp)
             debug_result = debugger.run(task)
@@ -211,29 +217,63 @@ class PipelineOrchestrator:
                 "success": debug_result.success,
             })
 
+            # Update experiment from debugger output
+            if debug_result.success and debug_result.structured:
+                fixed = debug_result.structured
+                if isinstance(fixed, dict):
+                    for key in ("experiment", "result", "config"):
+                        if key in fixed:
+                            task["best_experiment"] = (
+                                json.dumps(fixed[key]) if isinstance(fixed[key], dict)
+                                else str(fixed[key])
+                            )
+                            task["experiment"] = task["best_experiment"]
+                            break
+
         return {"passed": False, "attempts": self.max_retries, "stages": stage_results}
+
+    # ----------------------------------------------------------- publisher
+    def _run_publisher(self, task: dict[str, Any]) -> AgentResult:
+        agent = PublisherAgent(temperature=self.base_temperature)
+        task["user_message"] = "Publish the best model to HF Hub."
+        return agent.run(task)
 
     # ----------------------------------------------------------- helpers
     @staticmethod
-    def _extract_model_path(result: AgentResult) -> str | None:
-        """Try to extract the model file path from a trainer result."""
-        if isinstance(result.structured, dict):
-            for key in ("model_path", "path", "output_path", "file"):
-                if key in result.structured:
-                    return result.structured[key]
-            # Check nested "result" field
-            nested = result.structured.get("result", {})
-            if isinstance(nested, dict):
-                for key in ("model_path", "path", "output_path", "file"):
-                    if key in nested:
-                        return nested[key]
-        return None
+    def _extract_best(result: AgentResult) -> dict[str, Any] | None:
+        """Extract the best experiment info from a trainer result."""
+        if not isinstance(result.structured, dict):
+            return None
 
-    @staticmethod
-    def _hash_file(path: str) -> str | None:
-        """Hash a workspace file for stall detection."""
-        full_path = WORKSPACE_DIR / path
-        if full_path.exists():
-            content = full_path.read_bytes()
-            return hashlib.sha256(content).hexdigest()
-        return None
+        structured = result.structured
+        best: dict[str, Any] = {}
+
+        # Direct keys
+        for key in ("best_experiment", "experiment", "config"):
+            if key in structured:
+                val = structured[key]
+                best["experiment"] = json.dumps(val) if isinstance(val, dict) else str(val)
+                break
+
+        # Nested result
+        nested = structured.get("result", structured)
+        if isinstance(nested, dict):
+            for key in ("best_experiment", "experiment", "config"):
+                if key in nested:
+                    val = nested[key]
+                    best["experiment"] = json.dumps(val) if isinstance(val, dict) else str(val)
+                    break
+
+            if "crps" in nested:
+                best["crps"] = nested["crps"]
+            elif "metrics" in nested and isinstance(nested["metrics"], dict):
+                best["crps"] = nested["metrics"].get("crps")
+                best["metrics"] = json.dumps(nested["metrics"])
+
+            if "comparison" in nested:
+                best["comparison"] = (
+                    json.dumps(nested["comparison"]) if isinstance(nested["comparison"], dict)
+                    else str(nested["comparison"])
+                )
+
+        return best if best else None

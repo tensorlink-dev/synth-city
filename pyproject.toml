@@ -14,12 +14,14 @@ dependencies = [
     "numpy>=1.26.0",
     "pandas>=2.1.0",
     "scipy>=1.12.0",
-    "arch>=6.2.0",
-    "torch>=2.1.0",
-    "bittensor>=7.0.0",
+    "torch>=2.2.0",
+    "hydra-core>=1.3.2",
+    "omegaconf>=2.3",
+    "properscoring",
+    "torchsde",
+    "wandb",
+    "huggingface_hub",
     "python-dotenv>=1.0.0",
-    "websockets>=12.0",
-    "aiohttp>=3.9.0",
 ]
 
 [project.optional-dependencies]

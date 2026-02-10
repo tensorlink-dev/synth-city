@@ -25,6 +25,7 @@ AGENT_MODELS: dict[str, str] = {
     "codechecker": os.getenv("CODECHECKER_MODEL", DEFAULT_MODEL),
     "debugger": os.getenv("DEBUGGER_MODEL", DEFAULT_MODEL),
     "trainer": os.getenv("TRAINER_MODEL", "Qwen/Qwen3-235B-A22B"),
+    "publisher": os.getenv("PUBLISHER_MODEL", DEFAULT_MODEL),
 }
 
 
@@ -75,6 +76,25 @@ SN50_HORIZON_MINUTES: int = 24 * 60  # 24 hours
 SN50_STEP_MINUTES: int = 5
 # HFT horizon in minutes
 SN50_HFT_HORIZON_MINUTES: int = 60
+
+# ---------------------------------------------------------------------------
+# open-synth-miner research defaults
+# ---------------------------------------------------------------------------
+# Research mode uses fewer paths for speed; production uses 1000
+RESEARCH_N_PATHS: int = int(os.getenv("RESEARCH_N_PATHS", "100"))
+RESEARCH_D_MODEL: int = int(os.getenv("RESEARCH_D_MODEL", "32"))
+RESEARCH_HORIZON: int = int(os.getenv("RESEARCH_HORIZON", "12"))
+RESEARCH_SEQ_LEN: int = int(os.getenv("RESEARCH_SEQ_LEN", "32"))
+RESEARCH_FEATURE_DIM: int = int(os.getenv("RESEARCH_FEATURE_DIM", "4"))
+RESEARCH_BATCH_SIZE: int = int(os.getenv("RESEARCH_BATCH_SIZE", "4"))
+RESEARCH_LR: float = float(os.getenv("RESEARCH_LR", "0.001"))
+RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "1"))
+
+# ---------------------------------------------------------------------------
+# Publishing (HF Hub + W&B)
+# ---------------------------------------------------------------------------
+HF_REPO_ID: str = os.getenv("HF_REPO_ID", "")
+WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
 
 # ---------------------------------------------------------------------------
 # Pipeline

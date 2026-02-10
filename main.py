@@ -3,16 +3,16 @@ synth-city — main entry point for the agentic pipeline.
 
 Usage:
     # Run the full improvement pipeline
-    python main.py pipeline --assets BTC,ETH,SOL
+    python main.py pipeline
 
-    # Generate predictions with current models
-    python main.py predict --assets BTC,ETH --horizon 24h
+    # Run a quick baseline sweep
+    python main.py sweep
 
-    # Evaluate a model locally
-    python main.py evaluate --model workspace/model.py --asset BTC
+    # Run a single experiment
+    python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead
 
-    # Run a single agent
-    python main.py agent --name planner --assets BTC
+    # Run a single agent for debugging
+    python main.py agent --name planner
 """
 
 from __future__ import annotations
@@ -34,92 +34,79 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     """Run the full agentic improvement pipeline."""
     from pipeline.orchestrator import PipelineOrchestrator
 
-    assets = [a.strip().upper() for a in args.assets.split(",")]
-    task = {
-        "target_assets": assets,
-        "channel": args.channel,
-    }
-    if args.model:
-        task["current_model_path"] = args.model
-
+    task: dict = {"channel": args.channel}
     orchestrator = PipelineOrchestrator(
         max_retries=args.retries,
         base_temperature=args.temperature,
+        publish=args.publish,
     )
     result = orchestrator.run(task)
     print(json.dumps(result, indent=2, default=str))
 
 
-def cmd_predict(args: argparse.Namespace) -> None:
-    """Generate predictions using fitted models."""
-    from data.market import get_close_prices, get_latest_prices
-    from models.garch import GARCHForecaster
-    from subnet.miner import SynthMiner
+def cmd_sweep(args: argparse.Namespace) -> None:
+    """Run a quick preset sweep via ResearchSession."""
+    from src.research.agent_api import ResearchSession
 
-    assets = [a.strip().upper() for a in args.assets.split(",")]
-    miner = SynthMiner()
+    session = ResearchSession()
+    presets = [p.strip() for p in args.presets.split(",")] if args.presets else None
+    result = session.sweep(preset_names=presets, epochs=args.epochs)
 
-    # Fit models and generate predictions
-    prices = get_latest_prices(assets)
-    for asset in assets:
-        logger.info("Fitting GARCH model for %s...", asset)
-        model = GARCHForecaster(variant="GJR-GARCH", dist="t")
-        try:
-            historical = get_close_prices(asset, days=30)
-            model.fit(historical)
-            miner.register_model(asset, model)
-            if asset in prices:
-                miner.set_price(asset, prices[asset])
-        except Exception as exc:
-            logger.error("Failed to fit model for %s: %s", asset, exc)
+    print(json.dumps(result, indent=2, default=str))
 
-    predictions = miner.generate_all_predictions(horizon=args.horizon)
-    submission = miner.format_submission(predictions)
-
-    # Save
-    out_path = args.output or "predictions.json"
-    with open(out_path, "w") as f:
-        json.dump(submission, f)
-    logger.info("Saved predictions to %s (%d assets)", out_path, len(predictions))
+    comparison = session.compare()
+    print("\n=== RANKING (by CRPS, best first) ===")
+    for i, entry in enumerate(comparison.get("ranking", []), 1):
+        print(f"  {i}. {entry['name']}  CRPS={entry['crps']:.6f}  params={entry['param_count']}")
 
 
-def cmd_evaluate(args: argparse.Namespace) -> None:
-    """Evaluate a model locally against recent price data."""
-    import numpy as np
+def cmd_experiment(args: argparse.Namespace) -> None:
+    """Run a single experiment."""
+    from src.research.agent_api import ResearchSession
 
-    from data.market import get_close_prices
-    from subnet.validator import evaluate_prediction
+    session = ResearchSession()
+    blocks = [b.strip() for b in args.blocks.split(",")]
 
-    # For local evaluation, we use historical data as "realized" prices
-    historical = get_close_prices(args.asset, days=7)
-    if len(historical) < 300:
-        logger.error("Not enough data for evaluation (need >= 300 points, got %d)", len(historical))
-        sys.exit(1)
-
-    # Split into calibration and evaluation
-    cal_data = historical[:-289]
-    realized = historical[-289:]
-
-    # Fit a model on calibration data
-    from models.garch import GARCHForecaster
-
-    model = GARCHForecaster(variant=args.variant, dist="t")
-    model.fit(cal_data)
-
-    # Generate paths
-    paths = model.generate_paths(
-        asset=args.asset,
-        num_paths=1000,
-        num_steps=289,
-        s0=float(realized[0]),
+    experiment = session.create_experiment(
+        blocks=blocks,
+        head=args.head,
+        d_model=args.d_model,
+        horizon=args.horizon,
+        n_paths=args.n_paths,
+        lr=args.lr,
     )
 
-    # Score
-    scores = evaluate_prediction(paths, realized)
-    print(f"\nEvaluation results for {args.asset} ({args.variant}):")
-    print("-" * 50)
-    for key, val in sorted(scores.items()):
-        print(f"  {key:20s}: {val:12.4f}")
+    # Validate first
+    validation = session.validate(experiment)
+    if not validation["valid"]:
+        print("Validation FAILED:")
+        for err in validation["errors"]:
+            print(f"  - {err}")
+        sys.exit(1)
+
+    # Run
+    result = session.run(experiment, epochs=args.epochs)
+    print(json.dumps(result, indent=2, default=str))
+
+    if result.get("status") == "ok":
+        metrics = result["metrics"]
+        print(f"\nCRPS: {metrics['crps']:.6f}")
+        print(f"Sharpness: {metrics['sharpness']:.6f}")
+        print(f"Log-likelihood: {metrics['log_likelihood']:.6f}")
+
+
+def cmd_quick(args: argparse.Namespace) -> None:
+    """One-liner convenience experiment."""
+    from src.research.agent_api import quick_experiment
+
+    blocks = [b.strip() for b in args.blocks.split(",")] if args.blocks else None
+    result = quick_experiment(
+        blocks=blocks,
+        head=args.head,
+        d_model=args.d_model,
+        horizon=args.horizon,
+    )
+    print(json.dumps(result, indent=2, default=str))
 
 
 def cmd_agent(args: argparse.Namespace) -> None:
@@ -127,6 +114,7 @@ def cmd_agent(args: argparse.Namespace) -> None:
     from pipeline.agents.code_checker import CodeCheckerAgent
     from pipeline.agents.debugger import DebuggerAgent
     from pipeline.agents.planner import PlannerAgent
+    from pipeline.agents.publisher import PublisherAgent
     from pipeline.agents.trainer import TrainerAgent
 
     agents = {
@@ -134,6 +122,7 @@ def cmd_agent(args: argparse.Namespace) -> None:
         "codechecker": CodeCheckerAgent,
         "debugger": DebuggerAgent,
         "trainer": TrainerAgent,
+        "publisher": PublisherAgent,
     }
 
     agent_cls = agents.get(args.name.lower())
@@ -141,15 +130,10 @@ def cmd_agent(args: argparse.Namespace) -> None:
         logger.error("Unknown agent: %s (available: %s)", args.name, list(agents.keys()))
         sys.exit(1)
 
-    assets = [a.strip().upper() for a in args.assets.split(",")]
-    task = {
-        "target_assets": assets,
+    task: dict = {
         "channel": "default",
         "user_message": args.message or "Begin the task.",
     }
-    if args.model:
-        task["model_path"] = args.model
-        task["current_model_path"] = args.model
 
     agent = agent_cls(temperature=args.temperature)
     result = agent.run(task)
@@ -170,36 +154,45 @@ def main() -> None:
 
     # pipeline
     p_pipe = subparsers.add_parser("pipeline", help="Run the full improvement pipeline")
-    p_pipe.add_argument("--assets", default="BTC,ETH,SOL", help="Comma-separated asset list")
-    p_pipe.add_argument("--model", default=None, help="Path to current model file")
     p_pipe.add_argument("--channel", default="default", help="Prompt channel")
     p_pipe.add_argument("--retries", type=int, default=5, help="Max retries per stage")
     p_pipe.add_argument("--temperature", type=float, default=0.1, help="Base LLM temperature")
+    p_pipe.add_argument("--publish", action="store_true", help="Publish best model to HF Hub")
 
-    # predict
-    p_pred = subparsers.add_parser("predict", help="Generate predictions")
-    p_pred.add_argument("--assets", default="BTC,ETH,SOL", help="Comma-separated asset list")
-    p_pred.add_argument("--horizon", default="24h", choices=["24h", "1h"])
-    p_pred.add_argument("--output", default=None, help="Output file path")
+    # sweep
+    p_sweep = subparsers.add_parser("sweep", help="Run a preset sweep")
+    p_sweep.add_argument("--presets", default=None, help="Comma-separated preset names (all if omitted)")
+    p_sweep.add_argument("--epochs", type=int, default=1, help="Epochs per preset")
 
-    # evaluate
-    p_eval = subparsers.add_parser("evaluate", help="Evaluate a model locally")
-    p_eval.add_argument("--asset", required=True, help="Asset to evaluate")
-    p_eval.add_argument("--variant", default="GJR-GARCH", help="GARCH variant")
+    # experiment
+    p_exp = subparsers.add_parser("experiment", help="Run a single experiment")
+    p_exp.add_argument("--blocks", required=True, help="Comma-separated block names")
+    p_exp.add_argument("--head", default="GBMHead", help="Head name")
+    p_exp.add_argument("--d-model", type=int, default=32, help="Hidden dimension")
+    p_exp.add_argument("--horizon", type=int, default=12, help="Prediction steps")
+    p_exp.add_argument("--n-paths", type=int, default=100, help="Monte Carlo paths")
+    p_exp.add_argument("--lr", type=float, default=0.001, help="Learning rate")
+    p_exp.add_argument("--epochs", type=int, default=1, help="Training epochs")
+
+    # quick
+    p_quick = subparsers.add_parser("quick", help="One-liner convenience experiment")
+    p_quick.add_argument("--blocks", default=None, help="Comma-separated block names")
+    p_quick.add_argument("--head", default="GBMHead", help="Head name")
+    p_quick.add_argument("--d-model", type=int, default=32, help="Hidden dimension")
+    p_quick.add_argument("--horizon", type=int, default=12, help="Prediction steps")
 
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
-    p_agent.add_argument("--assets", default="BTC", help="Comma-separated asset list")
-    p_agent.add_argument("--model", default=None, help="Model file path")
     p_agent.add_argument("--message", default=None, help="Custom user message")
     p_agent.add_argument("--temperature", type=float, default=0.1)
 
     args = parser.parse_args()
     cmd_map = {
         "pipeline": cmd_pipeline,
-        "predict": cmd_predict,
-        "evaluate": cmd_evaluate,
+        "sweep": cmd_sweep,
+        "experiment": cmd_experiment,
+        "quick": cmd_quick,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)

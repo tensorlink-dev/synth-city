@@ -1,4 +1,4 @@
-"""Debugger agent — fixes code that failed CodeChecker validation."""
+"""Debugger agent — fixes experiment configs or execution failures."""
 
 from __future__ import annotations
 
@@ -17,20 +17,25 @@ class DebuggerAgent(BaseAgentWrapper):
         return assemble_prompt("debugger", task.get("channel", "default"), task)
 
     def build_tools(self, task: dict[str, Any]) -> tuple[dict[str, Callable], list[dict]]:
-        tool_names = ["read_file", "write_file", "check_shapes", "run_python"]
+        tool_names = [
+            "create_experiment",
+            "validate_experiment",
+            "run_experiment",
+            "list_blocks",
+            "list_heads",
+        ]
         return build_toolset(*tool_names)
 
     def build_context(self, task: dict[str, Any]) -> list[dict[str, Any]]:
         context = []
-        # Inject the error report from CodeChecker
         if "error_report" in task:
             context.append({
                 "role": "user",
-                "content": f"## CodeChecker Error Report\n\n{task['error_report']}",
+                "content": f"## Error Report\n\n{task['error_report']}",
             })
-        if "model_path" in task:
+        if "experiment" in task:
             context.append({
                 "role": "user",
-                "content": f"The model to fix is at: `{task['model_path']}`",
+                "content": f"## Failed Experiment Config\n\n```json\n{task['experiment']}\n```",
             })
         return context
