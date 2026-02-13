@@ -37,10 +37,7 @@ main.py                              CLI entry point
 │   ├── base.py                      BaseForecaster interface
 │   ├── gbm.py                       Geometric Brownian Motion (baseline)
 │   ├── garch.py                     GARCH / EGARCH / GJR-GARCH
-│   ├── stochastic_vol.py            Heston stochastic volatility
-│   └── neural/
-│       ├── lstm_garch.py            LSTM-GARCH hybrid
-│       └── nsvm.py                  Neural Stochastic Volatility Model
+│   └── stochastic_vol.py            Heston stochastic volatility
 ├── subnet/
 │   ├── config.py                    SN50 constants
 │   ├── miner.py                     Prediction generation + submission
