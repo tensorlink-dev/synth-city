@@ -11,8 +11,13 @@ Usage:
     # Run a single experiment
     python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead
 
-    # Start the OpenClaw bridge server
+    # Start the HTTP bridge server (works standalone or with OpenClaw)
     python main.py bridge
+
+    # Talk to the bridge from the CLI (no OpenClaw needed)
+    python main.py client blocks
+    python main.py client price BTC
+    python main.py client run
 
     # Run a single agent for debugging
     python main.py agent --name planner
@@ -113,10 +118,59 @@ def cmd_quick(args: argparse.Namespace) -> None:
 
 
 def cmd_bridge(args: argparse.Namespace) -> None:
-    """Start the OpenClaw bridge HTTP server."""
+    """Start the HTTP bridge server."""
     from integrations.openclaw.bridge import run_bridge
 
     run_bridge(host=args.host, port=args.port)
+
+
+def cmd_client(args: argparse.Namespace) -> None:
+    """CLI client for the bridge server — no OpenClaw required."""
+    from integrations.openclaw.client import SynthCityClient
+
+    client = SynthCityClient(base_url=f"http://{args.host}:{args.port}")
+    action = args.action
+
+    try:
+        if action == "health":
+            result = client.health()
+        elif action == "blocks":
+            result = client.list_blocks()
+        elif action == "heads":
+            result = client.list_heads()
+        elif action == "presets":
+            result = client.list_presets()
+        elif action == "compare":
+            result = client.compare_results()
+        elif action == "summary":
+            result = client.session_summary()
+        elif action == "clear":
+            result = client.clear_session()
+        elif action == "status":
+            result = client.pipeline_status()
+        elif action == "run":
+            result = client.pipeline_run(publish=args.publish)
+        elif action == "price":
+            if not args.extra:
+                print("Usage: python main.py client price <ASSET>")
+                sys.exit(1)
+            result = client.get_price(args.extra[0])
+        elif action == "history":
+            if not args.extra:
+                print("Usage: python main.py client history <ASSET> [days]")
+                sys.exit(1)
+            days = int(args.extra[1]) if len(args.extra) > 1 else 30
+            result = client.get_history(args.extra[0], days=days)
+        else:
+            print(f"Unknown action: {action}")
+            print("Available: health blocks heads presets compare summary clear status run price history")
+            sys.exit(1)
+
+        print(json.dumps(result, indent=2, default=str))
+    except Exception as exc:
+        print(f"Error: {exc}")
+        print(f"Is the bridge running? Start it with: python main.py bridge")
+        sys.exit(1)
 
 
 def cmd_agent(args: argparse.Namespace) -> None:
@@ -191,10 +245,26 @@ def main() -> None:
     p_quick.add_argument("--d-model", type=int, default=32, help="Hidden dimension")
     p_quick.add_argument("--horizon", type=int, default=12, help="Prediction steps")
 
-    # bridge (OpenClaw integration)
-    p_bridge = subparsers.add_parser("bridge", help="Start the OpenClaw bridge HTTP server")
+    # bridge
+    p_bridge = subparsers.add_parser("bridge", help="Start the HTTP bridge server")
     p_bridge.add_argument("--host", default="127.0.0.1", help="Bind address")
     p_bridge.add_argument("--port", type=int, default=8377, help="Listen port")
+
+    # client (standalone CLI for the bridge)
+    p_client = subparsers.add_parser(
+        "client",
+        help="Talk to a running bridge server (no OpenClaw needed)",
+    )
+    p_client.add_argument(
+        "action",
+        choices=["health", "blocks", "heads", "presets", "compare", "summary",
+                 "clear", "status", "run", "price", "history"],
+        help="Action to perform",
+    )
+    p_client.add_argument("extra", nargs="*", help="Extra args (e.g. asset name for price/history)")
+    p_client.add_argument("--host", default="127.0.0.1", help="Bridge host")
+    p_client.add_argument("--port", type=int, default=8377, help="Bridge port")
+    p_client.add_argument("--publish", action="store_true", help="Publish when using 'run' action")
 
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
@@ -209,6 +279,7 @@ def main() -> None:
         "experiment": cmd_experiment,
         "quick": cmd_quick,
         "bridge": cmd_bridge,
+        "client": cmd_client,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)

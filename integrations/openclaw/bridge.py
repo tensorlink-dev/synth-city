@@ -1,13 +1,26 @@
 """
-OpenClaw ↔ synth-city bridge server.
+synth-city HTTP bridge server.
 
 Exposes synth-city's pipeline operations and research tools as a lightweight
-HTTP API that OpenClaw workspace skills can call via ``fetch()`` or ``curl``.
+HTTP API.  Works standalone (curl, Python, any HTTP client) or as a backend
+for agent frameworks like OpenClaw.
 
 Start with::
 
     python main.py bridge            # default: 127.0.0.1:8377
     python main.py bridge --port 9000
+
+Then interact via curl::
+
+    curl http://127.0.0.1:8377/health
+    curl http://127.0.0.1:8377/components/blocks
+    curl -X POST http://127.0.0.1:8377/pipeline/run -d '{}'
+
+Or the built-in CLI client::
+
+    python main.py client blocks
+    python main.py client status
+    python main.py client price BTC
 
 Endpoints
 ---------
