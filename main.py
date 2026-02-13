@@ -11,6 +11,9 @@ Usage:
     # Run a single experiment
     python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead
 
+    # Start the OpenClaw bridge server
+    python main.py bridge
+
     # Run a single agent for debugging
     python main.py agent --name planner
 """
@@ -109,6 +112,13 @@ def cmd_quick(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2, default=str))
 
 
+def cmd_bridge(args: argparse.Namespace) -> None:
+    """Start the OpenClaw bridge HTTP server."""
+    from integrations.openclaw.bridge import run_bridge
+
+    run_bridge(host=args.host, port=args.port)
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.agents.code_checker import CodeCheckerAgent
@@ -181,6 +191,11 @@ def main() -> None:
     p_quick.add_argument("--d-model", type=int, default=32, help="Hidden dimension")
     p_quick.add_argument("--horizon", type=int, default=12, help="Prediction steps")
 
+    # bridge (OpenClaw integration)
+    p_bridge = subparsers.add_parser("bridge", help="Start the OpenClaw bridge HTTP server")
+    p_bridge.add_argument("--host", default="127.0.0.1", help="Bind address")
+    p_bridge.add_argument("--port", type=int, default=8377, help="Listen port")
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -193,6 +208,7 @@ def main() -> None:
         "sweep": cmd_sweep,
         "experiment": cmd_experiment,
         "quick": cmd_quick,
+        "bridge": cmd_bridge,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)

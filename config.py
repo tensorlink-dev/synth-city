@@ -102,3 +102,9 @@ WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
 MAX_AGENT_TURNS: int = int(os.getenv("MAX_AGENT_TURNS", "50"))
 WORKSPACE_DIR: Path = Path(os.getenv("WORKSPACE_DIR", "./workspace"))
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+
+# ---------------------------------------------------------------------------
+# OpenClaw bridge
+# ---------------------------------------------------------------------------
+BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
+BRIDGE_PORT: int = int(os.getenv("BRIDGE_PORT", "8377"))
