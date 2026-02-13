@@ -1,0 +1,16 @@
+openai>=1.12.0
+pydantic>=2.5.0
+httpx>=0.27.0
+numpy>=1.26.0
+pandas>=2.1.0
+scipy>=1.12.0
+torch>=2.2.0
+hydra-core>=1.3.2
+omegaconf>=2.3
+properscoring
+torchsde
+wandb
+huggingface_hub
+python-dotenv>=1.0.0
+# open-synth-miner: install via `pip install -e /path/to/open-synth-miner`
+# or: open-synth-miner @ git+https://github.com/tensorlink-dev/open-synth-miner.git
