@@ -1,64 +1,23 @@
 # synth-city
 
-Autonomous mining framework for **Bittensor Subnet 50 (Synth)**. Uses AI agents to continuously discover, train, validate, and publish probabilistic price forecasting models — turning the [`open-synth-miner`](https://github.com/tensorlink-dev/open-synth-miner) research toolkit into a hands-off model development pipeline.
+**synth-city** is an autonomous AI research pipeline that discovers, trains, debugs, and publishes probabilistic price forecasting models — without manual intervention. Built for [Bittensor Subnet 50 (Synth)](https://github.com/tensorlink-dev/open-synth-miner), it chains specialized AI agents together to iterate through 900+ neural architecture combinations, evaluate them with CRPS scoring, and ship the best model to Hugging Face Hub ready to serve live predictions.
 
-Point it at SN50, and it will iterate through architecture combinations (15 backbone blocks, 6 head types, 10 presets), score them with CRPS, debug failures automatically, and publish the best model to Hugging Face Hub — ready to serve predictions to validators.
+Instead of hand-tuning model configs and running experiments one by one, you point synth-city at SN50 and walk away. A Planner agent surveys available components and prior results, a Trainer executes experiments, a Checker validates outputs, a Debugger fixes failures, and a Publisher pushes the winning model to production. The entire loop retries intelligently — escalating temperature, detecting stalls, and compressing context between stages.
 
-## Architecture
+Under the hood it wraps [`open-synth-miner`](https://github.com/tensorlink-dev/open-synth-miner), a composable PyTorch framework providing 15 backbone blocks, 6 prediction heads, and 10 battle-tested presets. synth-city turns that research toolkit into a closed-loop autonomous system.
 
-```
-main.py                              CLI entry point
-├── pipeline/
-│   ├── providers/
-│   │   ├── simple_agent.py          ~200-line core agent loop (for-loop, not DAGs)
-│   │   └── chutes_client.py         Chutes AI LLM client (OpenAI-compatible)
-│   ├── agents/
-│   │   ├── base.py                  BaseAgentWrapper (composition over inheritance)
-│   │   ├── planner.py               Planner — discovers components, produces experiment plan
-│   │   ├── code_checker.py          CodeChecker — validates experiment configs + results
-│   │   ├── debugger.py              Debugger — fixes failed experiments
-│   │   ├── trainer.py               Trainer — executes experiments via ResearchSession
-│   │   ├── publisher.py             Publisher — HF Hub + W&B production tracking
-│   │   └── author.py               ComponentAuthor — writes new blocks/heads into the registry
-│   ├── tools/
-│   │   ├── registry.py              Tool registry with dynamic injection
-│   │   ├── research_tools.py        ResearchSession API (list/create/validate/run/compare)
-│   │   ├── publish_tools.py         HF Hub publishing + W&B logging
-│   │   ├── file_tools.py            write_file, read_file (code via tools only)
-│   │   ├── check_shapes.py          SN50 shape validation
-│   │   ├── market_data.py           Price data fetching
-│   │   ├── training_tools.py        Local + Basilica training execution
-│   │   └── register_tools.py       Write components + reload registry
-│   ├── prompts/
-│   │   ├── fragments.py             Composable prompt fragment system
-│   │   ├── planner_prompts.py       Phased reasoning + component reference
-│   │   ├── checker_prompts.py       Validation checklist prompts
-│   │   ├── debugger_prompts.py      Error pattern catalog prompts
-│   │   ├── trainer_prompts.py       Experiment execution prompts
-│   │   ├── publisher_prompts.py     Publishing procedure prompts
-│   │   └── author_prompts.py       Component authoring guidelines
-│   └── orchestrator.py              Retry loops, temperature escalation, stall detection
-├── models/                          Standalone model implementations (fallback)
-│   ├── base.py                      BaseForecaster interface
-│   ├── gbm.py                       Geometric Brownian Motion (baseline)
-│   ├── garch.py                     GARCH / EGARCH / GJR-GARCH
-│   └── stochastic_vol.py            Heston stochastic volatility
-├── subnet/
-│   ├── config.py                    SN50 constants
-│   ├── miner.py                     Prediction generation + submission
-│   └── validator.py                 CRPS scoring for local evaluation
-├── data/
-│   ├── market.py                    Market data fetching + caching
-│   └── preprocessing.py             Feature engineering utilities
-├── compute/
-│   └── basilica.py                  Basilica decentralised GPU training client
-├── integrations/openclaw/
-│   ├── bridge.py                    HTTP bridge server (standalone or OpenClaw backend)
-│   ├── client.py                    CLI client for the bridge
-│   ├── setup.py                     Setup utilities
-│   └── skill/                       OpenClaw skill definitions
-└── config.py                        Environment-based configuration
-```
+## SN50 Competition
+
+**Synth** (SN50) requires miners to produce **1,000 Monte Carlo price paths** per asset at 5-minute intervals over a 24-hour horizon. Predictions are scored using **CRPS** (Continuous Ranked Probability Score) — a metric that rewards well-calibrated probability distributions, not just accurate point forecasts.
+
+### Supported Assets
+BTC, ETH, SOL, XAU (gold), SPYX (S&P 500), NVDAX, TSLAX, AAPLX, GOOGLX
+
+### Infrastructure
+- **Model Research**: [open-synth-miner](https://github.com/tensorlink-dev/open-synth-miner) — composable PyTorch research framework
+- **LLM Inference**: [Chutes AI](https://chutes.ai/) (SN64) — OpenAI-compatible API
+- **GPU Training**: [Basilica](https://github.com/tplr-ai/basilica) (SN39) — decentralised compute
+- **Model Publishing**: Hugging Face Hub + Weights & Biases
 
 ## How It Works
 
@@ -92,27 +51,6 @@ Debugger:  create_experiment (fixed) → validate_experiment → re-run
 Publisher: validate_experiment → publish_model → log_to_wandb
 Author:    list_component_files → read_component → write_component → reload_registry → verify
 ```
-
-## Core Philosophy
-
-**Bitter lesson of agent frameworks**: keep the framework minimal, invest in prompt engineering and context management.
-
-- **SimpleAgent** is a ~200-line for-loop: send messages → execute tool calls → append results → repeat until `finish`.
-- Sophistication lives in the **prompts** (phased reasoning, error catalogs, checklists) and **orchestration** (retry loops, temperature escalation, stall detection).
-- Composition over inheritance: agents are thin wrappers adding context, not complex class hierarchies.
-
-## Key Patterns
-
-| Pattern | Implementation |
-|---------|---------------|
-| Per-agent model selection | `<AGENT>_MODEL` env vars → different LLMs per agent |
-| Tool injection | Tools dynamically scoped per agent via registry |
-| Argument coercion | Handles sloppy LLM output (empty string → empty list, JSON-in-string, etc.) |
-| Stall detection | Experiment config comparison between debug attempts + CRITICAL WARNING injection |
-| Temperature escalation | 0.1 → 0.2 → 0.3... on retry failures |
-| Ephemeral compression | Large tool outputs truncated after N chars |
-| Phased prompts | Planner: PHASE 1 DIAGNOSTIC → PHASE 2 EXECUTION |
-| Mandatory tool use | CodeChecker must call validate_experiment before finishing |
 
 ## Usage
 
@@ -189,15 +127,79 @@ python main.py bridge                # default: 127.0.0.1:8377
 
 The built-in CLI client (`python main.py client <action>`) wraps these endpoints for quick terminal use.
 
-## SN50 Competition
+## Core Philosophy
 
-**Synth** (SN50) requires miners to produce **1,000 Monte Carlo price paths** per asset at 5-minute intervals over a 24-hour horizon. Predictions are scored using **CRPS** (Continuous Ranked Probability Score) — a metric that rewards well-calibrated probability distributions, not just accurate point forecasts.
+**Bitter lesson of agent frameworks**: keep the framework minimal, invest in prompt engineering and context management.
 
-### Supported Assets
-BTC, ETH, SOL, XAU (gold), SPYX (S&P 500), NVDAX, TSLAX, AAPLX, GOOGLX
+- **SimpleAgent** is a ~200-line for-loop: send messages → execute tool calls → append results → repeat until `finish`.
+- Sophistication lives in the **prompts** (phased reasoning, error catalogs, checklists) and **orchestration** (retry loops, temperature escalation, stall detection).
+- Composition over inheritance: agents are thin wrappers adding context, not complex class hierarchies.
 
-### Infrastructure
-- **Model Research**: [open-synth-miner](https://github.com/tensorlink-dev/open-synth-miner) — composable PyTorch research framework
-- **LLM Inference**: [Chutes AI](https://chutes.ai/) (SN64) — OpenAI-compatible API
-- **GPU Training**: [Basilica](https://github.com/tplr-ai/basilica) (SN39) — decentralised compute
-- **Model Publishing**: Hugging Face Hub + Weights & Biases
+## Key Patterns
+
+| Pattern | Implementation |
+|---------|---------------|
+| Per-agent model selection | `<AGENT>_MODEL` env vars → different LLMs per agent |
+| Tool injection | Tools dynamically scoped per agent via registry |
+| Argument coercion | Handles sloppy LLM output (empty string → empty list, JSON-in-string, etc.) |
+| Stall detection | Experiment config comparison between debug attempts + CRITICAL WARNING injection |
+| Temperature escalation | 0.1 → 0.2 → 0.3... on retry failures |
+| Ephemeral compression | Large tool outputs truncated after N chars |
+| Phased prompts | Planner: PHASE 1 DIAGNOSTIC → PHASE 2 EXECUTION |
+| Mandatory tool use | CodeChecker must call validate_experiment before finishing |
+
+## Architecture
+
+```
+main.py                              CLI entry point
+├── pipeline/
+│   ├── providers/
+│   │   ├── simple_agent.py          ~200-line core agent loop (for-loop, not DAGs)
+│   │   └── chutes_client.py         Chutes AI LLM client (OpenAI-compatible)
+│   ├── agents/
+│   │   ├── base.py                  BaseAgentWrapper (composition over inheritance)
+│   │   ├── planner.py               Planner — discovers components, produces experiment plan
+│   │   ├── code_checker.py          CodeChecker — validates experiment configs + results
+│   │   ├── debugger.py              Debugger — fixes failed experiments
+│   │   ├── trainer.py               Trainer — executes experiments via ResearchSession
+│   │   ├── publisher.py             Publisher — HF Hub + W&B production tracking
+│   │   └── author.py               ComponentAuthor — writes new blocks/heads into the registry
+│   ├── tools/
+│   │   ├── registry.py              Tool registry with dynamic injection
+│   │   ├── research_tools.py        ResearchSession API (list/create/validate/run/compare)
+│   │   ├── publish_tools.py         HF Hub publishing + W&B logging
+│   │   ├── file_tools.py            write_file, read_file (code via tools only)
+│   │   ├── check_shapes.py          SN50 shape validation
+│   │   ├── market_data.py           Price data fetching
+│   │   ├── training_tools.py        Local + Basilica training execution
+│   │   └── register_tools.py       Write components + reload registry
+│   ├── prompts/
+│   │   ├── fragments.py             Composable prompt fragment system
+│   │   ├── planner_prompts.py       Phased reasoning + component reference
+│   │   ├── checker_prompts.py       Validation checklist prompts
+│   │   ├── debugger_prompts.py      Error pattern catalog prompts
+│   │   ├── trainer_prompts.py       Experiment execution prompts
+│   │   ├── publisher_prompts.py     Publishing procedure prompts
+│   │   └── author_prompts.py       Component authoring guidelines
+│   └── orchestrator.py              Retry loops, temperature escalation, stall detection
+├── models/                          Standalone model implementations (fallback)
+│   ├── base.py                      BaseForecaster interface
+│   ├── gbm.py                       Geometric Brownian Motion (baseline)
+│   ├── garch.py                     GARCH / EGARCH / GJR-GARCH
+│   └── stochastic_vol.py            Heston stochastic volatility
+├── subnet/
+│   ├── config.py                    SN50 constants
+│   ├── miner.py                     Prediction generation + submission
+│   └── validator.py                 CRPS scoring for local evaluation
+├── data/
+│   ├── market.py                    Market data fetching + caching
+│   └── preprocessing.py             Feature engineering utilities
+├── compute/
+│   └── basilica.py                  Basilica decentralised GPU training client
+├── integrations/openclaw/
+│   ├── bridge.py                    HTTP bridge server (standalone or OpenClaw backend)
+│   ├── client.py                    CLI client for the bridge
+│   ├── setup.py                     Setup utilities
+│   └── skill/                       OpenClaw skill definitions
+└── config.py                        Environment-based configuration
+```
