@@ -1,9 +1,15 @@
 """
 Pipeline orchestrator — conditional retry loops with temperature escalation,
-stall detection, and dynamic context injection.
+stall detection, adaptive authoring, and dynamic context injection.
 
 This is the top-level controller that chains agents together:
-    Planner → Trainer → CodeChecker → (Debugger if failed) → Publisher
+    Planner → [Author] → Trainer → [Author → re-Train] → Check/Debug → Publisher
+
+Agents have autonomy at every stage:
+    - The Planner can request new components via ``author_requests`` in its plan.
+    - The Trainer can author new blocks inline when existing ones are insufficient.
+    - The Debugger can author replacement blocks as a last resort.
+    - The orchestrator runs an adaptive Author loop when training CRPS is poor.
 """
 
 from __future__ import annotations
@@ -12,6 +18,7 @@ import json
 import logging
 from typing import Any
 
+from pipeline.agents.author import ComponentAuthorAgent
 from pipeline.agents.code_checker import CodeCheckerAgent
 from pipeline.agents.debugger import DebuggerAgent
 from pipeline.agents.planner import PlannerAgent
@@ -21,17 +28,24 @@ from pipeline.providers.simple_agent import AgentResult
 
 logger = logging.getLogger(__name__)
 
+# CRPS ratio above the historical best that triggers an authoring loop.
+_AUTHOR_CRPS_RATIO = 2.0
+
 
 class PipelineOrchestrator:
-    """Orchestrates the full Planner → Train → Check → Debug → Publish cycle.
+    """Orchestrates the full pipeline with adaptive agent autonomy.
 
     Key features:
         - **Retry with escalation**: failed steps retry with increasing
           temperature (0.1 → 0.2 → 0.3 …).
         - **Stall detection**: if a Debugger produces the same experiment config
           as the previous attempt, inject a CRITICAL WARNING.
-        - **Ephemeral compression**: large context from earlier agents is
-          summarised before being passed to later agents.
+        - **Adaptive authoring**: if the Planner requests new components or
+          the Trainer can't beat a CRPS threshold, the Author agent is invoked
+          to create custom blocks, then training reruns with expanded search space.
+        - **Inline authoring**: Trainer and Debugger agents have authoring tools
+          so they can create new blocks on the fly without waiting for the
+          orchestrator.
     """
 
     def __init__(
@@ -48,7 +62,7 @@ class PipelineOrchestrator:
 
     # ---------------------------------------------------------------- main
     def run(self, task: dict[str, Any]) -> dict[str, Any]:
-        """Execute the full pipeline.
+        """Execute the full pipeline with adaptive authoring.
 
         Parameters
         ----------
@@ -57,6 +71,15 @@ class PipelineOrchestrator:
                 - ``crps_scores``: recent CRPS scores JSON
                 - ``channel``: prompt channel selector
                 - ``prior_comparison``: prior experiment comparison
+
+        Flow
+        ----
+        1. Planner — produce experiment plan (may include ``author_requests``)
+        2. Author  — if Planner requested new components, build them first
+        3. Trainer  — execute experiments (has inline authoring tools)
+        4. Author + re-Train — if CRPS is poor, invoke Author then re-train
+        5. Check/Debug — validate best experiment (Debugger has authoring tools)
+        6. Publisher — optional
         """
         task.setdefault("channel", "default")
         results: dict[str, Any] = {"stages": [], "success": False}
@@ -72,7 +95,27 @@ class PipelineOrchestrator:
 
         # Extract plan for downstream agents
         plan_data = plan_result.structured or {}
-        task["plan"] = json.dumps(plan_data, indent=2) if isinstance(plan_data, dict) else str(plan_data)
+        task["plan"] = (
+            json.dumps(plan_data, indent=2) if isinstance(plan_data, dict)
+            else str(plan_data)
+        )
+
+        # Stage 1b: Author (if Planner requested new components)
+        author_requests = self._extract_author_requests(plan_data)
+        if author_requests:
+            logger.info("=== STAGE 1b: PLANNER-REQUESTED AUTHORING (%d) ===", len(author_requests))
+            for req in author_requests:
+                author_result = self._run_author(task, req)
+                results["stages"].append({
+                    "agent": "author",
+                    "trigger": "planner_request",
+                    "request": req.get("name", "unknown"),
+                    "success": author_result.success,
+                })
+                if author_result.success:
+                    logger.info("Author created component: %s", req.get("name"))
+                else:
+                    logger.warning("Author failed for: %s", req.get("name"))
 
         # Stage 2: Train (execute experiments from the plan)
         logger.info("=== STAGE 2: TRAINER ===")
@@ -94,6 +137,20 @@ class PipelineOrchestrator:
             task["best_metrics"] = best.get("metrics", "")
             task["comparison"] = best.get("comparison", "")
             task["experiment"] = best.get("experiment", "")
+
+        # Stage 2b: Adaptive authoring loop — if CRPS is poor, invoke Author
+        # then re-train with expanded component library
+        if best and self._should_author_adaptively(best):
+            logger.info("=== STAGE 2b: ADAPTIVE AUTHORING (CRPS too high) ===")
+            adaptive_result = self._adaptive_author_loop(task, best)
+            results["stages"].append(adaptive_result)
+            # Update best if the re-train produced better results
+            if adaptive_result.get("improved"):
+                best = adaptive_result.get("best") or best
+                task["best_experiment"] = best.get("experiment", "")
+                task["best_metrics"] = best.get("metrics", "")
+                task["comparison"] = best.get("comparison", "")
+                task["experiment"] = best.get("experiment", "")
 
         # Stage 3: Check → Debug loop on the best experiment
         logger.info("=== STAGE 3: CHECK/DEBUG LOOP ===")
@@ -234,6 +291,139 @@ class PipelineOrchestrator:
                             break
 
         return {"passed": False, "attempts": self.max_retries, "stages": stage_results}
+
+    # ----------------------------------------------------------- authoring
+    @staticmethod
+    def _extract_author_requests(plan_data: dict[str, Any]) -> list[dict[str, Any]]:
+        """Pull ``author_requests`` from the Planner's structured output."""
+        if not isinstance(plan_data, dict):
+            return []
+        requests = plan_data.get("author_requests", [])
+        if isinstance(requests, list):
+            return [r for r in requests if isinstance(r, dict) and r.get("name")]
+        return []
+
+    def _run_author(
+        self, task: dict[str, Any], request: dict[str, Any],
+    ) -> AgentResult:
+        """Run the ComponentAuthor agent for a single authoring request."""
+        author_task = dict(task)
+        author_task["component_spec"] = json.dumps(request, indent=2)
+        refs = request.get("reference_blocks", [])
+        if refs:
+            author_task["reference_blocks"] = ", ".join(refs)
+        author_task["user_message"] = (
+            f"Create a new {request.get('type', 'block')} called "
+            f"\"{request['name']}\". Rationale: {request.get('rationale', 'improve CRPS')}. "
+            f"Study existing components first, then write and register the new component."
+        )
+        agent = ComponentAuthorAgent(temperature=self.base_temperature)
+        return agent.run(author_task)
+
+    def _should_author_adaptively(self, best: dict[str, Any]) -> bool:
+        """Decide whether to trigger the adaptive authoring loop.
+
+        Returns True when the best CRPS from training is poor enough that
+        authoring new components might help.  Uses a simple heuristic:
+        if no CRPS was produced at all, or CRPS is missing, skip (nothing
+        to improve on).
+        """
+        crps = best.get("crps")
+        if crps is None:
+            return False
+        try:
+            crps_val = float(crps)
+        except (TypeError, ValueError):
+            return False
+        # Trigger if CRPS > 1.0 (a generous threshold — most competitive
+        # models are well below 1.0).  This avoids wasting an authoring loop
+        # when training already found a good architecture.
+        return crps_val > 1.0
+
+    def _adaptive_author_loop(
+        self, task: dict[str, Any], best: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Invoke Author with diagnostic context, then re-run Trainer.
+
+        This gives the pipeline a second chance: if the first round of training
+        only produced mediocre CRPS, the Author creates a targeted block based
+        on what was tried and what failed, then the Trainer reruns with the
+        expanded component library.
+        """
+        crps = best.get("crps", "unknown")
+        experiment = best.get("experiment", "")
+
+        # Build a diagnostic brief for the Author
+        author_task = dict(task)
+        author_task["component_spec"] = json.dumps({
+            "trigger": "adaptive",
+            "current_best_crps": crps,
+            "current_best_experiment": experiment,
+            "goal": (
+                "Create a new backbone block that addresses weaknesses in the "
+                "current best architecture. Focus on improving CRPS."
+            ),
+        }, indent=2)
+        author_task["user_message"] = (
+            f"The best CRPS so far is {crps}, which is not competitive. "
+            f"The best experiment was: {experiment[:500]}\n\n"
+            f"Study the existing blocks, identify what's missing, and write a new "
+            f"block that could improve calibration or capture patterns the current "
+            f"blocks miss. Then reload the registry."
+        )
+
+        logger.info("Running Author agent for adaptive component creation")
+        author = ComponentAuthorAgent(temperature=self.base_temperature + self.temperature_step)
+        author_result = author.run(author_task)
+
+        stage_result: dict[str, Any] = {
+            "agent": "author",
+            "trigger": "adaptive_crps",
+            "author_success": author_result.success,
+            "improved": False,
+        }
+
+        if not author_result.success:
+            logger.warning("Adaptive Author failed — skipping re-train")
+            return stage_result
+
+        # Re-run Trainer with expanded component library
+        logger.info("Re-running Trainer with expanded component library")
+        task["user_message"] = (
+            "New components have been authored and registered. Re-run experiments "
+            "using the expanded component library. Call list_blocks() to discover "
+            "the new blocks, then create and run experiments with them."
+        )
+        retrain_result = self._run_with_retry(
+            TrainerAgent, task, stage_name="trainer_retrain",
+        )
+        stage_result["retrain_success"] = retrain_result.success
+
+        if retrain_result.success:
+            new_best = self._extract_best(retrain_result)
+            if new_best:
+                new_crps = new_best.get("crps")
+                old_crps = best.get("crps")
+                try:
+                    improved = (
+                        new_crps is not None
+                        and old_crps is not None
+                        and float(new_crps) < float(old_crps)
+                    )
+                except (TypeError, ValueError):
+                    improved = False
+
+                if improved:
+                    logger.info(
+                        "Adaptive authoring improved CRPS: %s → %s",
+                        old_crps, new_crps,
+                    )
+                    stage_result["improved"] = True
+                    stage_result["best"] = new_best
+                    stage_result["old_crps"] = old_crps
+                    stage_result["new_crps"] = new_crps
+
+        return stage_result
 
     # ----------------------------------------------------------- publisher
     def _run_publisher(self, task: dict[str, Any]) -> AgentResult:

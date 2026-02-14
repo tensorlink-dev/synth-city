@@ -6,6 +6,7 @@ from typing import Any, Callable
 
 import pipeline.prompts.debugger_prompts  # noqa: F401
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
+import pipeline.tools.register_tools  # noqa: F401 — registers authoring tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -26,6 +27,10 @@ class DebuggerAgent(BaseAgentWrapper):
             "list_heads",
             # Historical context (check what worked before)
             "load_hippius_history",
+            # Component authoring — create replacement blocks when fixes require it
+            "read_component",
+            "write_component",
+            "reload_registry",
         ]
         return build_toolset(*tool_names)
 

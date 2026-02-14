@@ -58,4 +58,25 @@ CRITICAL: If the error was a config issue, produce the corrected config.
 - `run_experiment(experiment)` — verify the fix works
 - `list_blocks()` / `list_heads()` — discover valid component names
 - `load_hippius_history(limit)` — check what configs worked in past runs
+
+### Component Authoring (escape hatch)
+- `read_component(path)` — study an existing block's source code
+- `write_component(filename, code)` — write a new block to src/models/components/
+- `reload_registry()` — re-discover components after writing
 """, priority=10)
+
+register_fragment("debugger", "*", "authoring_guidance", """\
+## Component Authoring (Last Resort)
+
+If you have already tried multiple fixes using existing blocks and the experiment
+still fails (e.g. repeated shape mismatches, NaN gradients, or degenerate CRPS),
+you can **author a new block** as an escape hatch:
+
+1. Read a similar working block with `read_component` to study the pattern.
+2. Write a targeted fix block with `write_component` — e.g. a block with built-in
+   gradient clipping, or a lighter variant that avoids the OOM/NaN issue.
+3. Call `reload_registry()` so the new block appears in the registry.
+4. Use the new block in `create_experiment` and `run_experiment` to verify the fix.
+
+Only use this when rearranging existing components has failed repeatedly.
+""", priority=20)

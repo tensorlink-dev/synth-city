@@ -89,3 +89,34 @@ This is especially useful when the session was cleared or the process restarted.
 - If an experiment returns status="error", do NOT count it as failed overall.
   Note the error and move on to the next experiment.
 """, priority=10)
+
+register_fragment("trainer", "*", "authoring", """\
+## Component Authoring (Advanced)
+
+You have the ability to **create new backbone blocks** when existing components
+aren't producing competitive CRPS scores. Use this power judiciously:
+
+### When to Author
+- All planned experiments produce poor CRPS (> 2x the best historical score).
+- You identify a specific architectural gap (e.g. no block handles multi-scale
+  periodicity well for the current data regime).
+- The Planner's output explicitly requests a new component.
+
+### How to Author
+1. Call `read_component` on 1-2 similar blocks to study the registration pattern.
+2. Call `write_component(filename, code)` with your new block. Follow the
+   `(batch, seq, d_model) -> (batch, seq, d_model)` interface contract.
+3. Call `reload_registry()` to make it discoverable.
+4. Call `create_experiment` using the new block, then `run_experiment` to test it.
+
+### Authoring Tools
+- `list_component_files()` — list existing component .py files
+- `read_component(path)` — read source code of an existing block/head
+- `write_component(filename, code)` — write a new .py file to src/models/components/
+- `reload_registry()` — re-discover components (MUST call after writing)
+
+### Rules
+- Only author when existing blocks have been tried and found insufficient.
+- Keep new blocks simple and focused (< 100 lines).
+- Always `reload_registry` before using a newly written block in an experiment.
+""", priority=20)

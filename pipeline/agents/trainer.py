@@ -7,6 +7,7 @@ from typing import Any, Callable
 import pipeline.prompts.trainer_prompts  # noqa: F401
 import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
+import pipeline.tools.register_tools  # noqa: F401 — registers authoring tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -32,6 +33,11 @@ class TrainerAgent(BaseAgentWrapper):
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_wandb_runs",
+            # Component authoring — create new blocks/heads inline
+            "list_component_files",
+            "read_component",
+            "write_component",
+            "reload_registry",
         ]
         return build_toolset(*tool_names)
 

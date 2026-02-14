@@ -64,6 +64,27 @@ Number experiments from highest to lowest priority. Each should be:
 1. Runnable via `create_experiment` → `run_experiment`
 2. Self-contained (all parameters specified)
 
+### Component Authoring Requests (Optional)
+If your diagnostic reveals that NO existing block adequately handles a pattern
+in the data (e.g. wavelet decomposition, adaptive attention, or multi-resolution
+features), you may include an `author_requests` list in your plan:
+```json
+{
+  "author_requests": [
+    {
+      "name": "WaveletBlock",
+      "type": "block",
+      "rationale": "No existing block handles multi-scale frequency decomposition",
+      "reference_blocks": ["FourierBlock", "Unet1DBlock"]
+    }
+  ]
+}
+```
+The pipeline will invoke the ComponentAuthor agent to build these before training.
+The Trainer also has the ability to author components inline if it identifies gaps
+during execution — so only request authoring here for architecturally significant
+gaps you've identified during diagnostics.
+
 ### Success Criteria
 - Target CRPS threshold (beat the current best, or beat a baseline)
 - Minimum number of experiments before selecting a winner
