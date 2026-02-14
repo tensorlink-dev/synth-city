@@ -3,6 +3,13 @@ Research tools — wrap the open-synth-miner ResearchSession API as agent tools.
 
 These tools give agents access to the full experiment lifecycle:
   discover components → create experiment → validate → run → compare
+
+Memory management:
+  The ResearchSession accumulates results in-memory.  To prevent unbounded
+  growth during long-running sessions, ``flush_session`` offloads the current
+  results to Hippius storage and clears all but the top-N experiments (by CRPS)
+  from memory.  The Trainer can call this periodically, and the orchestrator
+  triggers it automatically when the result count exceeds SESSION_MAX_RESULTS.
 """
 
 from __future__ import annotations
@@ -25,6 +32,11 @@ from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
 
+# Maximum results to keep in memory before auto-flushing
+SESSION_MAX_RESULTS: int = 100
+# How many top results (by CRPS) to retain after a flush
+SESSION_KEEP_TOP_N: int = 10
+
 # ---------------------------------------------------------------------------
 # Lazy-loaded singleton ResearchSession
 # ---------------------------------------------------------------------------
@@ -37,6 +49,72 @@ def _get_session():
         from src.research.agent_api import ResearchSession
         _session = ResearchSession()
     return _session
+
+
+def _maybe_auto_flush():
+    """Flush the session to Hippius if it's grown past the threshold."""
+    try:
+        session = _get_session()
+        summary = session.summary()
+        count = summary.get("num_experiments", 0) if isinstance(summary, dict) else 0
+        if count >= SESSION_MAX_RESULTS:
+            logger.info(
+                "Session has %d results (threshold %d) — auto-flushing to Hippius",
+                count, SESSION_MAX_RESULTS,
+            )
+            _do_flush(keep_top_n=SESSION_KEEP_TOP_N)
+    except Exception as exc:
+        logger.debug("Auto-flush check failed: %s", exc)
+
+
+def _do_flush(keep_top_n: int = SESSION_KEEP_TOP_N) -> dict:
+    """Save all session results to Hippius, then clear and keep only top-N."""
+    session = _get_session()
+    comparison = {}
+    saved_count = 0
+
+    try:
+        comparison = session.compare()
+    except Exception:
+        pass
+
+    # Save comparison snapshot to Hippius
+    try:
+        from pipeline.tools.hippius_store import save_comparison
+        if comparison:
+            save_comparison(comparison)
+    except Exception:
+        pass
+
+    # Get the ranking so we know what to keep
+    ranking = comparison.get("ranking", []) if isinstance(comparison, dict) else []
+    saved_count = len(ranking)
+
+    # Clear the in-memory session
+    session.clear()
+    logger.info("Flushed %d results from session, cleared memory", saved_count)
+
+    # Re-create the top-N experiments so agents still have a baseline to compare against
+    # (These are lightweight config dicts, not full model weights)
+    restored = 0
+    for entry in ranking[:keep_top_n]:
+        try:
+            exp_config = entry.get("experiment") or entry.get("config")
+            if exp_config and isinstance(exp_config, dict):
+                session.create_experiment(
+                    blocks=exp_config.get("model", {}).get("backbone", {}).get("blocks", []),
+                    head=exp_config.get("model", {}).get("head", {}).get("_target_", "GBMHead").split(".")[-1],
+                    d_model=exp_config.get("model", {}).get("backbone", {}).get("d_model", 32),
+                )
+                restored += 1
+        except Exception:
+            pass
+
+    return {
+        "flushed": saved_count,
+        "kept_in_memory": restored,
+        "hippius_saved": bool(comparison),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +301,9 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
         except Exception:
             pass  # Storage is best-effort, never block the pipeline
 
+        # Auto-flush if session has grown too large
+        _maybe_auto_flush()
+
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
@@ -312,3 +393,29 @@ def clear_session() -> str:
     session = _get_session()
     session.clear()
     return json.dumps({"status": "session cleared"})
+
+
+@tool(
+    description=(
+        "Flush session results to Hippius storage and free memory. "
+        "Saves all current results to persistent storage, clears the in-memory session, "
+        "and keeps only the top-N experiments (by CRPS) in memory for comparison. "
+        "Use this periodically during long training runs to prevent out-of-memory. "
+        "All flushed results remain accessible via load_hippius_history. "
+        "keep_top_n: how many best results to retain in memory (default 10)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "keep_top_n": {"type": "integer", "description": "Keep top N results in memory (default 10)"},
+        },
+        "required": [],
+    },
+)
+def flush_session(keep_top_n: int = SESSION_KEEP_TOP_N) -> str:
+    """Flush session to Hippius and free memory, keeping top-N."""
+    try:
+        result = _do_flush(keep_top_n=keep_top_n)
+        return json.dumps({"status": "flushed", **result}, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})

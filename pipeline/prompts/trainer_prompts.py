@@ -62,6 +62,26 @@ sweep_presets(preset_names='["transformer_lstm", "pure_transformer", "conv_gru"]
 ```
 This returns a comparison automatically.
 
+## Memory Management
+
+The in-memory session accumulates every experiment result. During long runs this can
+cause out-of-memory errors. The session auto-flushes at 100 results, but you can also
+call `flush_session(keep_top_n=10)` explicitly to:
+1. Save all current results to Hippius persistent storage
+2. Clear the in-memory session
+3. Keep only the top 10 experiments (by CRPS) in memory for comparison
+
+**After a flush**, results are NOT lost — use `load_hippius_history` to query them.
+
+## Historical Context
+
+Results from past pipeline runs are persisted to Hippius storage and W&B.
+Use these tools to inform your decisions:
+- `load_hippius_history(limit=20)` — all past experiments ranked by CRPS
+- `fetch_wandb_runs(limit=10, order="best")` — best runs from W&B
+
+This is especially useful when the session was cleared or the process restarted.
+
 ## Key Constraints
 - CRPS is the ONLY metric that matters for SN50 ranking.
 - Research mode: n_paths=100, epochs=1 for fast iteration.

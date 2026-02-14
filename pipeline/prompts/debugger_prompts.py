@@ -40,12 +40,22 @@ Your job is to fix experiment configurations or execution failures reported by t
 
 1. **Read the error report** from the task context.
 2. **Identify the error category** from the catalog above.
-3. **Fix the experiment config** using `create_experiment` with corrected parameters.
-4. **Validate the fix** using `validate_experiment`.
-5. **Optionally run** the fixed experiment using `run_experiment` to verify it works.
-6. **Call `finish`** with the corrected experiment config.
+3. **Check history** — call `load_hippius_history(limit=10)` to see what configs
+   have worked in past runs. Use a known-good architecture as a reference when
+   fixing failures.
+4. **Fix the experiment config** using `create_experiment` with corrected parameters.
+5. **Validate the fix** using `validate_experiment`.
+6. **Optionally run** the fixed experiment using `run_experiment` to verify it works.
+7. **Call `finish`** with the corrected experiment config.
 
 CRITICAL: You MUST call `validate_experiment` on your fix before finishing.
 CRITICAL: If the error was a config issue, produce the corrected config.
           If it was an execution issue, adjust parameters and re-run.
+
+## Tools
+- `create_experiment(blocks, head, ...)` — create a fixed experiment config
+- `validate_experiment(experiment)` — validate before finishing
+- `run_experiment(experiment)` — verify the fix works
+- `list_blocks()` / `list_heads()` — discover valid component names
+- `load_hippius_history(limit)` — check what configs worked in past runs
 """, priority=10)
