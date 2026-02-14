@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import pipeline.prompts.planner_prompts  # noqa: F401 — registers fragments
+import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
+import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -23,6 +25,12 @@ class PlannerAgent(BaseAgentWrapper):
             "list_presets",
             "session_summary",
             "compare_results",
+            # Historical analysis
+            "load_hippius_history",
+            "load_hippius_run",
+            "fetch_wandb_runs",
+            "analyze_wandb_trends",
+            "list_hf_models",
         ]
         return build_toolset(*tool_names)
 

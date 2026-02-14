@@ -28,8 +28,13 @@ Before proposing any architecture, you MUST:
 2. **Review presets** — call `list_presets` to see the 10 ready-to-run combinations.
 3. **Check prior results** — call `session_summary` to see if there are existing results
    to build on. If there are results, call `compare_results` to see the current ranking.
-4. **Identify gaps** — which block families (recurrent, convolutional, attention,
-   decomposition) haven't been tried? Which heads beyond GBMHead?
+4. **Review historical data** — call `load_hippius_history` to see experiment results
+   from ALL past pipeline runs (persisted across restarts). Also call `analyze_wandb_trends`
+   to see CRPS improvement over time, and `fetch_wandb_runs` to review the best historical
+   configs. Use `list_hf_models` to check what has already been published to HF Hub.
+5. **Identify gaps** — which block families (recurrent, convolutional, attention,
+   decomposition) haven't been tried? Which heads beyond GBMHead? What architectures
+   from past runs showed the most promise but weren't fully explored?
 
 Summarise your diagnostic findings before moving to Phase 2.
 """, priority=20)
@@ -131,10 +136,23 @@ register_fragment("planner", "*", "tools_reminder", """\
 ## Available Tools
 
 You MUST use tools before calling finish. Never skip the diagnostic phase.
+
+### Component Discovery
 - `list_blocks()` — discover backbone blocks
 - `list_heads()` — discover head types
 - `list_presets()` — discover ready-to-run presets
-- `session_summary()` — check existing results
+
+### Current Session
+- `session_summary()` — check existing results in this session
 - `compare_results()` — rank existing results by CRPS
+
+### Historical Analysis (past runs persisted across restarts)
+- `load_hippius_history(limit)` — load all past experiments from Hippius storage, ranked by CRPS
+- `load_hippius_run(run_id)` — load a specific past pipeline run ('latest' for most recent)
+- `fetch_wandb_runs(limit, order)` — fetch past runs from W&B ('best', 'recent', or 'worst')
+- `analyze_wandb_trends(limit)` — CRPS improvement trajectory over time
+- `list_hf_models(repo_id)` — list published models on HF Hub
+
+### Completion
 - `finish(success, result, summary)` — complete the task
 """, priority=90)

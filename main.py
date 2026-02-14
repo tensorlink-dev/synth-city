@@ -11,6 +11,11 @@ Usage:
     # Run a single experiment
     python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead
 
+    # Query experiment history (Hippius, W&B, HF Hub)
+    python main.py history hippius
+    python main.py history wandb --order best --limit 10
+    python main.py history hf
+
     # Start the HTTP bridge server (works standalone or with OpenClaw)
     python main.py bridge
 
@@ -173,6 +178,72 @@ def cmd_client(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_history(args: argparse.Namespace) -> None:
+    """Query experiment history from Hippius, W&B, or HF Hub."""
+    source = args.source
+
+    if source == "hippius":
+        from pipeline.tools.hippius_store import load_hippius_history, load_hippius_run
+        if args.run_id:
+            result = load_hippius_run(args.run_id)
+        else:
+            result = load_hippius_history(limit=args.limit)
+        data = json.loads(result)
+        print(json.dumps(data, indent=2, default=str))
+
+        # Print summary table for history queries
+        if not args.run_id and "experiments" in data:
+            print(f"\n=== HIPPIUS HISTORY ({data.get('total_stored', '?')} total) ===")
+            for i, exp in enumerate(data["experiments"], 1):
+                crps = exp.get("crps", "N/A")
+                crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
+                blocks = ", ".join(exp.get("blocks", []))
+                print(f"  {i}. [{exp.get('run_id', '?')[:15]}] {exp.get('name', '?'):20s}  "
+                      f"CRPS={crps_str}  blocks=[{blocks}]  head={exp.get('head', '?')}")
+
+    elif source == "wandb":
+        from pipeline.tools.analysis_tools import analyze_wandb_trends, fetch_wandb_runs
+        if args.trends:
+            result = analyze_wandb_trends(limit=args.limit)
+            data = json.loads(result)
+            print(json.dumps(data, indent=2, default=str))
+            if "timeline" in data:
+                print(f"\n=== W&B CRPS TRENDS ({data.get('total_runs', '?')} runs) ===")
+                print(f"  Best CRPS:   {data.get('best_crps', 'N/A')}")
+                print(f"  Best run:    {data.get('best_run', 'N/A')}")
+                print(f"  Latest CRPS: {data.get('latest_crps', 'N/A')}")
+                print(f"  Improvement: {data.get('improvement', 'N/A')}")
+        else:
+            result = fetch_wandb_runs(limit=args.limit, order=args.order)
+            data = json.loads(result)
+            print(json.dumps(data, indent=2, default=str))
+            if "runs" in data:
+                print(f"\n=== W&B RUNS (order={args.order}) ===")
+                for i, run in enumerate(data["runs"], 1):
+                    crps = run.get("crps", "N/A")
+                    crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
+                    print(f"  {i}. {run.get('name', '?'):30s}  CRPS={crps_str}  "
+                          f"state={run.get('state', '?')}")
+
+    elif source == "hf":
+        from pipeline.tools.analysis_tools import fetch_hf_model_card, list_hf_models
+        result = list_hf_models(repo_id=args.repo_id or "")
+        data = json.loads(result)
+        print(json.dumps(data, indent=2, default=str))
+        if "files" in data:
+            print(f"\n=== HF HUB: {data.get('repo_id', '?')} ===")
+            print(f"  Downloads: {data.get('downloads', 'N/A')}")
+            print(f"  Likes: {data.get('likes', 'N/A')}")
+            print(f"  Files: {len(data.get('files', []))}")
+            for f in data.get("files", []):
+                print(f"    - {f.get('path', '?')}")
+
+    else:
+        print(f"Unknown source: {source}")
+        print("Available: hippius, wandb, hf")
+        sys.exit(1)
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.agents.code_checker import CodeCheckerAgent
@@ -266,6 +337,16 @@ def main() -> None:
     p_client.add_argument("--port", type=int, default=8377, help="Bridge port")
     p_client.add_argument("--publish", action="store_true", help="Publish when using 'run' action")
 
+    # history
+    p_hist = subparsers.add_parser("history", help="Query experiment history (Hippius, W&B, HF Hub)")
+    p_hist.add_argument("source", choices=["hippius", "wandb", "hf"], help="Data source")
+    p_hist.add_argument("--limit", type=int, default=20, help="Max results to return")
+    p_hist.add_argument("--order", default="best", choices=["best", "recent", "worst"],
+                        help="Sort order for W&B runs")
+    p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (W&B only)")
+    p_hist.add_argument("--run-id", default=None, help="Load a specific Hippius run ID ('latest' for most recent)")
+    p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -278,6 +359,7 @@ def main() -> None:
         "sweep": cmd_sweep,
         "experiment": cmd_experiment,
         "quick": cmd_quick,
+        "history": cmd_history,
         "bridge": cmd_bridge,
         "client": cmd_client,
         "agent": cmd_agent,

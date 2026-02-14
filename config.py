@@ -97,6 +97,14 @@ HF_REPO_ID: str = os.getenv("HF_REPO_ID", "")
 WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
 
 # ---------------------------------------------------------------------------
+# Hippius decentralised storage (S3-compatible)
+# ---------------------------------------------------------------------------
+HIPPIUS_ENDPOINT: str = os.getenv("HIPPIUS_ENDPOINT", "")
+HIPPIUS_ACCESS_KEY: str = os.getenv("HIPPIUS_ACCESS_KEY", "")
+HIPPIUS_SECRET_KEY: str = os.getenv("HIPPIUS_SECRET_KEY", "")
+HIPPIUS_BUCKET: str = os.getenv("HIPPIUS_BUCKET", "synth-city")
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 MAX_AGENT_TURNS: int = int(os.getenv("MAX_AGENT_TURNS", "50"))

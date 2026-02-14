@@ -115,6 +115,9 @@ class PipelineOrchestrator:
             results["best_experiment"] = best.get("experiment")
             results["best_crps"] = best.get("crps")
 
+        # Persist pipeline summary to Hippius
+        self._save_to_hippius(results)
+
         return results
 
     # ----------------------------------------------------------- planner
@@ -237,6 +240,33 @@ class PipelineOrchestrator:
         agent = PublisherAgent(temperature=self.base_temperature)
         task["user_message"] = "Publish the best model to HF Hub."
         return agent.run(task)
+
+    # ----------------------------------------------------------- persistence
+    @staticmethod
+    def _save_to_hippius(results: dict[str, Any]) -> None:
+        """Best-effort save of pipeline results to Hippius storage."""
+        try:
+            from pipeline.tools.hippius_store import (
+                reset_run_id,
+                save_comparison,
+                save_pipeline_summary,
+            )
+
+            save_pipeline_summary(results)
+
+            # Also persist the comparison snapshot if available
+            best_exp = results.get("best_experiment")
+            if best_exp:
+                save_comparison({
+                    "best_experiment": best_exp,
+                    "best_crps": results.get("best_crps"),
+                    "success": results.get("success", False),
+                })
+
+            # Reset run ID so next pipeline invocation gets a fresh one
+            reset_run_id()
+        except Exception as exc:
+            logger.debug("Hippius save skipped: %s", exc)
 
     # ----------------------------------------------------------- helpers
     @staticmethod

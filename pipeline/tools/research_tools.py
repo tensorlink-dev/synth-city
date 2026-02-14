@@ -214,6 +214,15 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
     try:
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
         result = session.run(exp, epochs=epochs, name=name or None)
+
+        # Auto-save to Hippius if configured
+        try:
+            from pipeline.tools.hippius_store import save_experiment_result
+            label = name or f"exp-{len(session.compare().get('ranking', []))}"
+            save_experiment_result(label, exp, result)
+        except Exception:
+            pass  # Storage is best-effort, never block the pipeline
+
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})

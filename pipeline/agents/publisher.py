@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import pipeline.prompts.publisher_prompts  # noqa: F401
+import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
+import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -21,6 +23,12 @@ class PublisherAgent(BaseAgentWrapper):
             "validate_experiment",
             "publish_model",
             "log_to_wandb",
+            # Hippius persistence
+            "save_to_hippius",
+            # Historical analysis (for comparing against past published models)
+            "fetch_wandb_runs",
+            "list_hf_models",
+            "fetch_hf_model_card",
         ]
         return build_toolset(*tool_names)
 
