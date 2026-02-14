@@ -44,14 +44,26 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
+
+# Maximum request body size (1 MB) to prevent memory exhaustion
+MAX_CONTENT_LENGTH = 1 * 1024 * 1024
+
+# Valid SN50 asset identifiers
+VALID_ASSETS = frozenset({
+    "BTC", "ETH", "SOL", "XAU", "SPYX", "NVDAX", "TSLAX", "AAPLX", "GOOGLX",
+})
+
+# Alphanumeric + underscore pattern for asset path segments
+_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 
 # ---------------------------------------------------------------------------
@@ -78,11 +90,37 @@ class PipelineState:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "elapsed_seconds": (
-                round(time.time() - self.started_at, 1) if self.started_at and self.running else None
+                round(time.time() - self.started_at, 1)
+                if self.started_at and self.running
+                else None
             ),
             "result": self.result,
             "error": self.error,
         }
+
+    def reset(self) -> None:
+        """Clear state for a new pipeline run."""
+        self.running = True
+        self.status = "running"
+        self.started_at = time.time()
+        self.finished_at = None
+        self.result = None
+        self.error = None
+        self.current_stage = "initializing"
+
+    def mark_completed(self, result: dict[str, Any]) -> None:
+        self.running = False
+        self.status = "completed"
+        self.finished_at = time.time()
+        self.result = result
+        self.current_stage = ""
+
+    def mark_failed(self, exc: Exception) -> None:
+        self.running = False
+        self.status = "failed"
+        self.finished_at = time.time()
+        self.error = f"{type(exc).__name__}: {exc}"
+        self.current_stage = ""
 
 
 _pipeline_state = PipelineState()
@@ -91,18 +129,8 @@ _pipeline_lock = threading.Lock()
 
 def _run_pipeline_async(task: dict[str, Any]) -> None:
     """Execute the pipeline in a background thread."""
-    global _pipeline_state
     try:
         from pipeline.orchestrator import PipelineOrchestrator
-
-        with _pipeline_lock:
-            _pipeline_state.running = True
-            _pipeline_state.status = "running"
-            _pipeline_state.started_at = time.time()
-            _pipeline_state.finished_at = None
-            _pipeline_state.result = None
-            _pipeline_state.error = None
-            _pipeline_state.current_stage = "initializing"
 
         orchestrator = PipelineOrchestrator(
             max_retries=task.get("retries", 5),
@@ -112,24 +140,34 @@ def _run_pipeline_async(task: dict[str, Any]) -> None:
         result = orchestrator.run(task)
 
         with _pipeline_lock:
-            _pipeline_state.running = False
-            _pipeline_state.status = "completed"
-            _pipeline_state.finished_at = time.time()
-            _pipeline_state.result = result
-            _pipeline_state.current_stage = ""
+            _pipeline_state.mark_completed(result)
 
     except Exception as exc:
+        logger.exception("Pipeline failed")
         with _pipeline_lock:
-            _pipeline_state.running = False
-            _pipeline_state.status = "failed"
-            _pipeline_state.finished_at = time.time()
-            _pipeline_state.error = f"{type(exc).__name__}: {exc}"
-            _pipeline_state.current_stage = ""
+            _pipeline_state.mark_failed(exc)
 
 
 # ---------------------------------------------------------------------------
 # Research tool wrappers (lazy-loaded to avoid import overhead)
 # ---------------------------------------------------------------------------
+
+_tools_loaded = False
+
+
+def _ensure_tools_loaded() -> None:
+    """Import tool modules so they register with the tool registry."""
+    global _tools_loaded
+    if _tools_loaded:
+        return
+    try:
+        import pipeline.tools.market_data  # noqa: F401
+        import pipeline.tools.research_tools  # noqa: F401
+        _tools_loaded = True
+    except Exception:
+        logger.exception("Failed to load tool modules")
+        raise
+
 
 def _research_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
     """Call a registered synth-city tool by name and return the parsed result."""
@@ -148,13 +186,51 @@ def _research_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
                 return {"result": raw}
         return raw if isinstance(raw, dict) else {"result": raw}
     except Exception as exc:
+        logger.exception("Tool %s failed", tool_name)
         return {"error": f"{type(exc).__name__}: {exc}"}
 
 
-def _ensure_tools_loaded() -> None:
-    """Import tool modules so they register with the tool registry."""
-    import pipeline.tools.research_tools  # noqa: F401
-    import pipeline.tools.market_data  # noqa: F401
+# ---------------------------------------------------------------------------
+# Validation helpers
+# ---------------------------------------------------------------------------
+
+def _validate_asset(asset: str) -> str | None:
+    """Return an error string if *asset* is invalid, else ``None``."""
+    if not asset or not _SAFE_PATH_RE.match(asset):
+        return f"Invalid asset identifier: {asset!r}"
+    asset_upper = asset.upper()
+    if asset_upper not in VALID_ASSETS:
+        return f"Unknown asset: {asset!r}. Valid assets: {', '.join(sorted(VALID_ASSETS))}"
+    return None
+
+
+def _validate_experiment_body(body: dict[str, Any]) -> str | None:
+    """Return an error string if required experiment fields are missing."""
+    if "blocks" not in body and "experiment" not in body:
+        return "Missing required field: 'blocks' or 'experiment'"
+    return None
+
+
+def _validate_positive_int(value: Any, name: str) -> tuple[int | None, str | None]:
+    """Coerce *value* to a positive int. Returns (value, error)."""
+    try:
+        v = int(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be an integer, got {type(value).__name__}"
+    if v <= 0:
+        return None, f"{name} must be positive, got {v}"
+    return v, None
+
+
+def _validate_positive_float(value: Any, name: str) -> tuple[float | None, str | None]:
+    """Coerce *value* to a positive float. Returns (value, error)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None, f"{name} must be a number, got {type(value).__name__}"
+    if v <= 0:
+        return None, f"{name} must be positive, got {v}"
+    return v, None
 
 
 # ---------------------------------------------------------------------------
@@ -169,61 +245,129 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     # ---- helpers
     def _send_json(self, data: Any, status: int = 200) -> None:
-        body = json.dumps(data, indent=2, default=str).encode()
+        try:
+            body = json.dumps(data, indent=2, default=str).encode()
+        except (TypeError, ValueError) as exc:
+            body = json.dumps({"error": f"Serialization error: {exc}"}).encode()
+            status = 500
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length", 0))
+    def _read_body(self) -> dict[str, Any] | None:
+        """Read and parse the JSON request body.
+
+        Returns ``None`` (and sends a 400 response) on parse errors or
+        oversized payloads.
+        """
+        raw_length = self.headers.get("Content-Length", "0")
+        try:
+            length = int(raw_length)
+        except ValueError:
+            self._send_json(
+                {"error": f"Invalid Content-Length: {raw_length!r}"}, status=400,
+            )
+            return None
+
+        if length > MAX_CONTENT_LENGTH:
+            self._send_json(
+                {"error": f"Request body too large ({length} bytes, max {MAX_CONTENT_LENGTH})"},
+                status=413,
+            )
+            return None
+
         if length == 0:
             return {}
+
         raw = self.rfile.read(length)
         try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            self._send_json({"error": f"Invalid JSON: {exc}"}, status=400)
+            return None
+
+        if not isinstance(parsed, dict):
+            self._send_json(
+                {"error": f"Expected JSON object, got {type(parsed).__name__}"}, status=400,
+            )
+            return None
+
+        return parsed
 
     def _path_parts(self) -> tuple[str, dict[str, list[str]]]:
         parsed = urlparse(self.path)
         return parsed.path.rstrip("/"), parse_qs(parsed.query)
 
+    def _load_tools_or_fail(self) -> bool:
+        """Load tool modules. Returns ``True`` on success, sends 500 on failure."""
+        try:
+            _ensure_tools_loaded()
+            return True
+        except Exception as exc:
+            self._send_json(
+                {"error": f"Failed to load tools: {exc}"}, status=500,
+            )
+            return False
+
     # ---- GET routes
     def do_GET(self) -> None:
         path, qs = self._path_parts()
-        _ensure_tools_loaded()
 
         if path == "/health":
             self._send_json({"status": "ok", "service": "synth-city-bridge"})
+            return
 
-        elif path == "/pipeline/status":
-            self._send_json(_pipeline_state.to_dict())
+        if path == "/pipeline/status":
+            with _pipeline_lock:
+                self._send_json(_pipeline_state.to_dict())
+            return
 
-        elif path == "/components/blocks":
-            self._send_json(_research_call("list_blocks"))
+        if path == "/components/blocks":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_blocks"))
 
         elif path == "/components/heads":
-            self._send_json(_research_call("list_heads"))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_heads"))
 
         elif path == "/components/presets":
-            self._send_json(_research_call("list_presets"))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_presets"))
 
         elif path == "/experiment/compare":
-            self._send_json(_research_call("compare_results"))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("compare_results"))
 
         elif path == "/session/summary":
-            self._send_json(_research_call("session_summary"))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("session_summary"))
 
         elif path.startswith("/market/price/"):
             asset = path.split("/")[-1]
-            self._send_json(_research_call("get_latest_price", asset=asset))
+            err = _validate_asset(asset)
+            if err:
+                self._send_json({"error": err}, status=400)
+                return
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("get_latest_price", asset=asset.upper()))
 
         elif path.startswith("/market/history/"):
             asset = path.split("/")[-1]
-            days = int(qs.get("days", ["30"])[0])
-            self._send_json(_research_call("get_historical_data", asset=asset, days=days))
+            err = _validate_asset(asset)
+            if err:
+                self._send_json({"error": err}, status=400)
+                return
+            raw_days = qs.get("days", ["30"])[0]
+            days, days_err = _validate_positive_int(raw_days, "days")
+            if days_err:
+                self._send_json({"error": days_err}, status=400)
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("get_historical_data", asset=asset.upper(), days=days),
+                )
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
@@ -232,58 +376,116 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path, _qs = self._path_parts()
         body = self._read_body()
-        _ensure_tools_loaded()
+        if body is None:
+            return  # _read_body already sent the error response
 
         if path == "/pipeline/run":
-            if _pipeline_state.running:
-                self._send_json(
-                    {"error": "Pipeline is already running", "status": _pipeline_state.status},
-                    status=409,
-                )
+            with _pipeline_lock:
+                if _pipeline_state.running:
+                    self._send_json(
+                        {
+                            "error": "Pipeline is already running",
+                            "status": _pipeline_state.status,
+                        },
+                        status=409,
+                    )
+                    return
+                _pipeline_state.reset()
+
+            retries = body.get("retries", 5)
+            temperature = body.get("temperature", 0.1)
+            retries_v, retries_err = _validate_positive_int(retries, "retries")
+            if retries_err:
+                with _pipeline_lock:
+                    _pipeline_state.mark_failed(ValueError(retries_err))
+                self._send_json({"error": retries_err}, status=400)
+                return
+            temp_v, temp_err = _validate_positive_float(temperature, "temperature")
+            if temp_err:
+                with _pipeline_lock:
+                    _pipeline_state.mark_failed(ValueError(temp_err))
+                self._send_json({"error": temp_err}, status=400)
                 return
 
             task = {
                 "channel": body.get("channel", "default"),
-                "retries": body.get("retries", 5),
-                "temperature": body.get("temperature", 0.1),
-                "publish": body.get("publish", False),
+                "retries": retries_v,
+                "temperature": temp_v,
+                "publish": bool(body.get("publish", False)),
             }
-            thread = threading.Thread(target=_run_pipeline_async, args=(task,), daemon=True)
+            thread = threading.Thread(
+                target=_run_pipeline_async, args=(task,), daemon=True,
+            )
             thread.start()
-            self._send_json({"status": "started", "message": "Pipeline running in background"})
+            self._send_json(
+                {"status": "started", "message": "Pipeline running in background"},
+            )
 
         elif path == "/experiment/create":
+            # Validate before loading tools
             blocks = body.get("blocks", [])
-            if isinstance(blocks, list):
-                blocks = json.dumps(blocks)
-            self._send_json(_research_call(
-                "create_experiment",
-                blocks=blocks,
-                head=body.get("head", "GBMHead"),
-                d_model=body.get("d_model", 32),
-                horizon=body.get("horizon", 12),
-                n_paths=body.get("n_paths", 100),
-                lr=body.get("lr", 0.001),
-            ))
+            if not isinstance(blocks, list) or not blocks:
+                self._send_json(
+                    {"error": "'blocks' must be a non-empty list of block names"},
+                    status=400,
+                )
+                return
+            blocks_json = json.dumps(blocks)
+
+            d_model = body.get("d_model", 32)
+            d_val, d_err = _validate_positive_int(d_model, "d_model")
+            if d_err:
+                self._send_json({"error": d_err}, status=400)
+                return
+
+            if self._load_tools_or_fail():
+                self._send_json(_research_call(
+                    "create_experiment",
+                    blocks=blocks_json,
+                    head=body.get("head", "GBMHead"),
+                    d_model=d_val,
+                    horizon=body.get("horizon", 12),
+                    n_paths=body.get("n_paths", 100),
+                    lr=body.get("lr", 0.001),
+                ))
 
         elif path == "/experiment/validate":
-            experiment = body.get("experiment", "{}")
+            experiment = body.get("experiment")
+            if experiment is None:
+                self._send_json(
+                    {"error": "Missing required field: 'experiment'"}, status=400,
+                )
+                return
             if isinstance(experiment, dict):
                 experiment = json.dumps(experiment)
-            self._send_json(_research_call("validate_experiment", experiment=experiment))
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("validate_experiment", experiment=experiment),
+                )
 
         elif path == "/experiment/run":
-            experiment = body.get("experiment", "{}")
+            experiment = body.get("experiment")
+            if experiment is None:
+                self._send_json(
+                    {"error": "Missing required field: 'experiment'"}, status=400,
+                )
+                return
             if isinstance(experiment, dict):
                 experiment = json.dumps(experiment)
             epochs = body.get("epochs", 1)
+            epochs_v, epochs_err = _validate_positive_int(epochs, "epochs")
+            if epochs_err:
+                self._send_json({"error": epochs_err}, status=400)
+                return
             name = body.get("name", "")
-            self._send_json(_research_call(
-                "run_experiment", experiment=experiment, epochs=epochs, name=name,
-            ))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call(
+                    "run_experiment", experiment=experiment, epochs=epochs_v, name=name,
+                ))
 
         elif path == "/session/clear":
-            self._send_json(_research_call("clear_session"))
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("clear_session"))
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
@@ -303,4 +505,5 @@ def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nShutting down bridge server.")
-        server.shutdown()
+    finally:
+        server.server_close()

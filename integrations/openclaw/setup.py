@@ -20,35 +20,56 @@ from pathlib import Path
 DEFAULT_WORKSPACE = Path.home() / ".openclaw" / "workspace"
 SKILL_NAME = "synth-city"
 
+# Files that must exist in the skill source directory
+REQUIRED_FILES = ["SKILL.md", "tools.py"]
 
-def install_skill(workspace: Path) -> None:
-    """Copy skill files into the OpenClaw workspace."""
+
+def install_skill(workspace: Path) -> bool:
+    """Copy skill files into the OpenClaw workspace.
+
+    Returns ``True`` on success, ``False`` on failure.
+    """
     skill_dir = workspace / "skills" / SKILL_NAME
-    skill_dir.mkdir(parents=True, exist_ok=True)
-
-    # Source files
     src_dir = Path(__file__).parent / "skill"
-    skill_md = src_dir / "SKILL.md"
-    tools_py = src_dir / "tools.py"
 
-    if not skill_md.exists():
-        print(f"ERROR: {skill_md} not found", file=sys.stderr)
-        sys.exit(1)
+    # Validate all required source files exist before creating anything
+    missing = [f for f in REQUIRED_FILES if not (src_dir / f).exists()]
+    if missing:
+        print(
+            f"ERROR: Missing source files in {src_dir}: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+        return False
 
-    # Copy SKILL.md
-    shutil.copy2(skill_md, skill_dir / "SKILL.md")
-    print(f"  Installed SKILL.md → {skill_dir / 'SKILL.md'}")
+    # Create target directory
+    try:
+        skill_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"ERROR: Cannot create skill directory {skill_dir}: {exc}", file=sys.stderr)
+        return False
 
-    # Copy tools.py
-    if tools_py.exists():
-        shutil.copy2(tools_py, skill_dir / "tools.py")
-        print(f"  Installed tools.py → {skill_dir / 'tools.py'}")
+    # Copy each file and verify
+    for filename in REQUIRED_FILES:
+        src = src_dir / filename
+        dst = skill_dir / filename
+        try:
+            shutil.copy2(src, dst)
+        except OSError as exc:
+            print(f"ERROR: Failed to copy {src} → {dst}: {exc}", file=sys.stderr)
+            return False
+
+        if not dst.exists():
+            print(f"ERROR: Copy verification failed — {dst} does not exist", file=sys.stderr)
+            return False
+
+        print(f"  Installed {filename} → {dst}")
 
     print(f"\nsynth-city skill installed to: {skill_dir}")
     print("\nNext steps:")
     print("  1. Start the bridge:  python main.py bridge")
     print("  2. Start OpenClaw:    openclaw start")
     print("  3. Chat:              'Hey, list the available blocks for SN50'")
+    return True
 
 
 def main() -> None:
@@ -66,7 +87,8 @@ def main() -> None:
         print("Make sure OpenClaw is installed: npm install -g openclaw@latest && openclaw onboard")
         sys.exit(1)
 
-    install_skill(args.workspace)
+    if not install_skill(args.workspace):
+        sys.exit(1)
 
 
 if __name__ == "__main__":
