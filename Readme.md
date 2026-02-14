@@ -1,6 +1,8 @@
 # synth-city
 
-Agentic layer for building and training competitive models on **Bittensor Subnet 50 (Synth)** — a decentralised probabilistic price forecasting network. Built on top of [`open-synth-miner`](https://github.com/tensorlink-dev/open-synth-miner).
+Autonomous mining framework for **Bittensor Subnet 50 (Synth)**. Uses AI agents to continuously discover, train, validate, and publish probabilistic price forecasting models — turning the [`open-synth-miner`](https://github.com/tensorlink-dev/open-synth-miner) research toolkit into a hands-off model development pipeline.
+
+Point it at SN50, and it will iterate through architecture combinations (15 backbone blocks, 6 head types, 10 presets), score them with CRPS, debug failures automatically, and publish the best model to Hugging Face Hub — ready to serve predictions to validators.
 
 ## Architecture
 
