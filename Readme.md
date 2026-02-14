@@ -47,6 +47,11 @@ main.py                              CLI entry point
 │   └── preprocessing.py             Feature engineering utilities
 ├── compute/
 │   └── basilica.py                  Basilica decentralised GPU training client
+├── integrations/openclaw/
+│   ├── bridge.py                    HTTP bridge server (standalone or OpenClaw backend)
+│   ├── client.py                    CLI client for the bridge
+│   ├── setup.py                     Setup utilities
+│   └── skill/                       OpenClaw skill definitions
 └── config.py                        Environment-based configuration
 ```
 
@@ -115,10 +120,51 @@ python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead --d
 # One-liner convenience
 python main.py quick --blocks TransformerBlock,LSTMBlock
 
+# Start the HTTP bridge server
+python main.py bridge
+python main.py bridge --port 9000
+
+# Talk to the bridge from the CLI (no OpenClaw needed)
+python main.py client blocks
+python main.py client heads
+python main.py client presets
+python main.py client price BTC
+python main.py client history ETH 30
+python main.py client run --publish
+
 # Run a single agent for debugging
 python main.py agent --name planner
 python main.py agent --name trainer
 ```
+
+## HTTP Bridge
+
+The bridge server exposes synth-city's pipeline and research tools as a lightweight HTTP API. It works standalone (curl, any HTTP client) or as a backend for agent frameworks like [OpenClaw](https://github.com/openclaw).
+
+```bash
+python main.py bridge                # default: 127.0.0.1:8377
+```
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Liveness check |
+| POST | `/pipeline/run` | Kick off a full pipeline run |
+| GET | `/pipeline/status` | Poll current pipeline status |
+| POST | `/experiment/create` | Create an experiment config |
+| POST | `/experiment/run` | Run an experiment and return metrics |
+| POST | `/experiment/validate` | Validate an experiment config |
+| GET | `/experiment/compare` | Compare all session results |
+| GET | `/components/blocks` | List available backbone blocks |
+| GET | `/components/heads` | List available head types |
+| GET | `/components/presets` | List ready-to-run presets |
+| GET | `/session/summary` | Current research session summary |
+| POST | `/session/clear` | Reset research session |
+| GET | `/market/price/:asset` | Live price from Pyth oracle |
+| GET | `/market/history/:asset` | Historical OHLCV data |
+
+The built-in CLI client (`python main.py client <action>`) wraps these endpoints for quick terminal use.
 
 ## SN50 Competition
 
