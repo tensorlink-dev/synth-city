@@ -110,10 +110,14 @@ class PipelineOrchestrator:
             if pub_result.structured:
                 results["publish_info"] = pub_result.structured
 
-        # Attach best experiment info to results
+        # Attach best experiment info and eval results to the summary
         if best:
             results["best_experiment"] = best.get("experiment")
             results["best_crps"] = best.get("crps")
+            if best.get("metrics"):
+                results["best_metrics"] = best["metrics"]
+            if best.get("comparison"):
+                results["comparison"] = best["comparison"]
 
         # Persist pipeline summary to Hippius
         self._save_to_hippius(results)
@@ -254,11 +258,24 @@ class PipelineOrchestrator:
 
             save_pipeline_summary(results)
 
-            # Also persist the comparison snapshot if available
-            best_exp = results.get("best_experiment")
-            if best_exp:
+            # Persist the full comparison ranking if available, otherwise
+            # fall back to a minimal snapshot with just the best experiment.
+            comparison = results.get("comparison")
+            if comparison:
+                # Full trainer ranking (JSON string or dict)
+                comp_data = (
+                    json.loads(comparison)
+                    if isinstance(comparison, str)
+                    else comparison
+                )
+                comp_data.setdefault(
+                    "best_crps", results.get("best_crps")
+                )
+                comp_data.setdefault("success", results.get("success", False))
+                save_comparison(comp_data)
+            elif results.get("best_experiment"):
                 save_comparison({
-                    "best_experiment": best_exp,
+                    "best_experiment": results["best_experiment"],
                     "best_crps": results.get("best_crps"),
                     "success": results.get("success", False),
                 })

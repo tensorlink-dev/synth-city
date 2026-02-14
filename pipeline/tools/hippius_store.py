@@ -167,7 +167,12 @@ def save_experiment_result(name: str, experiment: dict, result: dict) -> str | N
 
 
 def save_pipeline_summary(summary: dict) -> str | None:
-    """Persist a full pipeline run summary."""
+    """Persist a full pipeline run summary.
+
+    Automatically attaches an ``eval_results`` section that links to the
+    individual experiment result objects stored under ``experiments/{run_id}/``.
+    This ensures the research summary always references its eval artefacts.
+    """
     run_id = get_run_id()
     key = f"pipeline_runs/{run_id}/summary.json"
     payload = {
@@ -175,10 +180,37 @@ def save_pipeline_summary(summary: dict) -> str | None:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         **summary,
     }
+
+    # Attach eval result references so the summary links back to individual results.
+    exp_keys = _list_keys(f"experiments/{run_id}/")
+    if exp_keys:
+        eval_refs = []
+        for ek in exp_keys:
+            exp_data = _get_json(ek)
+            if exp_data and isinstance(exp_data, dict):
+                eval_refs.append({
+                    "key": ek,
+                    "name": exp_data.get("name", ""),
+                    "crps": (
+                        exp_data.get("result", {}).get("metrics", {}).get("crps")
+                        if isinstance(exp_data.get("result"), dict)
+                        else None
+                    ),
+                })
+        # Sort by CRPS (best first), nulls last
+        eval_refs.sort(
+            key=lambda r: r["crps"] if r["crps"] is not None else float("inf")
+        )
+        payload["eval_results"] = {
+            "count": len(eval_refs),
+            "experiments": eval_refs,
+        }
+
     ok = _put_json(key, payload)
     if ok:
         # Update the "latest" pointer
-        _put_json("pipeline_runs/latest.json", {"run_id": run_id, "timestamp": payload["timestamp"]})
+        latest = {"run_id": run_id, "timestamp": payload["timestamp"]}
+        _put_json("pipeline_runs/latest.json", latest)
     return key if ok else None
 
 
@@ -270,7 +302,11 @@ def list_hippius_runs() -> str:
     },
 )
 def load_hippius_run(run_id: str) -> str:
-    """Load a pipeline run from Hippius."""
+    """Load a pipeline run from Hippius.
+
+    Returns the summary, comparison, and all individual eval results in a
+    single response so callers get the complete research picture.
+    """
     try:
         if run_id == "latest":
             latest = _get_json("pipeline_runs/latest.json")
@@ -287,7 +323,7 @@ def load_hippius_run(run_id: str) -> str:
         if comparison:
             data["comparison"] = comparison
 
-        # List experiments for this run
+        # Load individual eval results for this run
         exp_keys = _list_keys(f"experiments/{run_id}/")
         if exp_keys:
             experiments = []
@@ -295,7 +331,18 @@ def load_hippius_run(run_id: str) -> str:
                 exp = _get_json(key)
                 if exp:
                     experiments.append(exp)
-            data["experiments"] = experiments
+            # Sort by CRPS (best first) for easy consumption
+            experiments.sort(
+                key=lambda e: (
+                    e.get("result", {}).get("metrics", {}).get("crps", float("inf"))
+                    if isinstance(e.get("result"), dict)
+                    else float("inf")
+                )
+            )
+            data["eval_results"] = {
+                "count": len(experiments),
+                "experiments": experiments,
+            }
 
         if not summary and not comparison and not exp_keys:
             return json.dumps({"error": f"Run {run_id} not found in Hippius"})
