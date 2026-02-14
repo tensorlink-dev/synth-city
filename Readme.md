@@ -18,7 +18,8 @@ main.py                              CLI entry point
 │   │   ├── code_checker.py          CodeChecker — validates experiment configs + results
 │   │   ├── debugger.py              Debugger — fixes failed experiments
 │   │   ├── trainer.py               Trainer — executes experiments via ResearchSession
-│   │   └── publisher.py             Publisher — HF Hub + W&B production tracking
+│   │   ├── publisher.py             Publisher — HF Hub + W&B production tracking
+│   │   └── author.py               ComponentAuthor — writes new blocks/heads into the registry
 │   ├── tools/
 │   │   ├── registry.py              Tool registry with dynamic injection
 │   │   ├── research_tools.py        ResearchSession API (list/create/validate/run/compare)
@@ -26,14 +27,16 @@ main.py                              CLI entry point
 │   │   ├── file_tools.py            write_file, read_file (code via tools only)
 │   │   ├── check_shapes.py          SN50 shape validation
 │   │   ├── market_data.py           Price data fetching
-│   │   └── training_tools.py        Local + Basilica training execution
+│   │   ├── training_tools.py        Local + Basilica training execution
+│   │   └── register_tools.py       Write components + reload registry
 │   ├── prompts/
 │   │   ├── fragments.py             Composable prompt fragment system
 │   │   ├── planner_prompts.py       Phased reasoning + component reference
 │   │   ├── checker_prompts.py       Validation checklist prompts
 │   │   ├── debugger_prompts.py      Error pattern catalog prompts
 │   │   ├── trainer_prompts.py       Experiment execution prompts
-│   │   └── publisher_prompts.py     Publishing procedure prompts
+│   │   ├── publisher_prompts.py     Publishing procedure prompts
+│   │   └── author_prompts.py       Component authoring guidelines
 │   └── orchestrator.py              Retry loops, temperature escalation, stall detection
 ├── models/                          Standalone model implementations (fallback)
 │   ├── base.py                      BaseForecaster interface
@@ -87,6 +90,7 @@ Trainer:   create_experiment → run_experiment → compare_results → report b
 Checker:   validate_experiment → describe_experiment → pass/fail
 Debugger:  create_experiment (fixed) → validate_experiment → re-run
 Publisher: validate_experiment → publish_model → log_to_wandb
+Author:    list_component_files → read_component → write_component → reload_registry → verify
 ```
 
 ## Core Philosophy
@@ -135,6 +139,9 @@ python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead --d
 
 # One-liner convenience
 python main.py quick --blocks TransformerBlock,LSTMBlock
+
+# Create a custom block via the ComponentAuthor agent
+python main.py agent --name author --message "Write a WaveletBlock that uses wavelet decomposition"
 
 # Start the HTTP bridge server
 python main.py bridge
