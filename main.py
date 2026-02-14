@@ -175,6 +175,7 @@ def cmd_client(args: argparse.Namespace) -> None:
 
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
+    from pipeline.agents.author import ComponentAuthorAgent
     from pipeline.agents.code_checker import CodeCheckerAgent
     from pipeline.agents.debugger import DebuggerAgent
     from pipeline.agents.planner import PlannerAgent
@@ -187,6 +188,7 @@ def cmd_agent(args: argparse.Namespace) -> None:
         "debugger": DebuggerAgent,
         "trainer": TrainerAgent,
         "publisher": PublisherAgent,
+        "author": ComponentAuthorAgent,
     }
 
     agent_cls = agents.get(args.name.lower())

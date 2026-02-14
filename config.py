@@ -26,6 +26,7 @@ AGENT_MODELS: dict[str, str] = {
     "debugger": os.getenv("DEBUGGER_MODEL", DEFAULT_MODEL),
     "trainer": os.getenv("TRAINER_MODEL", "Qwen/Qwen3-235B-A22B"),
     "publisher": os.getenv("PUBLISHER_MODEL", DEFAULT_MODEL),
+    "author": os.getenv("AUTHOR_MODEL", "Qwen/Qwen3-235B-A22B"),
 }
 
 
