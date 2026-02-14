@@ -93,6 +93,61 @@ When the user asks about any of the topics below, call the bridge API using the 
   `GET http://127.0.0.1:8377/market/history/SOL?days=30`
   Historical OHLCV data. Default 30 days.
 
+### Component registry (add new blocks / heads)
+
+- **"what component files exist"** / **"list registry files"**
+  `GET http://127.0.0.1:8377/registry/files`
+  Lists all Python files in the open-synth-miner component directory.
+
+- **"show me the transformer block code"** / **"read a component"**
+  `GET http://127.0.0.1:8377/registry/read?path=src/models/components/transformer.py`
+  Returns the source code of a component file. Use this to study existing blocks before writing new ones.
+
+- **"write a new block"** / **"add a wavelet block"**
+  `POST http://127.0.0.1:8377/registry/write`
+  Body: `{"filename": "wavelet_block.py", "code": "<full Python source>"}`
+  Writes a new PyTorch block or head into `src/models/components/`. The component must follow the uniform tensor interface: `(batch, seq, d_model) → (batch, seq, d_model)` for blocks, or appropriate output shape for heads. **Always call reload after writing.**
+
+- **"reload the registry"** / **"refresh components"**
+  `POST http://127.0.0.1:8377/registry/reload`
+  Body: `{}`
+  Re-discovers components from disk so newly written blocks/heads appear in `list_blocks` / `list_heads` immediately.
+
+### HF Hub (download models / retrieve URLs)
+
+- **"list published models"** / **"what's on HF Hub"**
+  `GET http://127.0.0.1:8377/hf/models`
+  Optional: `?repo_id=org/repo` to query a specific repo (defaults to the configured repo).
+  Returns files, branches, version tags, download counts, and metadata. Use the `repo_id` and branch names to construct download URLs like `https://huggingface.co/{repo_id}/resolve/{branch}/{filename}`.
+
+- **"show the model card"** / **"what's the latest model about"**
+  `GET http://127.0.0.1:8377/hf/model-card`
+  Optional: `?repo_id=org/repo&revision=main`
+  Returns the README/model card content, structured metadata, and config.json if present.
+
+- **"download experiment config from HF"**
+  `GET http://127.0.0.1:8377/hf/artifact?filename=experiment.json`
+  Optional: `&repo_id=org/repo&revision=main`
+  Downloads and returns a JSON artifact from the HF repo.
+
+### History (query tested models)
+
+- **"list all pipeline runs"** / **"what runs do we have"**
+  `GET http://127.0.0.1:8377/history/runs`
+  Lists all pipeline runs stored in Hippius with run IDs and file manifests. Most recent first.
+
+- **"show me run X"** / **"load the latest run"**
+  `GET http://127.0.0.1:8377/history/run/{run_id}`
+  Loads summary, CRPS ranking, and individual experiments for a specific run. Use `latest` as the run_id to load the most recent run.
+
+- **"what architectures have been tested"** / **"best experiments so far"**
+  `GET http://127.0.0.1:8377/history/experiments?limit=50`
+  Returns the best experiments across **all** pipeline runs, sorted by CRPS. Each entry includes block composition, head type, and full metrics. Use this to avoid re-testing architectures that have already been tried.
+
+- **"show W&B results"** / **"what does wandb say"**
+  `GET http://127.0.0.1:8377/history/wandb?limit=20&order=best`
+  Fetches runs from Weights & Biases. Order: `best` (lowest CRPS), `recent` (newest), or `worst`. Returns configs, metrics, tags, and W&B URLs.
+
 ## Component quick reference
 
 Use this to help the user pick architectures.
@@ -180,3 +235,6 @@ Higher-weighted assets (SPYX, XAU, AAPLX) have more impact on the overall score.
 - If the bridge returns `{"error": "..."}`, report the error clearly and suggest the user check that the bridge is running (`python main.py bridge`).
 - If pipeline status shows `"status": "failed"`, show the error and suggest rerunning with higher retries or different parameters.
 - If an experiment returns a CRPS of `null` or very high values (> 1.0), the model likely failed to converge — suggest trying a simpler architecture or lower learning rate.
+- If HF Hub or W&B endpoints return errors, verify that `HF_REPO_ID` / `WANDB_PROJECT` are configured in the `.env` file and that API tokens are set.
+- After writing a new component, **always** call the reload endpoint before attempting to use the new block/head in experiments. If reload fails, the component source likely has an import error — read it back and fix.
+- If Hippius history returns empty results, it means no experiments have been persisted to decentralised storage yet. Run the pipeline or manually save experiments first.

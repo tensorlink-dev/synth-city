@@ -197,6 +197,120 @@ def synth_clear_session() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Registry / component management
+# ---------------------------------------------------------------------------
+
+def synth_list_component_files() -> str:
+    """List all component source files in the open-synth-miner registry."""
+    return _curl_get("/registry/files")
+
+
+def synth_read_component(path: str) -> str:
+    """Read a component source file to study its structure.
+
+    path: relative to repo root, e.g. 'src/models/components/transformer.py'.
+    """
+    return _curl_get(f"/registry/read?path={path}")
+
+
+def synth_write_component(filename: str, code: str) -> str:
+    """Write a new PyTorch block or head into the component registry.
+
+    filename: e.g. 'wavelet_block.py'. Written to src/models/components/.
+    code: the full Python source code for the component.
+    After writing, call synth_reload_registry() to make it available.
+    """
+    return _curl_post("/registry/write", {"filename": filename, "code": code})
+
+
+def synth_reload_registry() -> str:
+    """Reload the component registry after writing new blocks or heads.
+
+    Call this after synth_write_component() to make new components available
+    in synth_list_blocks() and synth_list_heads().
+    """
+    return _curl_post("/registry/reload", {})
+
+
+# ---------------------------------------------------------------------------
+# HF Hub — model retrieval
+# ---------------------------------------------------------------------------
+
+def synth_list_hf_models(repo_id: str = "") -> str:
+    """List models published to the Hugging Face Hub repo.
+
+    Returns files, branches, version tags, downloads, and metadata.
+    repo_id: HF repo ID (uses default from config if omitted).
+    """
+    qs = f"?repo_id={repo_id}" if repo_id else ""
+    return _curl_get(f"/hf/models{qs}")
+
+
+def synth_fetch_hf_model_card(repo_id: str = "", revision: str = "main") -> str:
+    """Fetch the model card (README) and config from a HF Hub repo.
+
+    Returns card content, structured metadata, and config.json if present.
+    """
+    parts = [f"revision={revision}"]
+    if repo_id:
+        parts.append(f"repo_id={repo_id}")
+    return _curl_get(f"/hf/model-card?{'&'.join(parts)}")
+
+
+def synth_fetch_hf_artifact(
+    filename: str, repo_id: str = "", revision: str = "main",
+) -> str:
+    """Download a JSON artifact from the HF Hub repo.
+
+    filename: path within the repo (e.g. 'experiment.json', 'metrics.json').
+    """
+    parts = [f"filename={filename}", f"revision={revision}"]
+    if repo_id:
+        parts.append(f"repo_id={repo_id}")
+    return _curl_get(f"/hf/artifact?{'&'.join(parts)}")
+
+
+# ---------------------------------------------------------------------------
+# History / tested models
+# ---------------------------------------------------------------------------
+
+def synth_list_history_runs() -> str:
+    """List all pipeline runs stored in Hippius decentralised storage.
+
+    Returns run IDs with timestamps, most recent first.
+    """
+    return _curl_get("/history/runs")
+
+
+def synth_load_history_run(run_id: str) -> str:
+    """Load a specific pipeline run from Hippius storage.
+
+    run_id: the run ID (from synth_list_history_runs), or 'latest'.
+    Returns the summary, comparison ranking, and individual experiments.
+    """
+    return _curl_get(f"/history/run/{run_id}")
+
+
+def synth_load_tested_experiments(limit: int = 50) -> str:
+    """Load the best tested experiments across all pipeline runs.
+
+    Returns experiments sorted by CRPS (best first) with their block
+    compositions, heads, and metrics. Use this to see which architectures
+    have already been tried and how they performed.
+    """
+    return _curl_get(f"/history/experiments?limit={limit}")
+
+
+def synth_fetch_wandb_runs(limit: int = 20, order: str = "best") -> str:
+    """Fetch experiment runs from Weights & Biases.
+
+    Returns run names, configs, CRPS scores, and W&B URLs.
+    order: 'best' (lowest CRPS first), 'recent' (newest first), or 'worst'.
+    """
+    return _curl_get(f"/history/wandb?limit={limit}&order={order}")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point for manual testing
 # ---------------------------------------------------------------------------
 

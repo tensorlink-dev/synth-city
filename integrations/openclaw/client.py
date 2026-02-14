@@ -185,3 +185,51 @@ class SynthCityClient:
 
     def get_history(self, asset: str, days: int = 30) -> dict[str, Any]:
         return self._get(f"/market/history/{asset}", params={"days": days})
+
+    # ---- registry / component management
+    def list_component_files(self) -> dict[str, Any]:
+        return self._get("/registry/files")
+
+    def read_component(self, path: str) -> dict[str, Any]:
+        return self._get("/registry/read", params={"path": path})
+
+    def write_component(self, filename: str, code: str) -> dict[str, Any]:
+        return self._post("/registry/write", {"filename": filename, "code": code})
+
+    def reload_registry(self) -> dict[str, Any]:
+        return self._post("/registry/reload")
+
+    # ---- HF Hub
+    def list_hf_models(self, repo_id: str = "") -> dict[str, Any]:
+        return self._get("/hf/models", params={"repo_id": repo_id} if repo_id else None)
+
+    def fetch_hf_model_card(
+        self, repo_id: str = "", revision: str = "main",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"revision": revision}
+        if repo_id:
+            params["repo_id"] = repo_id
+        return self._get("/hf/model-card", params=params)
+
+    def fetch_hf_artifact(
+        self, filename: str, repo_id: str = "", revision: str = "main",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"filename": filename, "revision": revision}
+        if repo_id:
+            params["repo_id"] = repo_id
+        return self._get("/hf/artifact", params=params)
+
+    # ---- history / tested models
+    def list_hippius_runs(self) -> dict[str, Any]:
+        return self._get("/history/runs")
+
+    def load_hippius_run(self, run_id: str) -> dict[str, Any]:
+        return self._get(f"/history/run/{run_id}")
+
+    def load_hippius_history(self, limit: int = 50) -> dict[str, Any]:
+        return self._get("/history/experiments", params={"limit": limit})
+
+    def fetch_wandb_runs(
+        self, limit: int = 20, order: str = "best",
+    ) -> dict[str, Any]:
+        return self._get("/history/wandb", params={"limit": limit, "order": order})
