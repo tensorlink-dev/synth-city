@@ -59,13 +59,25 @@ main.py                              CLI entry point
 
 ## How It Works
 
-The agentic layer wraps `open-synth-miner`'s `ResearchSession` API, which provides:
-- **15 composable backbone blocks** (Transformer, LSTM, GRU, ResConv, Fourier, TimesNet, etc.)
-- **6 head types** (GBMHead → NeuralSDEHead, increasing expressiveness)
-- **10 ready-to-run presets** (transformer_lstm, pure_transformer, conv_gru, etc.)
-- **Zero-side-effect experiment execution** with CRPS scoring
+Everything is **registry-based**. Both the research components and the agent tools use registries — you can use built-in blocks out of the box or define and register your own.
 
-The agents use these components through tool calls:
+### Component Registry
+
+`open-synth-miner`'s `ResearchSession` exposes a registry of composable building blocks. Mix and match freely, or register custom blocks that follow the same `(batch, seq, d_model) → (batch, seq, d_model)` interface:
+
+- **15 backbone blocks** — Transformer, LSTM, GRU, ResConv, Fourier, TimesNet, BiTCN, DLinear, RevIN, and more
+- **6 head types** — from `GBMHead` (constant drift/vol baseline) to `NeuralSDEHead` (full neural SDE)
+- **10 ready-to-run presets** — tested combinations like `transformer_lstm`, `pure_transformer`, `conv_gru`
+
+All blocks share a uniform tensor interface, so any block can be stacked with any other block and wired to any head.
+
+### Tool Registry
+
+Agent tools are plain `@tool`-decorated functions that auto-register with a global registry. Each agent gets a scoped subset of tools injected at runtime via `build_toolset()`. Adding a new tool is one decorated function — no config files, no plumbing.
+
+### Agent Pipeline
+
+The agents use these registries through tool calls:
 
 ```
 Planner:   list_blocks → list_heads → list_presets → session_summary → produce plan
