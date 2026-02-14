@@ -38,6 +38,17 @@ GET  /session/summary         → current research session summary
 POST /session/clear           → reset research session
 GET  /market/price/:asset     → live price from Pyth oracle
 GET  /market/history/:asset   → historical OHLCV data
+GET  /registry/files          → list component files in the registry
+GET  /registry/read           → read a component source file
+POST /registry/write          → write a new block/head component
+POST /registry/reload         → reload the component registry
+GET  /hf/models               → list models on HF Hub
+GET  /hf/model-card           → fetch model card from HF Hub
+GET  /hf/artifact             → download a JSON artifact from HF Hub
+GET  /history/runs            → list pipeline runs from Hippius
+GET  /history/run/:run_id     → load a specific run from Hippius
+GET  /history/experiments     → best experiments across all runs
+GET  /history/wandb           → fetch runs from W&B
 """
 
 from __future__ import annotations
@@ -161,7 +172,10 @@ def _ensure_tools_loaded() -> None:
     if _tools_loaded:
         return
     try:
+        import pipeline.tools.analysis_tools  # noqa: F401
+        import pipeline.tools.hippius_store  # noqa: F401
         import pipeline.tools.market_data  # noqa: F401
+        import pipeline.tools.register_tools  # noqa: F401
         import pipeline.tools.research_tools  # noqa: F401
         _tools_loaded = True
     except Exception:
@@ -369,6 +383,95 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     _research_call("get_historical_data", asset=asset.upper(), days=days),
                 )
 
+        # ---- registry / component discovery
+        elif path == "/registry/files":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_component_files"))
+
+        elif path == "/registry/read":
+            file_path = qs.get("path", [""])[0]
+            if not file_path:
+                self._send_json(
+                    {"error": "Missing required query parameter: 'path'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                result = _research_call("read_component", path=file_path)
+                self._send_json(result)
+
+        # ---- HF Hub
+        elif path == "/hf/models":
+            repo_id = qs.get("repo_id", [""])[0]
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_hf_models", repo_id=repo_id))
+
+        elif path == "/hf/model-card":
+            repo_id = qs.get("repo_id", [""])[0]
+            revision = qs.get("revision", ["main"])[0]
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call(
+                        "fetch_hf_model_card", repo_id=repo_id, revision=revision,
+                    ),
+                )
+
+        elif path == "/hf/artifact":
+            filename = qs.get("filename", [""])[0]
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required query parameter: 'filename'"}, status=400,
+                )
+                return
+            repo_id = qs.get("repo_id", [""])[0]
+            revision = qs.get("revision", ["main"])[0]
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call(
+                        "fetch_hf_artifact",
+                        filename=filename, repo_id=repo_id, revision=revision,
+                    ),
+                )
+
+        # ---- history / tested models
+        elif path == "/history/runs":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_hippius_runs"))
+
+        elif path.startswith("/history/run/"):
+            run_id = path.split("/")[-1]
+            if not run_id or not _SAFE_PATH_RE.match(run_id.replace("-", "")):
+                self._send_json({"error": f"Invalid run_id: {run_id!r}"}, status=400)
+                return
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("load_hippius_run", run_id=run_id))
+
+        elif path == "/history/experiments":
+            raw_limit = qs.get("limit", ["50"])[0]
+            limit, limit_err = _validate_positive_int(raw_limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("load_hippius_history", limit=limit))
+
+        elif path == "/history/wandb":
+            raw_limit = qs.get("limit", ["20"])[0]
+            limit, limit_err = _validate_positive_int(raw_limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            order = qs.get("order", ["best"])[0]
+            if order not in ("best", "recent", "worst"):
+                self._send_json(
+                    {"error": f"Invalid order: {order!r}. Use 'best', 'recent', or 'worst'"},
+                    status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("fetch_wandb_runs", limit=limit, order=order),
+                )
+
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
 
@@ -486,6 +589,29 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/session/clear":
             if self._load_tools_or_fail():
                 self._send_json(_research_call("clear_session"))
+
+        # ---- registry write / reload
+        elif path == "/registry/write":
+            filename = body.get("filename", "")
+            code = body.get("code", "")
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required field: 'filename'"}, status=400,
+                )
+                return
+            if not code:
+                self._send_json(
+                    {"error": "Missing required field: 'code'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("write_component", filename=filename, code=code),
+                )
+
+        elif path == "/registry/reload":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("reload_registry"))
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
