@@ -79,21 +79,41 @@ def synth_list_presets() -> str:
     return _curl_get("/components/presets")
 
 
-def synth_create_experiment(blocks: list[str], head: str = "GBMHead", d_model: int = 32) -> str:
-    """Create a new experiment configuration."""
+def synth_create_experiment(
+    blocks: list[str],
+    head: str = "GBMHead",
+    d_model: int = 32,
+    horizon: int = 12,
+    n_paths: int = 100,
+    lr: float = 0.001,
+) -> str:
+    """Create a new experiment configuration with blocks, head, and hyperparameters."""
     return _curl_post("/experiment/create", {
         "blocks": blocks,
         "head": head,
         "d_model": d_model,
+        "horizon": horizon,
+        "n_paths": n_paths,
+        "lr": lr,
     })
 
 
-def synth_run_experiment(experiment_json: str, epochs: int = 1) -> str:
-    """Run an experiment and return CRPS metrics."""
-    return _curl_post("/experiment/run", {
+def synth_validate_experiment(experiment_json: str) -> str:
+    """Validate an experiment config without running it. Returns param count and errors."""
+    return _curl_post("/experiment/validate", {
+        "experiment": json.loads(experiment_json),
+    })
+
+
+def synth_run_experiment(experiment_json: str, epochs: int = 1, name: str = "") -> str:
+    """Run an experiment and return CRPS, sharpness, and log-likelihood metrics."""
+    body: dict = {
         "experiment": json.loads(experiment_json),
         "epochs": epochs,
-    })
+    }
+    if name:
+        body["name"] = name
+    return _curl_post("/experiment/run", body)
 
 
 def synth_compare_results() -> str:
@@ -114,6 +134,11 @@ def synth_get_price(asset: str) -> str:
 def synth_get_history(asset: str, days: int = 30) -> str:
     """Get historical price data for an asset."""
     return _curl_get(f"/market/history/{asset}?days={days}")
+
+
+def synth_clear_session() -> str:
+    """Clear the research session and reset accumulated results."""
+    return _curl_post("/session/clear", {})
 
 
 # ---------------------------------------------------------------------------
