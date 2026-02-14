@@ -61,15 +61,17 @@ main.py                              CLI entry point
 
 Everything is **registry-based**. Both the research components and the agent tools use registries — you can use built-in blocks out of the box or define and register your own.
 
-### Component Registry
+### Component Registry (open-synth-miner)
 
-`open-synth-miner`'s `ResearchSession` exposes a registry of composable building blocks. Mix and match freely, or register custom blocks that follow the same `(batch, seq, d_model) → (batch, seq, d_model)` interface:
+[`open-synth-miner`](https://github.com/tensorlink-dev/open-synth-miner) uses **decorator-based registration** — drop a new block into `src/models/components/` and it's auto-discovered at runtime. No code changes needed. You can also define new hybrid recipes declaratively via YAML configs in `configs/model/`.
+
+Out of the box it ships with:
 
 - **15 backbone blocks** — Transformer, LSTM, GRU, ResConv, Fourier, TimesNet, BiTCN, DLinear, RevIN, and more
 - **6 head types** — from `GBMHead` (constant drift/vol baseline) to `NeuralSDEHead` (full neural SDE)
 - **10 ready-to-run presets** — tested combinations like `transformer_lstm`, `pure_transformer`, `conv_gru`
 
-All blocks share a uniform tensor interface, so any block can be stacked with any other block and wired to any head.
+All blocks share a uniform tensor interface `(batch, seq, d_model) → (batch, seq, d_model)`, so any block can be stacked with any other block and wired to any head. Custom blocks just need to follow the same contract.
 
 ### Tool Registry
 
