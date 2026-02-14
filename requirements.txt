@@ -11,6 +11,7 @@ properscoring
 torchsde
 wandb
 huggingface_hub
+boto3>=1.34.0
 python-dotenv>=1.0.0
 # open-synth-miner: install via `pip install -e /path/to/open-synth-miner`
 # or: open-synth-miner @ git+https://github.com/tensorlink-dev/open-synth-miner.git
