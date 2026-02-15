@@ -155,6 +155,18 @@ def cmd_client(args: argparse.Namespace) -> None:
             result = client.pipeline_status()
         elif action == "run":
             result = client.pipeline_run(publish=args.publish)
+        elif action == "publish":
+            if not args.extra or len(args.extra) < 2:
+                print("Usage: python main.py client publish"
+                      " <experiment.json> <crps_score> [repo_id]")
+                sys.exit(1)
+            import json as _json
+            exp_path = args.extra[0]
+            crps_val = float(args.extra[1])
+            repo = args.extra[2] if len(args.extra) > 2 else ""
+            with open(exp_path) as f:
+                exp_data = _json.load(f)
+            result = client.publish_to_hub(exp_data, crps_val, repo_id=repo)
         elif action == "price":
             if not args.extra:
                 print("Usage: python main.py client price <ASSET>")
@@ -168,7 +180,8 @@ def cmd_client(args: argparse.Namespace) -> None:
             result = client.get_history(args.extra[0], days=days)
         else:
             print(f"Unknown action: {action}")
-            print("Available: health blocks heads presets compare summary clear status run price history")
+            print("Available: health blocks heads presets compare summary"
+                  " clear status run publish price history")
             sys.exit(1)
 
         print(json.dumps(result, indent=2, default=str))
@@ -331,7 +344,7 @@ def main() -> None:
     p_client.add_argument(
         "action",
         choices=["health", "blocks", "heads", "presets", "compare", "summary",
-                 "clear", "status", "run", "price", "history"],
+                 "clear", "status", "run", "publish", "price", "history"],
         help="Action to perform",
     )
     p_client.add_argument("extra", nargs="*", help="Extra args (e.g. asset name for price/history)")

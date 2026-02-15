@@ -113,6 +113,31 @@ When the user asks about any of the topics below, call the bridge API using the 
   Body: `{}`
   Re-discovers components from disk so newly written blocks/heads appear in `list_blocks` / `list_heads` immediately.
 
+### Publishing (push to hub)
+
+- **"publish this model"** / **"push to hub"** / **"publish to HF"**
+  `POST http://127.0.0.1:8377/hub/publish`
+  Body: `{"experiment": <config_json>, "crps_score": 0.05, "repo_id": "optional/repo"}`
+  Publishes a trained model to Hugging Face Hub with W&B tracking. This is a **side-effect operation** — only call when the model is validated and the CRPS score is better than previously published models. If `repo_id` is omitted, uses the default from config.
+
+- **"log metrics to W&B"** / **"track this experiment"**
+  `POST http://127.0.0.1:8377/hub/log`
+  Body: `{"experiment_name": "my-experiment", "metrics": {"crps": 0.05, "sharpness": 0.02}, "config": <optional_config>}`
+  Logs experiment metrics to Weights & Biases without publishing to HF Hub. Use this for tracking intermediate results or experiments you don't want to publish yet.
+
+- **"save to Hippius"** / **"back up this experiment"** / **"persist results"**
+  `POST http://127.0.0.1:8377/hub/save`
+  Body: `{"experiment": <config_json>, "result": <result_json>, "name": "optional-label"}`
+  Saves an experiment config and result to Hippius decentralised storage. Use this to persist results for long-term history, even if you don't publish to HF Hub.
+
+#### Publishing workflow
+
+1. **Run experiments** and identify the best model by CRPS.
+2. **Check history** — call `GET /history/wandb?order=best` to see previously published scores. Only publish if the new score is better.
+3. **Validate** the experiment config with `POST /experiment/validate`.
+4. **Publish** with `POST /hub/publish` to push to HF Hub + W&B.
+5. **Save** with `POST /hub/save` to persist to Hippius as a backup.
+
 ### HF Hub (download models / retrieve URLs)
 
 - **"list published models"** / **"what's on HF Hub"**

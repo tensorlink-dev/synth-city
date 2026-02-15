@@ -45,6 +45,9 @@ POST /registry/reload         → reload the component registry
 GET  /hf/models               → list models on HF Hub
 GET  /hf/model-card           → fetch model card from HF Hub
 GET  /hf/artifact             → download a JSON artifact from HF Hub
+POST /hub/publish             → publish model to HF Hub with W&B tracking
+POST /hub/log                 → log metrics to W&B without publishing
+POST /hub/save                → save experiment to Hippius decentralised storage
 GET  /history/runs            → list pipeline runs from Hippius
 GET  /history/run/:run_id     → load a specific run from Hippius
 GET  /history/experiments     → best experiments across all runs
@@ -175,6 +178,7 @@ def _ensure_tools_loaded() -> None:
         import pipeline.tools.analysis_tools  # noqa: F401
         import pipeline.tools.hippius_store  # noqa: F401
         import pipeline.tools.market_data  # noqa: F401
+        import pipeline.tools.publish_tools  # noqa: F401
         import pipeline.tools.register_tools  # noqa: F401
         import pipeline.tools.research_tools  # noqa: F401
         _tools_loaded = True
@@ -612,6 +616,87 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/registry/reload":
             if self._load_tools_or_fail():
                 self._send_json(_research_call("reload_registry"))
+
+        # ---- publishing (HF Hub, W&B, Hippius)
+        elif path == "/hub/publish":
+            experiment = body.get("experiment")
+            if experiment is None:
+                self._send_json(
+                    {"error": "Missing required field: 'experiment'"}, status=400,
+                )
+                return
+            crps_score = body.get("crps_score")
+            if crps_score is None:
+                self._send_json(
+                    {"error": "Missing required field: 'crps_score'"}, status=400,
+                )
+                return
+            crps_v, crps_err = _validate_positive_float(crps_score, "crps_score")
+            if crps_err:
+                self._send_json({"error": crps_err}, status=400)
+                return
+            if isinstance(experiment, dict):
+                experiment = json.dumps(experiment)
+            repo_id = body.get("repo_id", "")
+            if self._load_tools_or_fail():
+                self._send_json(_research_call(
+                    "publish_model",
+                    experiment=experiment,
+                    crps_score=crps_v,
+                    repo_id=repo_id,
+                ))
+
+        elif path == "/hub/log":
+            experiment_name = body.get("experiment_name", "")
+            if not experiment_name:
+                self._send_json(
+                    {"error": "Missing required field: 'experiment_name'"}, status=400,
+                )
+                return
+            metrics = body.get("metrics")
+            if metrics is None:
+                self._send_json(
+                    {"error": "Missing required field: 'metrics'"}, status=400,
+                )
+                return
+            if isinstance(metrics, dict):
+                metrics = json.dumps(metrics)
+            config = body.get("config", "")
+            if isinstance(config, dict):
+                config = json.dumps(config)
+            if self._load_tools_or_fail():
+                self._send_json(_research_call(
+                    "log_to_wandb",
+                    experiment_name=experiment_name,
+                    metrics=metrics,
+                    config=config,
+                ))
+
+        elif path == "/hub/save":
+            experiment = body.get("experiment")
+            if experiment is None:
+                self._send_json(
+                    {"error": "Missing required field: 'experiment'"}, status=400,
+                )
+                return
+            result = body.get("result")
+            if result is None:
+                self._send_json(
+                    {"error": "Missing required field: 'result'"}, status=400,
+                )
+                return
+            if isinstance(experiment, dict):
+                experiment = json.dumps(experiment)
+            if isinstance(result, dict):
+                result = json.dumps(result)
+            name = body.get("name", "")
+            if self._load_tools_or_fail():
+                self._send_json(_research_call(
+                    "save_to_hippius",
+                    experiment=experiment,
+                    result=result,
+                    name=name,
+                ))
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)

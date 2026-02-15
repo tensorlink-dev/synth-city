@@ -233,6 +233,77 @@ def synth_reload_registry() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Publishing — push to HF Hub, W&B, Hippius
+# ---------------------------------------------------------------------------
+
+def synth_publish_to_hub(
+    experiment_json: str, crps_score: float, repo_id: str = "",
+) -> str:
+    """Publish a trained model to Hugging Face Hub with W&B tracking.
+
+    experiment_json: the full experiment config as a JSON string.
+    crps_score: the CRPS score achieved by this model.
+    repo_id: optional HF Hub repo ID (uses default from config if omitted).
+
+    This is a SIDE-EFFECT operation. Only call when the model is validated
+    and the CRPS score is better than previously published models.
+    """
+    try:
+        parsed = json.loads(experiment_json)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid experiment JSON: {exc}"})
+    body: dict = {"experiment": parsed, "crps_score": crps_score}
+    if repo_id:
+        body["repo_id"] = repo_id
+    return _curl_post("/hub/publish", body)
+
+
+def synth_log_to_wandb(
+    experiment_name: str, metrics_json: str, config_json: str = "",
+) -> str:
+    """Log experiment metrics to Weights & Biases without publishing to HF Hub.
+
+    experiment_name: a label for this W&B run.
+    metrics_json: metrics dict as JSON (e.g. '{"crps": 0.05, "sharpness": 0.02}').
+    config_json: optional experiment config as JSON for W&B metadata.
+    """
+    try:
+        metrics = json.loads(metrics_json)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid metrics JSON: {exc}"})
+    body: dict = {"experiment_name": experiment_name, "metrics": metrics}
+    if config_json:
+        try:
+            body["config"] = json.loads(config_json)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"error": f"Invalid config JSON: {exc}"})
+    return _curl_post("/hub/log", body)
+
+
+def synth_save_to_hippius(
+    experiment_json: str, result_json: str, name: str = "",
+) -> str:
+    """Save an experiment config and result to Hippius decentralised storage.
+
+    experiment_json: the experiment config as JSON.
+    result_json: the run result (metrics, status) as JSON.
+    name: optional label for this experiment (auto-generated if omitted).
+    """
+    try:
+        experiment = json.loads(experiment_json)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid experiment JSON: {exc}"})
+    try:
+        result = json.loads(result_json)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"error": f"Invalid result JSON: {exc}"})
+    body: dict = {"experiment": experiment, "result": result}
+    if name:
+        body["name"] = name
+    return _curl_post("/hub/save", body)
+
+
+# ---------------------------------------------------------------------------
 # HF Hub — model retrieval
 # ---------------------------------------------------------------------------
 

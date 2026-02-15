@@ -199,6 +199,52 @@ class SynthCityClient:
     def reload_registry(self) -> dict[str, Any]:
         return self._post("/registry/reload")
 
+    # ---- publishing (HF Hub, W&B, Hippius)
+    def publish_to_hub(
+        self,
+        experiment: dict[str, Any],
+        crps_score: float,
+        repo_id: str = "",
+    ) -> dict[str, Any]:
+        """Publish a model to HF Hub with W&B tracking."""
+        body: dict[str, Any] = {
+            "experiment": experiment,
+            "crps_score": crps_score,
+        }
+        if repo_id:
+            body["repo_id"] = repo_id
+        return self._post("/hub/publish", body)
+
+    def log_to_wandb(
+        self,
+        experiment_name: str,
+        metrics: dict[str, Any],
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Log experiment metrics to W&B without publishing to HF Hub."""
+        body: dict[str, Any] = {
+            "experiment_name": experiment_name,
+            "metrics": metrics,
+        }
+        if config:
+            body["config"] = config
+        return self._post("/hub/log", body)
+
+    def save_to_hippius(
+        self,
+        experiment: dict[str, Any],
+        result: dict[str, Any],
+        name: str = "",
+    ) -> dict[str, Any]:
+        """Save an experiment to Hippius decentralised storage."""
+        body: dict[str, Any] = {
+            "experiment": experiment,
+            "result": result,
+        }
+        if name:
+            body["name"] = name
+        return self._post("/hub/save", body)
+
     # ---- HF Hub
     def list_hf_models(self, repo_id: str = "") -> dict[str, Any]:
         return self._get("/hf/models", params={"repo_id": repo_id} if repo_id else None)
