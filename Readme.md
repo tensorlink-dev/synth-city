@@ -1,4 +1,26 @@
-# synth-city
+<div align="center">
+
+```
+0101   _________________________________________________________________________________________   1011
+110    |                                                                                       |    010
+01     |      _                _          _          _          _                _             |     11
+10     |     | |        _     | |        / \        | |     _  | |        _     | |            |     01
+00     |  _  | |  _    | |  _ | | _     |   |     _ | | _  | | | |  _    | |  _ | | _          |     10
+11     | | |_| |_| |__| |_| || || |_   _|   |_   _| || || |_| |_| |__| |_| |__| || |         |     11
+01     | |  _   _   _   _  | || ||  _| |     | |_  | || ||  _   _   _   _  | || || |         |     00
+110    | | |_| |_| |_| |_| |_||_|| |___|     |___| |_||_|| |_| |_| |_| |_| |_||_|| |         |    110
+0101   |_______________________________________________________________________________________|   1011
+
+         _____ __     __ _   _  _______  _    _    _____  _____  _______ __     __
+        / ____|\ \   / /| \ | ||__   __|| |  | |  / ____||_   _||__   __|\ \   / /
+       | (___   \ \_/ / |  \| |   | |   | |__| | | |       | |     | |    \ \_/ /
+        \___ \   \   /  | . ` |   | |   |  __  | | |       | |     | |     \   /
+        ____) |   | |   | |\  |   | |   | |  | | | |____  _| |_    | |      | |
+       |_____/    |_|   |_| \_|   |_|   |_|  |_|  \_____||_____|   |_|      |_|
+                   [ S Y N T H   C I T Y  :  A G E N T I C   M I N I N G   F O R   S N 5 0 ]
+```
+
+</div>
 
 **synth-city** is an autonomous AI research pipeline that discovers, trains, debugs, and publishes probabilistic price forecasting models — without manual intervention. Built for [Bittensor Subnet 50 (Synth)](https://github.com/tensorlink-dev/open-synth-miner), it chains specialized AI agents together to iterate through 900+ neural architecture combinations, evaluate them with CRPS scoring, and ship the best model to Hugging Face Hub ready to serve live predictions.
 
@@ -8,7 +30,7 @@ Under the hood it wraps [`open-synth-miner`](https://github.com/tensorlink-dev/o
 
 ## SN50 Competition
 
-**Synth** (SN50) requires miners to produce **1,000 Monte Carlo price paths** per asset at 5-minute intervals over a 24-hour horizon. Predictions are scored using **CRPS** (Continuous Ranked Probability Score) — a metric that rewards well-calibrated probability distributions, not just accurate point forecasts.
+**Synth** (SN50) requires miners to produce **1,000 Monte Carlo price paths** per asset at **1-minute and 5-minute intervals** over a 24-hour horizon. Predictions are scored using **CRPS** (Continuous Ranked Probability Score) — a metric that rewards well-calibrated probability distributions, not just accurate point forecasts.
 
 ### Supported Assets
 BTC, ETH, SOL, XAU (gold), SPYX (S&P 500), NVDAX, TSLAX, AAPLX, GOOGLX
@@ -50,7 +72,12 @@ Checker:   validate_experiment → describe_experiment → pass/fail
 Debugger:  create_experiment (fixed) → validate_experiment → re-run
 Publisher: validate_experiment → publish_model → log_to_wandb
 Author:    list_component_files → read_component → write_component → reload_registry → verify
+Designer:  list_agents → read_agent → list_available_tools → write_agent_prompt → write_agent → verify
 ```
+
+#### Agent Designer
+
+The **Agent Designer** is a meta-agent that creates new pipeline agents programmatically. Instead of manually writing agent classes and prompt modules, you describe what you need and the Designer studies existing agents, selects appropriate tools from the registry, writes the prompt module (using the composable `register_fragment()` system), and generates the agent class — all following the project's composition patterns. New agents are immediately runnable via `python main.py agent --name <new_agent>`.
 
 ## Usage
 
@@ -80,6 +107,9 @@ python main.py quick --blocks TransformerBlock,LSTMBlock
 
 # Create a custom block via the ComponentAuthor agent
 python main.py agent --name author --message "Write a WaveletBlock that uses wavelet decomposition"
+
+# Design a new pipeline agent via the Agent Designer
+python main.py agent --name agent_designer --message "Create an evaluator agent that compares models across assets"
 
 # Start the HTTP bridge server
 python main.py bridge
@@ -163,7 +193,8 @@ main.py                              CLI entry point
 │   │   ├── debugger.py              Debugger — fixes failed experiments
 │   │   ├── trainer.py               Trainer — executes experiments via ResearchSession
 │   │   ├── publisher.py             Publisher — HF Hub + W&B production tracking
-│   │   └── author.py               ComponentAuthor — writes new blocks/heads into the registry
+│   │   ├── author.py               ComponentAuthor — writes new blocks/heads into the registry
+│   │   └── agent_designer.py      AgentDesigner — creates new pipeline agents programmatically
 │   ├── tools/
 │   │   ├── registry.py              Tool registry with dynamic injection
 │   │   ├── research_tools.py        ResearchSession API (list/create/validate/run/compare)
@@ -172,7 +203,8 @@ main.py                              CLI entry point
 │   │   ├── check_shapes.py          SN50 shape validation
 │   │   ├── market_data.py           Price data fetching
 │   │   ├── training_tools.py        Local + Basilica training execution
-│   │   └── register_tools.py       Write components + reload registry
+│   │   ├── register_tools.py       Write components + reload registry
+│   │   └── agent_tools.py          Agent design tools (list/read/write agents + prompts)
 │   ├── prompts/
 │   │   ├── fragments.py             Composable prompt fragment system
 │   │   ├── planner_prompts.py       Phased reasoning + component reference
@@ -180,7 +212,8 @@ main.py                              CLI entry point
 │   │   ├── debugger_prompts.py      Error pattern catalog prompts
 │   │   ├── trainer_prompts.py       Experiment execution prompts
 │   │   ├── publisher_prompts.py     Publishing procedure prompts
-│   │   └── author_prompts.py       Component authoring guidelines
+│   │   ├── author_prompts.py       Component authoring guidelines
+│   │   └── agent_designer_prompts.py  Agent designer workflow + contracts
 │   └── orchestrator.py              Retry loops, temperature escalation, stall detection
 ├── subnet/
 │   ├── config.py                    SN50 constants
