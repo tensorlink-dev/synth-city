@@ -1,5 +1,6 @@
 {
   "name": "synth-city",
+  "owner": "tensorlink-dev",
   "tagline": "Autonomous AI research pipeline for Bittensor SN50 price forecasting",
   "description": "Discovers neural network components (15 backbone blocks, 6 prediction heads), plans experiment architectures, trains models, validates results against SN50 specifications, and publishes the best probabilistic forecasting models. Agents chain together: Planner → Trainer → CodeChecker → Debugger → Publisher.",
   "category": "data",
