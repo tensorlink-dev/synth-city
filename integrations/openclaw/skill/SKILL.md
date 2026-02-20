@@ -1,3 +1,20 @@
+---
+name: synth-city
+description: >-
+  Autonomous AI research pipeline for Bittensor Subnet 50 (Synth).
+  Discovers, trains, debugs, and publishes probabilistic price forecasting models.
+metadata:
+  openclaw:
+    requires:
+      bins:
+        - curl
+        - python
+      env:
+        - CHUTES_API_KEY
+    primaryEnv: CHUTES_API_KEY
+    homepage: https://github.com/tensorlink-dev/synth-city
+---
+
 # synth-city — Bittensor SN50 Research Assistant
 
 You have access to **synth-city**, an agentic pipeline for competitive probabilistic price forecasting on Bittensor Subnet 50 (Synth). Use this skill to let the user manage experiments, run the research pipeline, check market data, review historical results, and monitor model performance — all from chat.
