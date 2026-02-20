@@ -1,4 +1,26 @@
-# synth-city
+<div align="center">
+
+```
+0101   _________________________________________________________________________________________   1011
+110    |                                                                                       |    010
+01     |      _                _          _          _          _                _             |     11
+10     |     | |        _     | |        / \        | |     _  | |        _     | |            |     01
+00     |  _  | |  _    | |  _ | | _     |   |     _ | | _  | | | |  _    | |  _ | | _          |     10
+11     | | |_| |_| |__| |_| || || |_   _|   |_   _| || || |_| |_| |__| |_| |__| || |         |     11
+01     | |  _   _   _   _  | || ||  _| |     | |_  | || ||  _   _   _   _  | || || |         |     00
+110    | | |_| |_| |_| |_| |_||_|| |___|     |___| |_||_|| |_| |_| |_| |_| |_||_|| |         |    110
+0101   |_______________________________________________________________________________________|   1011
+
+         _____ __     __ _   _  _______  _    _    _____  _____  _______ __     __
+        / ____|\ \   / /| \ | ||__   __|| |  | |  / ____||_   _||__   __|\ \   / /
+       | (___   \ \_/ / |  \| |   | |   | |__| | | |       | |     | |    \ \_/ /
+        \___ \   \   /  | . ` |   | |   |  __  | | |       | |     | |     \   /
+        ____) |   | |   | |\  |   | |   | |  | | | |____  _| |_    | |      | |
+       |_____/    |_|   |_| \_|   |_|   |_|  |_|  \_____||_____|   |_|      |_|
+                   [ S Y N T H   C I T Y  :  A G E N T I C   M I N I N G   F O R   S N 5 0 ]
+```
+
+</div>
 
 **synth-city** is an autonomous AI research pipeline that discovers, trains, debugs, and publishes probabilistic price forecasting models — without manual intervention. Built for [Bittensor Subnet 50 (Synth)](https://github.com/tensorlink-dev/open-synth-miner), it chains specialized AI agents together to iterate through 900+ neural architecture combinations, evaluate them with CRPS scoring, and ship the best model to Hugging Face Hub ready to serve live predictions.
 
