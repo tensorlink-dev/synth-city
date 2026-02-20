@@ -554,55 +554,73 @@ Each prediction must produce:
 
 ---
 
-## Basilica GPU Compute
+## Basilica GPU Cloud
 
-Basilica provides decentralised GPU compute via Bittensor SN39. Use it to offload training to remote A100 GPUs.
+Basilica provides a secure-cloud GPU marketplace via `basilica-sdk`. synth-city uses it to rent cheap GPUs for training, with a budget cap that restricts rentals to the most affordable offerings.
 
 ### Setup
 
-1. Get a Basilica API key from [basilica.tplr.ai](https://api.basilica.tplr.ai)
-2. Add to your `.env`:
+1. Install the SDK (included in project dependencies):
+
+```bash
+pip install basilica-sdk
+```
+
+2. Get an API token from [basilica.ai](https://basilica.ai)
+3. Add to your `.env`:
 
 ```env
-BASILICA_API_KEY=your_basilica_api_key_here
-BASILICA_ENDPOINT=https://api.basilica.tplr.ai
+BASILICA_API_TOKEN=your_basilica_api_token_here
+BASILICA_API_URL=https://api.basilica.ai
+BASILICA_MAX_HOURLY_RATE=0.44
+BASILICA_ALLOWED_GPU_TYPES=TESLA V100,RTX-A4000,RTX-A6000
 ```
 
 ### How it works
 
-The `BasilicaClient` (`compute/basilica.py`) submits containerised training jobs:
+The `BasilicaGPUClient` (`compute/basilica.py`) wraps the official SDK with budget filtering:
 
 ```python
-from compute.basilica import BasilicaClient, JobSpec
+from compute.basilica import BasilicaGPUClient
 
-client = BasilicaClient()
+client = BasilicaGPUClient()
 
-# Submit a training job
-job_id = client.submit(JobSpec(
-    script_path="train.py",
-    gpu_type="A100",         # GPU type
-    num_gpus=1,              # Number of GPUs
-    timeout_minutes=60,      # Max runtime
-))
+# List cheap GPU offerings (filtered by budget + allowlist)
+offerings = client.list_cheap_gpus()
+for o in offerings:
+    print(f"{o.gpu_type} @ ${o.hourly_rate}/hr ({o.provider}, {o.region})")
 
-# Poll until completion
-status = client.poll(job_id, timeout=3600)
+# Rent the cheapest available GPU
+rental = client.rent_cheapest()
+print(f"SSH: {rental.ssh_command}")
+print(f"Cost: ${rental.hourly_cost}/hr")
 
-if status.status == "completed":
-    # Download trained model artifacts
-    client.download_artifacts(job_id, "output/")
-elif status.status == "failed":
-    print(f"Job failed: {status.error}")
+# Stop when done
+client.stop_rental(rental.rental_id)
 ```
 
-### Job defaults
+### Allowed GPU offerings (budget cap: $0.44/hr)
 
-| Setting | Default |
-|---------|---------|
-| GPU type | A100 |
-| Number of GPUs | 1 |
-| Docker image | `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` |
-| Timeout | 60 minutes |
+| Provider   | GPU                  | Spot | Price/hr |
+|------------|----------------------|------|----------|
+| verda      | TESLA V100           | Yes  | $0.05    |
+| verda      | TESLA V100           | No   | $0.15    |
+| hyperstack | RTX-A4000            | No   | $0.16    |
+| hyperstack | 2x RTX-A4000         | No   | $0.33    |
+| hyperstack | RTX-A6000            | Yes  | $0.44    |
+
+### Agent tools
+
+The Trainer agent has access to these GPU tools:
+
+| Tool | Description |
+|------|-------------|
+| `list_available_gpus` | List cheap GPU offerings with pricing |
+| `rent_gpu` | Rent a specific offering by ID |
+| `rent_cheapest_gpu` | Auto-rent the cheapest available GPU |
+| `list_active_rentals` | Show all current rentals |
+| `stop_gpu_rental` | Stop a rental, returns cost summary |
+| `check_gpu_balance` | Check account balance |
 
 ---
 
