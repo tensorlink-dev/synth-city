@@ -1,5 +1,6 @@
 ---
 name: synth-city
+version: 0.1.0
 description: >-
   Autonomous AI research pipeline for Bittensor Subnet 50 (Synth).
   Discovers, trains, debugs, and publishes probabilistic price forecasting models.
