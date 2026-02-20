@@ -174,7 +174,7 @@ def cmd_client(args: argparse.Namespace) -> None:
         print(json.dumps(result, indent=2, default=str))
     except Exception as exc:
         print(f"Error: {exc}")
-        print(f"Is the bridge running? Start it with: python main.py bridge")
+        print("Is the bridge running? Start it with: python main.py bridge")
         sys.exit(1)
 
 
@@ -226,7 +226,7 @@ def cmd_history(args: argparse.Namespace) -> None:
                           f"state={run.get('state', '?')}")
 
     elif source == "hf":
-        from pipeline.tools.analysis_tools import fetch_hf_model_card, list_hf_models
+        from pipeline.tools.analysis_tools import list_hf_models
         result = list_hf_models(repo_id=args.repo_id or "")
         data = json.loads(result)
         print(json.dumps(data, indent=2, default=str))

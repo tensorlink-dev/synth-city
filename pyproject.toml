@@ -34,7 +34,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["pipeline*", "integrations*", "models*", "data*", "compute*", "subnet*"]
+include = ["pipeline*", "integrations*", "compute*", "subnet*"]
 
 [tool.ruff]
 line-length = 100

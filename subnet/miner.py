@@ -10,16 +10,27 @@ The miner:
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
 
 from config import SN50_ASSETS, SN50_NUM_PATHS
-from models.base import BaseForecaster
 from subnet.config import NUM_STEPS_24H, NUM_STEPS_HFT
+
+
+@runtime_checkable
+class Forecaster(Protocol):
+    """Protocol for Monte Carlo path generators."""
+
+    def generate_paths(
+        self,
+        asset: str,
+        num_paths: int,
+        num_steps: int,
+        s0: float | None = None,
+    ) -> np.ndarray: ...
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +44,11 @@ class SynthMiner:
 
     def __init__(self) -> None:
         # asset -> fitted model instance
-        self.models: dict[str, BaseForecaster] = {}
+        self.models: dict[str, Forecaster] = {}
         # asset -> latest price
         self.prices: dict[str, float] = {}
 
-    def register_model(self, asset: str, model: BaseForecaster) -> None:
+    def register_model(self, asset: str, model: Forecaster) -> None:
         """Register a fitted model for an asset."""
         self.models[asset] = model
         logger.info("Registered model for %s: %s", asset, type(model).__name__)
