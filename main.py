@@ -245,7 +245,7 @@ def cmd_history(args: argparse.Namespace) -> None:
 
 
 def cmd_live_validator(args: argparse.Namespace) -> None:
-    """Run the live validator test — scores top 3 models as the SN50 validator would."""
+    """Run the live validator — baselines vs research models with live CRPS scoring."""
     from live_validator.runner import run_live_validator
 
     assets = [a.strip() for a in args.assets.split(",")] if args.assets else None
@@ -255,6 +255,8 @@ def cmd_live_validator(args: argparse.Namespace) -> None:
         prediction_interval=args.prediction_interval,
         price_poll_interval=args.price_poll_interval,
         refit_interval=args.refit_interval,
+        auto_publish=not args.no_publish,
+        dashboard_port=args.dashboard_port,
     )
 
 
@@ -366,7 +368,7 @@ def main() -> None:
     # live-validator
     p_lv = subparsers.add_parser(
         "live-validator",
-        help="Run the live validator test — scores top 3 models as SN50 validator",
+        help="Live validator: baselines vs research models with CRPS scoring",
     )
     p_lv.add_argument(
         "--assets", default=None,
@@ -374,7 +376,7 @@ def main() -> None:
     )
     p_lv.add_argument(
         "--mode", default="low", choices=["low", "high"],
-        help="Scoring mode: 'low' (24h window) or 'high' (1h window)",
+        help="Scoring mode: 'low' (24h) or 'high' (1h)",
     )
     p_lv.add_argument(
         "--prediction-interval", type=int, default=3600,
@@ -386,7 +388,15 @@ def main() -> None:
     )
     p_lv.add_argument(
         "--refit-interval", type=int, default=3600,
-        help="Seconds between model refits (default: 3600)",
+        help="Seconds between baseline refits (default: 3600)",
+    )
+    p_lv.add_argument(
+        "--no-publish", action="store_true",
+        help="Disable auto-publishing when a research model leads",
+    )
+    p_lv.add_argument(
+        "--dashboard-port", type=int, default=8378,
+        help="Dashboard HTTP port (default: 8378)",
     )
 
     # agent

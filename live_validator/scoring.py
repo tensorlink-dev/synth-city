@@ -1,16 +1,12 @@
 """
-CRPS scoring — matches the synth-subnet validator's scoring logic exactly.
+CRPS scoring — matches the synth-subnet validator's interval-based CRPS logic.
 
 Implements:
     - Per-interval CRPS calculation (5min, 30min, 3h, 24h_abs for low-freq)
-    - Percentile-90 capping and normalisation
-    - Per-asset weighting coefficients
-    - Softmax emission allocation
+    - Raw CRPS scores (no softmax normalisation — we just want the numbers)
 
 References:
     synth-subnet/synth/validator/crps_calculation.py
-    synth-subnet/synth/validator/reward.py
-    synth-subnet/synth/validator/moving_average.py
     synth-subnet/synth/validator/prompt_config.py
 """
 
@@ -78,7 +74,6 @@ class ScoringConfig:
     time_increment: int     # Seconds per step
     scoring_intervals: dict[str, int]
     num_simulations: int = 1000
-    softmax_beta: float = -0.1
     window_days: int = 10
 
 
@@ -87,7 +82,6 @@ LOW_FREQUENCY = ScoringConfig(
     time_length=86400,      # 24 hours
     time_increment=300,     # 5 minutes
     scoring_intervals=LOW_FREQ_SCORING_INTERVALS,
-    softmax_beta=-0.1,
     window_days=10,
 )
 
@@ -96,7 +90,6 @@ HIGH_FREQUENCY = ScoringConfig(
     time_length=3600,       # 1 hour
     time_increment=60,      # 1 minute
     scoring_intervals=HIGH_FREQ_SCORING_INTERVALS,
-    softmax_beta=-0.2,
     window_days=3,
 )
 
@@ -172,7 +165,10 @@ def calculate_crps_for_miner(
     for interval_name, interval_seconds in scoring_intervals.items():
         interval_steps = get_interval_steps(interval_seconds, time_increment)
         absolute_price = interval_name.endswith("_abs")
-        is_gap = interval_name.endswith("_gap") or interval_name.endswith("_gaps")
+        is_gap = (
+            interval_name.endswith("_gap")
+            or interval_name.endswith("_gaps")
+        )
 
         if absolute_price:
             while (
@@ -189,7 +185,8 @@ def calculate_crps_for_miner(
             simulation_runs, interval_steps, absolute_price, is_gap,
         )
         real_changes = calculate_price_changes_over_intervals(
-            real_price_path.reshape(1, -1), interval_steps, absolute_price, is_gap,
+            real_price_path.reshape(1, -1),
+            interval_steps, absolute_price, is_gap,
         )
         data_blocks = label_observed_blocks(real_changes[0])
 
@@ -213,7 +210,9 @@ def calculate_crps_for_miner(
             ])
 
             if absolute_price:
-                crps_values_block = crps_values_block / real_price_path[-1] * 10_000
+                crps_values_block = (
+                    crps_values_block / real_price_path[-1] * 10_000
+                )
 
             crps_values += crps_values_block.sum()
 
@@ -243,49 +242,14 @@ def calculate_crps_for_miner(
     return sum_all_scores, detailed_crps_data
 
 
-# ---------------------------------------------------------------------------
-# Score normalisation — mirrors synth-subnet reward.compute_prompt_scores
-# ---------------------------------------------------------------------------
-
-def compute_prompt_scores(
-    score_values: np.ndarray,
-) -> tuple[np.ndarray | None, float, float]:
-    """Normalise raw CRPS scores: cap at 90th percentile, subtract best.
-
-    Returns (normalised_scores, percentile90, lowest_score) or (None, 0, 0).
-    """
-    if np.all(score_values == -1):
-        return None, 0.0, 0.0
-    valid = score_values[score_values != -1]
-    percentile90 = float(np.percentile(valid, 90))
-    capped = np.minimum(score_values, percentile90)
-    capped = np.where(score_values == -1, percentile90, capped)
-    lowest = float(np.min(capped))
-    return capped - lowest, percentile90, lowest
-
-
-def compute_softmax(score_values: np.ndarray, beta: float) -> np.ndarray:
-    """Softmax emission allocation — lower CRPS (better) gets higher weight."""
-    if len(score_values) == 0:
-        return np.array([])
-    scaled = beta * score_values
-    scaled -= np.max(scaled)  # Numerical stability
-    exp_scores = np.exp(scaled)
-    return exp_scores / np.sum(exp_scores)
-
-
-def apply_asset_coefficient(raw_score: float, asset: str) -> float:
-    """Apply the per-asset scoring coefficient."""
-    coeff = ASSET_COEFFICIENTS.get(asset, 1.0)
-    return raw_score * coeff
-
-
 def score_models(
     model_predictions: dict[str, np.ndarray],
     real_price_path: np.ndarray,
     scoring_config: ScoringConfig,
 ) -> dict[str, dict]:
     """Score multiple models' predictions against reality.
+
+    Returns raw CRPS scores — no normalisation or softmax.
 
     Parameters
     ----------
@@ -298,13 +262,10 @@ def score_models(
 
     Returns
     -------
-    dict of model_name -> {raw_crps, prompt_score, detailed, emission_weight}
+    dict of model_name -> {raw_crps, detailed}
     """
-    raw_scores: dict[str, float] = {}
-    detailed_data: dict[str, list[dict]] = {}
-    model_names = list(model_predictions.keys())
+    results: dict[str, dict] = {}
 
-    # Calculate raw CRPS for each model
     for name, paths in model_predictions.items():
         crps_total, details = calculate_crps_for_miner(
             paths,
@@ -312,38 +273,9 @@ def score_models(
             scoring_config.time_increment,
             scoring_config.scoring_intervals,
         )
-        raw_scores[name] = crps_total
-        detailed_data[name] = details
-
-    # Normalise scores (percentile capping)
-    score_array = np.array([raw_scores[n] for n in model_names])
-    normalised, percentile90, lowest = compute_prompt_scores(score_array)
-
-    if normalised is None:
-        return {
-            name: {
-                "raw_crps": raw_scores[name],
-                "prompt_score": None,
-                "detailed": detailed_data[name],
-                "emission_weight": 0.0,
-                "percentile90": 0.0,
-                "lowest_score": 0.0,
-            }
-            for name in model_names
-        }
-
-    # Softmax to get emission weights
-    emission_weights = compute_softmax(normalised, scoring_config.softmax_beta)
-
-    results = {}
-    for i, name in enumerate(model_names):
         results[name] = {
-            "raw_crps": raw_scores[name],
-            "prompt_score": float(normalised[i]),
-            "detailed": detailed_data[name],
-            "emission_weight": float(emission_weights[i]),
-            "percentile90": percentile90,
-            "lowest_score": lowest,
+            "raw_crps": crps_total,
+            "detailed": details,
         }
 
     return results
