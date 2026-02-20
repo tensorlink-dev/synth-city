@@ -646,12 +646,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
 # Server entry point
 # ---------------------------------------------------------------------------
 
+_BANNER = r"""
+  _____ __     __ _   _  _______  _    _    _____  _____  _______ __     __
+ / ____|\ \   / /| \ | ||__   __|| |  | |  / ____||_   _||__   __|\ \   / /
+| (___   \ \_/ / |  \| |   | |   | |__| | | |       | |     | |    \ \_/ /
+ \___ \   \   /  | . ` |   | |   |  __  | | |       | |     | |     \   /
+ ____) |   | |   | |\  |   | |   | |  | | | |____  _| |_    | |      | |
+|_____/    |_|   |_| \_|   |_|   |_|  |_|  \_____||_____|   |_|      |_|
+"""
+
+
 def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
     """Start the bridge HTTP server."""
     server = HTTPServer((host, port), BridgeHandler)
+    print(_BANNER)
     logger.info("synth-city bridge listening on http://%s:%d", host, port)
-    print(f"synth-city bridge listening on http://{host}:{port}")
-    print("Press Ctrl+C to stop.")
+    print(f"  bridge listening on http://{host}:{port}")
+    print("  Press Ctrl+C to stop.\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
