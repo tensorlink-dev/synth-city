@@ -323,6 +323,74 @@ def synth_fetch_wandb_runs(limit: int = 20, order: str = "best") -> str:
 
 
 # ---------------------------------------------------------------------------
+# Agent design — create new pipeline agents
+# ---------------------------------------------------------------------------
+
+def synth_list_agents() -> str:
+    """List all pipeline agent modules in pipeline/agents/.
+
+    Returns filenames for all agent classes. Use synth_read_agent() to study
+    any agent's source code before designing a new one.
+    """
+    return _curl_get("/agents/list")
+
+
+def synth_read_agent(filename: str) -> str:
+    """Read an agent module's source code from pipeline/agents/.
+
+    filename: e.g. 'planner.py', 'debugger.py', 'base.py'.
+    Study existing agents to understand the BaseAgentWrapper pattern.
+    """
+    return _curl_get(f"/agents/read?filename={filename}")
+
+
+def synth_write_agent(filename: str, code: str) -> str:
+    """Write a new pipeline agent module into pipeline/agents/.
+
+    filename: e.g. 'evaluator.py'. Written to pipeline/agents/.
+    code: full Python source. Must subclass BaseAgentWrapper and implement
+    agent_name, build_system_prompt(), and build_tools().
+    """
+    return _curl_post("/agents/write", {"filename": filename, "code": code})
+
+
+def synth_list_agent_prompts() -> str:
+    """List all prompt modules in pipeline/prompts/.
+
+    Returns filenames for all prompt fragment files. Use synth_read_agent_prompt()
+    to study the register_fragment() pattern.
+    """
+    return _curl_get("/agents/prompts/list")
+
+
+def synth_read_agent_prompt(filename: str) -> str:
+    """Read a prompt module's source code from pipeline/prompts/.
+
+    filename: e.g. 'planner_prompts.py', 'author_prompts.py'.
+    Study existing prompts to understand the register_fragment() pattern.
+    """
+    return _curl_get(f"/agents/prompts/read?filename={filename}")
+
+
+def synth_write_agent_prompt(filename: str, code: str) -> str:
+    """Write a new prompt module into pipeline/prompts/.
+
+    filename: e.g. 'evaluator_prompts.py'. Written to pipeline/prompts/.
+    code: full Python source. Must call register_fragment() to define prompt sections.
+    Write the prompt module BEFORE writing the agent class that imports it.
+    """
+    return _curl_post("/agents/prompts/write", {"filename": filename, "code": code})
+
+
+def synth_list_available_tools() -> str:
+    """List all registered tool names in the synth-city tool registry.
+
+    Use this to see which tools can be included in a new agent's build_tools() method.
+    """
+    return _curl_get("/agents/tools")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point for manual testing
 # ---------------------------------------------------------------------------
 

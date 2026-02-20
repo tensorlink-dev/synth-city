@@ -49,6 +49,13 @@ GET  /history/runs            → list pipeline runs from Hippius
 GET  /history/run/:run_id     → load a specific run from Hippius
 GET  /history/experiments     → best experiments across all runs
 GET  /history/wandb           → fetch runs from W&B
+GET  /agents/list             → list agent modules
+GET  /agents/read             → read an agent source file
+POST /agents/write            → write a new agent module
+GET  /agents/prompts/list     → list prompt modules
+GET  /agents/prompts/read     → read a prompt source file
+POST /agents/prompts/write    → write a new prompt module
+GET  /agents/tools            → list all registered tool names
 """
 
 from __future__ import annotations
@@ -178,6 +185,7 @@ def _ensure_tools_loaded() -> None:
     if _tools_loaded:
         return
     try:
+        import pipeline.tools.agent_tools  # noqa: F401
         import pipeline.tools.analysis_tools  # noqa: F401
         import pipeline.tools.hippius_store  # noqa: F401
         import pipeline.tools.market_data  # noqa: F401
@@ -495,6 +503,41 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     _research_call("fetch_wandb_runs", limit=limit, order=order),
                 )
 
+        # ---- agent design
+        elif path == "/agents/list":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_agents"))
+
+        elif path == "/agents/read":
+            filename = qs.get("filename", [""])[0]
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required query parameter: 'filename'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                result = _research_call("read_agent", filename=filename)
+                self._send_json(result)
+
+        elif path == "/agents/prompts/list":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_agent_prompts"))
+
+        elif path == "/agents/prompts/read":
+            filename = qs.get("filename", [""])[0]
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required query parameter: 'filename'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                result = _research_call("read_agent_prompt", filename=filename)
+                self._send_json(result)
+
+        elif path == "/agents/tools":
+            if self._load_tools_or_fail():
+                self._send_json(_research_call("list_available_tools"))
+
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
 
@@ -637,6 +680,43 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/registry/reload":
             if self._load_tools_or_fail():
                 self._send_json(_research_call("reload_registry"))
+
+        # ---- agent design (write)
+        elif path == "/agents/write":
+            filename = body.get("filename", "")
+            code = body.get("code", "")
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required field: 'filename'"}, status=400,
+                )
+                return
+            if not code:
+                self._send_json(
+                    {"error": "Missing required field: 'code'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("write_agent", filename=filename, code=code),
+                )
+
+        elif path == "/agents/prompts/write":
+            filename = body.get("filename", "")
+            code = body.get("code", "")
+            if not filename:
+                self._send_json(
+                    {"error": "Missing required field: 'filename'"}, status=400,
+                )
+                return
+            if not code:
+                self._send_json(
+                    {"error": "Missing required field: 'code'"}, status=400,
+                )
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call("write_agent_prompt", filename=filename, code=code),
+                )
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
