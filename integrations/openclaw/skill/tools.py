@@ -52,7 +52,7 @@ def _curl_get(path: str) -> str:
         return err
     try:
         result = subprocess.run(
-            ["curl", "-sf", *_auth_headers(), f"{BRIDGE_URL}{path}"],
+            ["curl", "-s", *_auth_headers(), f"{BRIDGE_URL}{path}"],
             capture_output=True,
             text=True,
             timeout=_GET_TIMEOUT,
@@ -61,6 +61,9 @@ def _curl_get(path: str) -> str:
         return json.dumps({
             "error": f"Request timed out after {_GET_TIMEOUT}s for GET {path}",
         })
+    # With -s (not -f), curl returns 0 for HTTP errors but keeps the response
+    # body.  This preserves the bridge's JSON error messages (e.g. 401 auth).
+    # Non-zero means a connection-level failure (exit 7 = refused, etc.).
     if result.returncode != 0:
         stderr = result.stderr.strip()
         return json.dumps({
@@ -70,7 +73,7 @@ def _curl_get(path: str) -> str:
             ),
             "detail": stderr or f"curl exit code {result.returncode}",
         })
-    return result.stdout
+    return result.stdout or json.dumps({"error": "Empty response from bridge"})
 
 
 def _curl_post(path: str, body: dict) -> str:
@@ -81,7 +84,7 @@ def _curl_post(path: str, body: dict) -> str:
     try:
         result = subprocess.run(
             [
-                "curl", "-sf",
+                "curl", "-s",
                 *_auth_headers(),
                 "-X", "POST",
                 "-H", "Content-Type: application/json",
@@ -105,7 +108,7 @@ def _curl_post(path: str, body: dict) -> str:
             ),
             "detail": stderr or f"curl exit code {result.returncode}",
         })
-    return result.stdout
+    return result.stdout or json.dumps({"error": "Empty response from bridge"})
 
 
 # ---------------------------------------------------------------------------

@@ -197,6 +197,6 @@ echo "    python main.py sweep                      # baseline sweep"
 echo "    python main.py pipeline                   # full agent pipeline"
 echo "    python main.py bridge                     # start HTTP bridge"
 echo ""
-if [[ ! -f "$SCRIPT_DIR/.env" ]] || grep -q "your_chutes_api_key_here" "$SCRIPT_DIR/.env" 2>/dev/null; then
+if grep -q "^CHUTES_API_KEY=$" "$SCRIPT_DIR/.env" 2>/dev/null; then
     warn "Don't forget to edit .env with your API keys!"
 fi
