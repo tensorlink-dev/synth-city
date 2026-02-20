@@ -182,11 +182,6 @@ main.py                              CLI entry point
 │   │   ├── publisher_prompts.py     Publishing procedure prompts
 │   │   └── author_prompts.py       Component authoring guidelines
 │   └── orchestrator.py              Retry loops, temperature escalation, stall detection
-├── models/                          Standalone model implementations (fallback)
-│   ├── base.py                      BaseForecaster interface
-│   ├── gbm.py                       Geometric Brownian Motion (baseline)
-│   ├── garch.py                     GARCH / EGARCH / GJR-GARCH
-│   └── stochastic_vol.py            Heston stochastic volatility
 ├── subnet/
 │   ├── config.py                    SN50 constants
 │   ├── miner.py                     Prediction generation + submission
