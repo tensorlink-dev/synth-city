@@ -65,8 +65,9 @@ def build_baselines() -> dict[str, BaseForecaster]:
 class ResearchModelAdapter(BaseForecaster):
     """Wraps a trained open-synth-miner model as a BaseForecaster.
 
-    This lets research models participate in the same scoring
-    pipeline as the baselines without any special-casing.
+    The model object must be injected via ``set_model()`` after training
+    through the ResearchSession — we cannot recreate trained weights
+    from config alone, as create_model() only builds the architecture.
     """
 
     def __init__(
@@ -79,30 +80,17 @@ class ResearchModelAdapter(BaseForecaster):
         self.experiment_config = experiment_config
         self.crps_score = crps_score
         self._model = None
-        self._fitted = False
 
-    def _ensure_model(self) -> None:
-        """Lazy-load the model from the experiment config."""
-        if self._model is not None:
-            return
-        try:
-            from omegaconf import OmegaConf
-            from src.models.factory import create_model
-            from src.models.registry import discover_components
+    def set_model(self, model: object) -> None:
+        """Inject a trained model object from the ResearchSession."""
+        self._model = model
 
-            discover_components("src/models/components")
-            cfg = OmegaConf.create(self.experiment_config)
-            self._model = create_model(cfg)
-            self._fitted = True
-            logger.info("Loaded research model: %s", self.name)
-        except Exception as exc:
-            logger.error(
-                "Failed to load research model %s: %s", self.name, exc
-            )
+    @property
+    def is_ready(self) -> bool:
+        return self._model is not None
 
     def fit(self, prices: np.ndarray, **kwargs) -> None:
         """No-op — research models are already trained."""
-        self._ensure_model()
 
     def generate_paths(
         self,
@@ -111,11 +99,11 @@ class ResearchModelAdapter(BaseForecaster):
         num_steps: int,
         s0: float | None = None,
     ) -> np.ndarray:
-        self._ensure_model()
         if self._model is None:
-            raise RuntimeError(f"Research model {self.name} not loaded")
-
-        # Use the open-synth-miner model's generate method
+            raise RuntimeError(
+                f"Research model {self.name} has no trained weights. "
+                "Models must be trained via ResearchSession.run() first."
+            )
         return self._model.generate_paths(
             asset=asset,
             num_paths=num_paths,
@@ -133,38 +121,109 @@ class ResearchModelAdapter(BaseForecaster):
 
 
 def load_research_models() -> dict[str, ResearchModelAdapter]:
-    """Load the best research models from the pipeline session.
+    """Load top experiment configs and train them through the session.
 
-    Pulls the top experiments from the research session's comparison
-    ranking and wraps them as BaseForecaster instances.
+    The ResearchSession is an in-memory singleton. We pull the best
+    experiment configs from Hippius (persisted from prior pipeline runs),
+    then re-train them through the session to get actual model objects.
+
+    If the session already has results (same-process as pipeline), we
+    use those directly instead of re-training.
+
+    Returns only models that trained successfully.
     """
     models: dict[str, ResearchModelAdapter] = {}
+
+    # Strategy 1: check if the session already has trained results
     try:
         from pipeline.tools.research_tools import _get_session
         session = _get_session()
         comparison = session.compare()
         ranking = comparison.get("ranking", [])
 
-        for entry in ranking[:5]:  # Top 5 research models
-            name = entry.get("name", "research-model")
-            config = entry.get("experiment") or entry.get("config")
-            crps = entry.get("crps")
-            if config and isinstance(config, dict):
-                adapter = ResearchModelAdapter(
-                    name=name,
-                    experiment_config=config,
-                    crps_score=crps,
-                )
-                models[name] = adapter
-                logger.info(
-                    "Loaded research model: %s (CRPS=%.4f)",
-                    name, crps or 0.0,
-                )
+        if ranking:
+            logger.info(
+                "Found %d experiments in active session", len(ranking)
+            )
+            for entry in ranking[:5]:
+                name = entry.get("name", "research-model")
+                config = entry.get("experiment") or entry.get("config")
+                crps = entry.get("crps")
+                # The session may expose trained models — try to get them
+                trained_model = entry.get("model")
+                if config and isinstance(config, dict):
+                    adapter = ResearchModelAdapter(
+                        name=name,
+                        experiment_config=config,
+                        crps_score=crps,
+                    )
+                    if trained_model is not None:
+                        adapter.set_model(trained_model)
+                        models[name] = adapter
+                        logger.info(
+                            "Loaded trained model: %s (CRPS=%.4f)",
+                            name, crps or 0.0,
+                        )
+                    else:
+                        logger.debug(
+                            "Session has config for %s but no trained "
+                            "model object — skipping (would need "
+                            "re-training)", name,
+                        )
     except Exception as exc:
-        logger.debug(
-            "Could not load research models (expected if no session): %s",
-            exc,
-        )
+        logger.debug("Session check: %s", exc)
+
+    if models:
+        return models
+
+    # Strategy 2: load configs from Hippius and re-train through session
+    try:
+        from pipeline.tools.hippius_store import load_hippius_history
+        from pipeline.tools.research_tools import _get_session
+
+        history_json = load_hippius_history(limit=5)
+        history = json.loads(history_json)
+        experiments = history.get("experiments", [])
+
+        if not experiments:
+            logger.debug("No experiments in Hippius history")
+            return models
+
+        session = _get_session()
+        for exp_info in experiments[:3]:  # Re-train top 3
+            config = exp_info.get("experiment") or exp_info.get("config")
+            name = exp_info.get("name", "hippius-model")
+            if not config or not isinstance(config, dict):
+                continue
+
+            logger.info("Re-training %s from Hippius config...", name)
+            try:
+                result = session.run(config, epochs=5, name=name)
+                if isinstance(result, dict) and result.get("status") == "ok":
+                    crps = result.get("metrics", {}).get("crps")
+                    trained_model = result.get("model")
+                    adapter = ResearchModelAdapter(
+                        name=name,
+                        experiment_config=config,
+                        crps_score=crps,
+                    )
+                    if trained_model is not None:
+                        adapter.set_model(trained_model)
+                        models[name] = adapter
+                        logger.info(
+                            "Trained %s: CRPS=%.4f", name, crps or 0.0,
+                        )
+                    else:
+                        logger.warning(
+                            "Training %s succeeded but session did not "
+                            "return model object — cannot use for "
+                            "live predictions", name,
+                        )
+            except Exception as exc:
+                logger.warning("Re-training %s failed: %s", name, exc)
+    except Exception as exc:
+        logger.debug("Hippius re-training: %s", exc)
+
     return models
 
 
@@ -252,10 +311,12 @@ class ValidatorState:
 
     @property
     def all_models(self) -> dict[str, BaseForecaster]:
-        """Merged view of baselines + research models."""
+        """Merged view of baselines + ready research models."""
         merged: dict[str, BaseForecaster] = {}
         merged.update(self.baselines)
-        merged.update(self.research_models)
+        for name, model in self.research_models.items():
+            if model.is_ready:
+                merged[name] = model
         return merged
 
 
@@ -393,10 +454,14 @@ class LiveValidator:
     # ------------------------------------------------------------------
 
     def reload_research_models(self) -> None:
-        """Reload research models from the pipeline session."""
+        """Reload research models from the pipeline session.
+
+        Merges new models into the existing set rather than replacing,
+        so models with pending predictions aren't orphaned.
+        """
         new_models = load_research_models()
         if new_models:
-            self.state.research_models = new_models
+            self.state.research_models.update(new_models)
             for name in new_models:
                 self.leaderboard.register_model(name, is_baseline=False)
             logger.info(
