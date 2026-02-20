@@ -4,7 +4,7 @@ description: >-
   Autonomous AI research pipeline for Bittensor Subnet 50 (Synth).
   Discovers, trains, debugs, and publishes probabilistic price forecasting models.
 metadata:
-  openclaw:
+  clawdbot:
     requires:
       bins:
         - curl
