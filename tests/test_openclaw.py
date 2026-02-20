@@ -14,6 +14,7 @@ from unittest import mock
 import httpx
 import pytest
 
+import integrations.openclaw.bridge as bridge_mod
 from integrations.openclaw.bridge import (
     MAX_CONTENT_LENGTH,
     VALID_ASSETS,
@@ -417,6 +418,18 @@ class TestSkillTools:
             assert "detail" in data
             assert "Failed to connect" in data["detail"]
 
+    def test_auth_headers_empty_when_no_key(self) -> None:
+        from integrations.openclaw.skill.tools import _auth_headers
+
+        with mock.patch("integrations.openclaw.skill.tools.BRIDGE_API_KEY", ""):
+            assert _auth_headers() == []
+
+    def test_auth_headers_set_when_key_present(self) -> None:
+        from integrations.openclaw.skill.tools import _auth_headers
+
+        with mock.patch("integrations.openclaw.skill.tools.BRIDGE_API_KEY", "my-key"):
+            assert _auth_headers() == ["-H", "X-API-Key: my-key"]
+
     def test_validate_experiment_bad_json(self) -> None:
         from integrations.openclaw.skill.tools import synth_validate_experiment
 
@@ -432,6 +445,105 @@ class TestSkillTools:
         data = json.loads(result)
         assert "error" in data
         assert "Invalid experiment JSON" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# API key authentication tests
+# ---------------------------------------------------------------------------
+
+class TestBridgeAPIKeyAuth:
+    """Test that the bridge enforces API key auth when BRIDGE_API_KEY is set."""
+
+    @pytest.fixture(autouse=True)
+    def _server_with_key(self) -> Any:
+        """Start a bridge with API key enabled."""
+        self._original_key = bridge_mod.BRIDGE_API_KEY
+        bridge_mod.BRIDGE_API_KEY = "test-secret-key"
+        self.server, port, self.thread = _start_bridge()
+        self.base_url = f"http://127.0.0.1:{port}"
+        yield
+        self.server.shutdown()
+        bridge_mod.BRIDGE_API_KEY = self._original_key
+
+    def test_request_without_key_returns_401(self) -> None:
+        resp = httpx.get(f"{self.base_url}/health", timeout=5.0)
+        assert resp.status_code == 401
+        data = resp.json()
+        assert "API key" in data["error"]
+
+    def test_request_with_wrong_key_returns_401(self) -> None:
+        resp = httpx.get(
+            f"{self.base_url}/health",
+            headers={"X-API-Key": "wrong-key"},
+            timeout=5.0,
+        )
+        assert resp.status_code == 401
+
+    def test_request_with_correct_key_succeeds(self) -> None:
+        resp = httpx.get(
+            f"{self.base_url}/health",
+            headers={"X-API-Key": "test-secret-key"},
+            timeout=5.0,
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+
+    def test_post_without_key_returns_401(self) -> None:
+        resp = httpx.post(
+            f"{self.base_url}/session/clear",
+            json={},
+            timeout=5.0,
+        )
+        assert resp.status_code == 401
+
+    def test_post_with_correct_key_succeeds(self) -> None:
+        resp = httpx.get(
+            f"{self.base_url}/pipeline/status",
+            headers={"X-API-Key": "test-secret-key"},
+            timeout=5.0,
+        )
+        assert resp.status_code == 200
+
+    def test_client_sends_api_key(self) -> None:
+        client = SynthCityClient(
+            base_url=self.base_url,
+            timeout=5.0,
+            retries=1,
+            api_key="test-secret-key",
+        )
+        resp = client.health()
+        assert resp["status"] == "ok"
+
+    def test_client_without_key_fails(self) -> None:
+        client = SynthCityClient(
+            base_url=self.base_url,
+            timeout=5.0,
+            retries=1,
+            api_key="",
+        )
+        resp = client.health()
+        assert "error" in resp
+
+
+class TestBridgeNoAPIKey:
+    """Test that auth is disabled when BRIDGE_API_KEY is empty."""
+
+    @pytest.fixture(autouse=True)
+    def _server_no_key(self) -> Any:
+        self._original_key = bridge_mod.BRIDGE_API_KEY
+        bridge_mod.BRIDGE_API_KEY = ""
+        self.server, port, self.thread = _start_bridge()
+        self.base_url = f"http://127.0.0.1:{port}"
+        yield
+        self.server.shutdown()
+        bridge_mod.BRIDGE_API_KEY = self._original_key
+
+    def test_request_without_key_succeeds(self) -> None:
+        resp = httpx.get(f"{self.base_url}/health", timeout=5.0)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------
