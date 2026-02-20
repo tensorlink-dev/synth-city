@@ -120,111 +120,61 @@ class ResearchModelAdapter(BaseForecaster):
         }
 
 
-def load_research_models() -> dict[str, ResearchModelAdapter]:
-    """Load top experiment configs and train them through the session.
+def load_research_configs() -> list[dict]:
+    """Load top experiment configs from Hippius storage.
 
-    The ResearchSession is an in-memory singleton. We pull the best
-    experiment configs from Hippius (persisted from prior pipeline runs),
-    then re-train them through the session to get actual model objects.
+    Returns a list of dicts with ``name``, ``config``, and ``crps`` keys
+    for the best experiments from prior pipeline runs.
 
-    If the session already has results (same-process as pipeline), we
-    use those directly instead of re-training.
-
-    Returns only models that trained successfully.
+    Note: These are architecture configs only — the ResearchSession API
+    does not persist trained model weights.  To use these as live
+    competitors, callers must train the models themselves and inject
+    the trained objects via ``ResearchModelAdapter.set_model()``.
     """
-    models: dict[str, ResearchModelAdapter] = {}
+    configs: list[dict] = []
 
-    # Strategy 1: check if the session already has trained results
+    # Try active session first (same-process as pipeline)
     try:
         from pipeline.tools.research_tools import _get_session
         session = _get_session()
         comparison = session.compare()
         ranking = comparison.get("ranking", [])
 
-        if ranking:
-            logger.info(
-                "Found %d experiments in active session", len(ranking)
-            )
-            for entry in ranking[:5]:
-                name = entry.get("name", "research-model")
-                config = entry.get("experiment") or entry.get("config")
-                crps = entry.get("crps")
-                # The session may expose trained models — try to get them
-                trained_model = entry.get("model")
-                if config and isinstance(config, dict):
-                    adapter = ResearchModelAdapter(
-                        name=name,
-                        experiment_config=config,
-                        crps_score=crps,
-                    )
-                    if trained_model is not None:
-                        adapter.set_model(trained_model)
-                        models[name] = adapter
-                        logger.info(
-                            "Loaded trained model: %s (CRPS=%.4f)",
-                            name, crps or 0.0,
-                        )
-                    else:
-                        logger.debug(
-                            "Session has config for %s but no trained "
-                            "model object — skipping (would need "
-                            "re-training)", name,
-                        )
+        for entry in ranking[:5]:
+            config = entry.get("experiment") or entry.get("config")
+            if config and isinstance(config, dict):
+                configs.append({
+                    "name": entry.get("name", "session-model"),
+                    "config": config,
+                    "crps": entry.get("crps"),
+                    "source": "session",
+                })
     except Exception as exc:
         logger.debug("Session check: %s", exc)
 
-    if models:
-        return models
+    if configs:
+        return configs
 
-    # Strategy 2: load configs from Hippius and re-train through session
+    # Fall back to Hippius (persisted from prior pipeline runs)
     try:
         from pipeline.tools.hippius_store import load_hippius_history
-        from pipeline.tools.research_tools import _get_session
 
         history_json = load_hippius_history(limit=5)
         history = json.loads(history_json)
-        experiments = history.get("experiments", [])
 
-        if not experiments:
-            logger.debug("No experiments in Hippius history")
-            return models
-
-        session = _get_session()
-        for exp_info in experiments[:3]:  # Re-train top 3
+        for exp_info in history.get("experiments", [])[:5]:
             config = exp_info.get("experiment") or exp_info.get("config")
-            name = exp_info.get("name", "hippius-model")
-            if not config or not isinstance(config, dict):
-                continue
-
-            logger.info("Re-training %s from Hippius config...", name)
-            try:
-                result = session.run(config, epochs=5, name=name)
-                if isinstance(result, dict) and result.get("status") == "ok":
-                    crps = result.get("metrics", {}).get("crps")
-                    trained_model = result.get("model")
-                    adapter = ResearchModelAdapter(
-                        name=name,
-                        experiment_config=config,
-                        crps_score=crps,
-                    )
-                    if trained_model is not None:
-                        adapter.set_model(trained_model)
-                        models[name] = adapter
-                        logger.info(
-                            "Trained %s: CRPS=%.4f", name, crps or 0.0,
-                        )
-                    else:
-                        logger.warning(
-                            "Training %s succeeded but session did not "
-                            "return model object — cannot use for "
-                            "live predictions", name,
-                        )
-            except Exception as exc:
-                logger.warning("Re-training %s failed: %s", name, exc)
+            if config and isinstance(config, dict):
+                configs.append({
+                    "name": exp_info.get("name", "hippius-model"),
+                    "config": config,
+                    "crps": exp_info.get("crps"),
+                    "source": "hippius",
+                })
     except Exception as exc:
-        logger.debug("Hippius re-training: %s", exc)
+        logger.debug("Hippius load: %s", exc)
 
-    return models
+    return configs
 
 
 # ---------------------------------------------------------------------------
@@ -453,21 +403,69 @@ class LiveValidator:
     # Research model management
     # ------------------------------------------------------------------
 
-    def reload_research_models(self) -> None:
-        """Reload research models from the pipeline session.
+    def register_research_model(
+        self,
+        name: str,
+        model: object,
+        experiment_config: dict,
+        crps_score: float | None = None,
+    ) -> None:
+        """Register an externally trained model as a research challenger.
 
-        Merges new models into the existing set rather than replacing,
-        so models with pending predictions aren't orphaned.
+        This is the primary integration point: the pipeline (or any
+        external code) trains a model and injects it here for live
+        scoring against the baselines.
+
+        Parameters
+        ----------
+        name : str
+            Display name on the leaderboard.
+        model : object
+            Trained model with a ``generate_paths()`` method.
+        experiment_config : dict
+            The experiment config used to build/train this model.
+        crps_score : float or None
+            Research CRPS from training (for reference).
         """
-        new_models = load_research_models()
-        if new_models:
-            self.state.research_models.update(new_models)
-            for name in new_models:
-                self.leaderboard.register_model(name, is_baseline=False)
-            logger.info(
-                "Loaded %d research models: %s",
-                len(new_models), ", ".join(new_models.keys()),
-            )
+        adapter = ResearchModelAdapter(
+            name=name,
+            experiment_config=experiment_config,
+            crps_score=crps_score,
+        )
+        adapter.set_model(model)
+        self.state.research_models[name] = adapter
+        self.leaderboard.register_model(name, is_baseline=False)
+        logger.info(
+            "Registered research model: %s (training CRPS=%.4f)",
+            name, crps_score or 0.0,
+        )
+
+    def reload_research_models(self) -> None:
+        """Check for new research experiment configs.
+
+        Loads configs from the session/Hippius and logs what's available.
+        Since the ResearchSession API doesn't expose trained model objects,
+        models must be registered via ``register_research_model()`` by
+        external code that has access to the trained weights.
+
+        This method updates the timestamp so the main loop doesn't
+        poll too frequently, and logs available configs for visibility.
+        """
+        configs = load_research_configs()
+        if configs:
+            already = set(self.state.research_models.keys())
+            new = [c for c in configs if c["name"] not in already]
+            if new:
+                logger.info(
+                    "Found %d new research configs (use "
+                    "register_research_model() to add trained models): %s",
+                    len(new),
+                    ", ".join(
+                        f"{c['name']} (CRPS={c['crps']:.4f})"
+                        if c.get("crps") else c["name"]
+                        for c in new
+                    ),
+                )
         self.state.last_research_reload = time.time()
 
     # ------------------------------------------------------------------
