@@ -210,6 +210,49 @@ When the user asks about any of the topics below, call the bridge API using the 
   `GET http://127.0.0.1:8377/history/wandb?limit=20&order=best`
   Fetches runs from Weights & Biases. Order: `best` (lowest CRPS), `recent` (newest), or `worst`. Returns configs, metrics, tags, and W&B URLs.
 
+### Agent design (create new pipeline agents)
+
+The agent design endpoints let you create entirely new pipeline agents — agent classes and their prompt modules — from chat. Use this when the built-in agents (Planner, Trainer, CodeChecker, Debugger, Publisher, Author) don't fit your needs.
+
+- **"list agents"** / **"what agents exist"**
+  `GET http://127.0.0.1:8377/agents/list`
+  Lists all agent module files in `pipeline/agents/`.
+
+- **"show me the planner agent code"** / **"read agent"**
+  `GET http://127.0.0.1:8377/agents/read?filename=planner.py`
+  Returns the source code of an agent module. Study existing agents to learn the `BaseAgentWrapper` pattern before creating new ones.
+
+- **"create a new agent"** / **"write an evaluator agent"**
+  `POST http://127.0.0.1:8377/agents/write`
+  Body: `{"filename": "evaluator.py", "code": "<full Python source>"}`
+  Writes a new agent module into `pipeline/agents/`. The code must subclass `BaseAgentWrapper` and implement `agent_name`, `build_system_prompt()`, and `build_tools()`. **Always write the prompt module first.**
+
+- **"list prompt modules"**
+  `GET http://127.0.0.1:8377/agents/prompts/list`
+  Lists all prompt fragment files in `pipeline/prompts/`.
+
+- **"show me the planner prompts"** / **"read prompt module"**
+  `GET http://127.0.0.1:8377/agents/prompts/read?filename=planner_prompts.py`
+  Returns the source code of a prompt module. Study the `register_fragment()` pattern.
+
+- **"write prompts for my new agent"**
+  `POST http://127.0.0.1:8377/agents/prompts/write`
+  Body: `{"filename": "evaluator_prompts.py", "code": "<full Python source>"}`
+  Writes a prompt module into `pipeline/prompts/`. Must call `register_fragment()` to define composable prompt sections.
+
+- **"what tools are available"** / **"list tools for agent design"**
+  `GET http://127.0.0.1:8377/agents/tools`
+  Lists all registered tool names. Use this when deciding which tools to include in a new agent's `build_tools()` method.
+
+#### Agent design workflow
+
+1. Study existing agents: call `/agents/read?filename=base.py` and `/agents/read?filename=planner.py`
+2. Study existing prompts: call `/agents/prompts/read?filename=planner_prompts.py`
+3. Check available tools: call `/agents/tools`
+4. Write prompt module first: `POST /agents/prompts/write`
+5. Write agent class: `POST /agents/write`
+6. Verify by reading both files back
+
 ## Component quick reference
 
 Use this to help the user pick architectures.
