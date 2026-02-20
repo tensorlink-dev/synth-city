@@ -1154,7 +1154,6 @@ synth-city/
 │       ├── publisher_prompts.py     # Publishing procedure
 │       └── author_prompts.py        # Component authoring guidelines
 │
-├── data/                            # Market data fetching + preprocessing
 ├── compute/
 │   └── basilica.py                  # Decentralised GPU client (Bittensor SN39)
 ├── subnet/

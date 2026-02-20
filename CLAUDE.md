@@ -66,7 +66,6 @@ pipeline/
     trainer_prompts.py      Experiment execution
     publisher_prompts.py    Publishing procedure
     author_prompts.py       Component authoring guidelines
-data/                       Market data fetching + preprocessing
 compute/basilica.py         Decentralised GPU client (SN39)
 subnet/                     Bittensor SN50 config, miner, validator (CRPS scoring)
 integrations/openclaw/      HTTP bridge server + CLI client

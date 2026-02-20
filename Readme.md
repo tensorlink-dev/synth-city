@@ -186,9 +186,6 @@ main.py                              CLI entry point
 │   ├── config.py                    SN50 constants
 │   ├── miner.py                     Prediction generation + submission
 │   └── validator.py                 CRPS scoring for local evaluation
-├── data/
-│   ├── market.py                    Market data fetching + caching
-│   └── preprocessing.py             Feature engineering utilities
 ├── compute/
 │   └── basilica.py                  Basilica decentralised GPU training client
 ├── integrations/openclaw/

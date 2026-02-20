@@ -13,11 +13,12 @@ Lower CRPS = better calibration.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import numpy as np
 
 from config import SN50_ASSETS, SN50_STEP_MINUTES
-from subnet.config import CRPS_EVAL_INCREMENTS, NUM_STEPS_24H, SCORE_CAP_PERCENTILE
+from subnet.config import CRPS_EVAL_INCREMENTS
 
 logger = logging.getLogger(__name__)
 
@@ -135,8 +136,6 @@ def evaluate_multi_asset(
     -------
     dict with per-asset scores, weighted total, and metadata.
     """
-    from typing import Any
-
     per_asset: dict[str, dict[str, float]] = {}
     weighted_sum = 0.0
 

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from config import (
-    SN50_ASSETS,
     SN50_HFT_HORIZON_MINUTES,
     SN50_HORIZON_MINUTES,
-    SN50_NUM_PATHS,
     SN50_STEP_MINUTES,
 )
 
