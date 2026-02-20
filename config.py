@@ -36,10 +36,18 @@ def model_for(agent_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Basilica compute (training)
+# Basilica GPU cloud (basilica-sdk)
 # ---------------------------------------------------------------------------
-BASILICA_API_KEY: str = os.getenv("BASILICA_API_KEY", "")
-BASILICA_ENDPOINT: str = os.getenv("BASILICA_ENDPOINT", "https://api.basilica.tplr.ai")
+BASILICA_API_TOKEN: str = os.getenv("BASILICA_API_TOKEN", "")
+BASILICA_API_URL: str = os.getenv("BASILICA_API_URL", "https://api.basilica.ai")
+# Budget cap — only rent GPUs at or below this hourly rate (USD)
+BASILICA_MAX_HOURLY_RATE: float = float(os.getenv("BASILICA_MAX_HOURLY_RATE", "0.44"))
+# Allowed GPU types (case-insensitive substring match against offering gpu_type)
+BASILICA_ALLOWED_GPU_TYPES: list[str] = [
+    s.strip()
+    for s in os.getenv("BASILICA_ALLOWED_GPU_TYPES", "TESLA V100,RTX-A4000,RTX-A6000").split(",")
+    if s.strip()
+]
 
 # ---------------------------------------------------------------------------
 # Bittensor

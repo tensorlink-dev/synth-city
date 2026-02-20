@@ -22,6 +22,7 @@ dependencies = [
     "wandb",
     "huggingface_hub",
     "python-dotenv>=1.0.0",
+    "basilica-sdk>=0.17.0",
 ]
 
 [project.optional-dependencies]

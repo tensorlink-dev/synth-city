@@ -179,13 +179,15 @@ RESEARCH_EPOCHS=1           # Training epochs per experiment
 
 These are deliberately small defaults for fast iteration during research. For production-quality results, increase `RESEARCH_N_PATHS` to 1000, `RESEARCH_EPOCHS` to 5+, and `RESEARCH_D_MODEL` to 64 or 128.
 
-### Basilica GPU Compute (Optional)
+### Basilica GPU Cloud (Optional)
 
-For offloading training to decentralised GPUs on Bittensor SN39 (see [Basilica GPU Compute](#basilica-gpu-compute)):
+For renting cheap GPUs via the Basilica marketplace (see [Basilica GPU Cloud](#basilica-gpu-cloud)):
 
 ```env
-BASILICA_API_KEY=your_basilica_api_key_here
-BASILICA_ENDPOINT=https://api.basilica.tplr.ai
+BASILICA_API_TOKEN=your_basilica_api_token_here
+BASILICA_API_URL=https://api.basilica.ai
+BASILICA_MAX_HOURLY_RATE=0.44
+BASILICA_ALLOWED_GPU_TYPES=TESLA V100,RTX-A4000,RTX-A6000
 ```
 
 ### Bittensor Wallet (Optional)
@@ -554,55 +556,73 @@ Each prediction must produce:
 
 ---
 
-## Basilica GPU Compute
+## Basilica GPU Cloud
 
-Basilica provides decentralised GPU compute via Bittensor SN39. Use it to offload training to remote A100 GPUs.
+Basilica provides a secure-cloud GPU marketplace via `basilica-sdk`. synth-city uses it to rent cheap GPUs for training, with a budget cap that restricts rentals to the most affordable offerings.
 
 ### Setup
 
-1. Get a Basilica API key from [basilica.tplr.ai](https://api.basilica.tplr.ai)
-2. Add to your `.env`:
+1. Install the SDK (included in project dependencies):
+
+```bash
+pip install basilica-sdk
+```
+
+2. Get an API token from [basilica.ai](https://basilica.ai)
+3. Add to your `.env`:
 
 ```env
-BASILICA_API_KEY=your_basilica_api_key_here
-BASILICA_ENDPOINT=https://api.basilica.tplr.ai
+BASILICA_API_TOKEN=your_basilica_api_token_here
+BASILICA_API_URL=https://api.basilica.ai
+BASILICA_MAX_HOURLY_RATE=0.44
+BASILICA_ALLOWED_GPU_TYPES=TESLA V100,RTX-A4000,RTX-A6000
 ```
 
 ### How it works
 
-The `BasilicaClient` (`compute/basilica.py`) submits containerised training jobs:
+The `BasilicaGPUClient` (`compute/basilica.py`) wraps the official SDK with budget filtering:
 
 ```python
-from compute.basilica import BasilicaClient, JobSpec
+from compute.basilica import BasilicaGPUClient
 
-client = BasilicaClient()
+client = BasilicaGPUClient()
 
-# Submit a training job
-job_id = client.submit(JobSpec(
-    script_path="train.py",
-    gpu_type="A100",         # GPU type
-    num_gpus=1,              # Number of GPUs
-    timeout_minutes=60,      # Max runtime
-))
+# List cheap GPU offerings (filtered by budget + allowlist)
+offerings = client.list_cheap_gpus()
+for o in offerings:
+    print(f"{o.gpu_type} @ ${o.hourly_rate}/hr ({o.provider}, {o.region})")
 
-# Poll until completion
-status = client.poll(job_id, timeout=3600)
+# Rent the cheapest available GPU
+rental = client.rent_cheapest()
+print(f"SSH: {rental.ssh_command}")
+print(f"Cost: ${rental.hourly_cost}/hr")
 
-if status.status == "completed":
-    # Download trained model artifacts
-    client.download_artifacts(job_id, "output/")
-elif status.status == "failed":
-    print(f"Job failed: {status.error}")
+# Stop when done
+client.stop_rental(rental.rental_id)
 ```
 
-### Job defaults
+### Allowed GPU offerings (budget cap: $0.44/hr)
 
-| Setting | Default |
-|---------|---------|
-| GPU type | A100 |
-| Number of GPUs | 1 |
-| Docker image | `pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime` |
-| Timeout | 60 minutes |
+| Provider   | GPU                  | Spot | Price/hr |
+|------------|----------------------|------|----------|
+| verda      | TESLA V100           | Yes  | $0.05    |
+| verda      | TESLA V100           | No   | $0.15    |
+| hyperstack | RTX-A4000            | No   | $0.16    |
+| hyperstack | 2x RTX-A4000         | No   | $0.33    |
+| hyperstack | RTX-A6000            | Yes  | $0.44    |
+
+### Agent tools
+
+The Trainer agent has access to these GPU tools:
+
+| Tool | Description |
+|------|-------------|
+| `list_available_gpus` | List cheap GPU offerings with pricing |
+| `rent_gpu` | Rent a specific offering by ID |
+| `rent_cheapest_gpu` | Auto-rent the cheapest available GPU |
+| `list_active_rentals` | Show all current rentals |
+| `stop_gpu_rental` | Stop a rental, returns cost summary |
+| `check_gpu_balance` | Check account balance |
 
 ---
 
@@ -915,7 +935,7 @@ The registry:
 | Execution | `run_experiment`, `run_preset`, `sweep_presets` | Trainer, Debugger |
 | Analysis | `compare_results`, `session_summary` | Planner, Trainer |
 | Publishing | `publish_model`, `log_to_wandb` | Publisher |
-| Training | `run_training_local`, `submit_basilica_job` | (advanced) |
+| Training | `run_training_local`, `list_available_gpus`, `rent_cheapest_gpu`, `stop_gpu_rental` | Trainer |
 | Storage | `save_to_hippius`, `list_hippius_runs`, `load_hippius_run`, `load_hippius_history` | (advanced) |
 | Utilities | `run_python`, `read_file`, `write_file` | (advanced) |
 | Market Data | `get_price`, `get_price_history` | (advanced) |
@@ -1198,12 +1218,13 @@ The pipeline has built-in stall detection. If the same config is produced twice 
 - Try a different port: `python main.py bridge --port 9000`
 - Ensure all dependencies are installed (`pip install -r requirements.txt`)
 
-### Basilica job failures
+### Basilica GPU rental issues
 
-- Verify `BASILICA_API_KEY` is set in `.env`
-- Check the job status for error messages: the `JobStatus.error` field contains details
-- Ensure your training script is self-contained and can run inside the Docker container
-- Default timeout is 60 minutes — increase `timeout_minutes` for longer training runs
+- Verify `BASILICA_API_TOKEN` is set in `.env`
+- Run `list_available_gpus` to check if any offerings match your budget cap
+- If no offerings appear, increase `BASILICA_MAX_HOURLY_RATE` or broaden `BASILICA_ALLOWED_GPU_TYPES`
+- Use `list_active_rentals` to check the status of running rentals
+- Always call `stop_gpu_rental` when training completes to avoid unnecessary charges
 
 ### Hippius storage not working
 
