@@ -23,6 +23,9 @@ SKILL_NAME = "synth-city"
 # Files that must exist in the skill source directory
 REQUIRED_FILES = ["SKILL.md", "tools.py"]
 
+# Optional files copied when present (e.g. ClawHub publishing metadata)
+OPTIONAL_FILES = ["clawhub.json"]
+
 
 def install_skill(workspace: Path) -> bool:
     """Copy skill files into the OpenClaw workspace.
@@ -63,6 +66,18 @@ def install_skill(workspace: Path) -> bool:
             return False
 
         print(f"  Installed {filename} → {dst}")
+
+    # Copy optional files (e.g. clawhub.json) when present
+    for filename in OPTIONAL_FILES:
+        src = src_dir / filename
+        if not src.exists():
+            continue
+        dst = skill_dir / filename
+        try:
+            shutil.copy2(src, dst)
+            print(f"  Installed {filename} → {dst}")
+        except OSError as exc:
+            print(f"  Warning: Could not copy optional file {filename}: {exc}", file=sys.stderr)
 
     print(f"\nsynth-city skill installed to: {skill_dir}")
     print("\nNext steps:")

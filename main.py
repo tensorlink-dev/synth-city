@@ -319,9 +319,10 @@ def main() -> None:
     p_quick.add_argument("--horizon", type=int, default=12, help="Prediction steps")
 
     # bridge
+    from config import BRIDGE_HOST, BRIDGE_PORT
     p_bridge = subparsers.add_parser("bridge", help="Start the HTTP bridge server")
-    p_bridge.add_argument("--host", default="127.0.0.1", help="Bind address")
-    p_bridge.add_argument("--port", type=int, default=8377, help="Listen port")
+    p_bridge.add_argument("--host", default=BRIDGE_HOST, help="Bind address")
+    p_bridge.add_argument("--port", type=int, default=BRIDGE_PORT, help="Listen port")
 
     # client (standalone CLI for the bridge)
     p_client = subparsers.add_parser(
@@ -335,8 +336,8 @@ def main() -> None:
         help="Action to perform",
     )
     p_client.add_argument("extra", nargs="*", help="Extra args (e.g. asset name for price/history)")
-    p_client.add_argument("--host", default="127.0.0.1", help="Bridge host")
-    p_client.add_argument("--port", type=int, default=8377, help="Bridge port")
+    p_client.add_argument("--host", default=BRIDGE_HOST, help="Bridge host")
+    p_client.add_argument("--port", type=int, default=BRIDGE_PORT, help="Bridge port")
     p_client.add_argument("--publish", action="store_true", help="Publish when using 'run' action")
 
     # history

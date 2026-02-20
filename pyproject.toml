@@ -32,6 +32,9 @@ dev = [
     "mypy>=1.8.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["pipeline*", "integrations*", "models*", "data*", "compute*", "subnet*"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

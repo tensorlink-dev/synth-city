@@ -117,3 +117,4 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------------------------------------------------------
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT: int = int(os.getenv("BRIDGE_PORT", "8377"))
+BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")

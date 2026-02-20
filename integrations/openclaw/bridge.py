@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -67,6 +68,11 @@ logger = logging.getLogger(__name__)
 
 # Maximum request body size (1 MB) to prevent memory exhaustion
 MAX_CONTENT_LENGTH = 1 * 1024 * 1024
+
+# Optional API key — when set, every request must include a matching
+# ``X-API-Key`` header.  When empty (the default), authentication is
+# disabled so localhost use works without configuration.
+BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
 
 # Valid SN50 asset identifiers
 VALID_ASSETS = frozenset({
@@ -257,6 +263,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         logger.info(format, *args)
 
+    # ---- auth
+    def _check_auth(self) -> bool:
+        """Validate the ``X-API-Key`` header if ``BRIDGE_API_KEY`` is set.
+
+        Returns ``True`` when the request is authorised (or auth is disabled).
+        Sends a 401 response and returns ``False`` otherwise.
+        """
+        if not BRIDGE_API_KEY:
+            return True
+        provided = self.headers.get("X-API-Key", "")
+        if provided == BRIDGE_API_KEY:
+            return True
+        self._send_json({"error": "Invalid or missing API key"}, status=401)
+        return False
+
     # ---- helpers
     def _send_json(self, data: Any, status: int = 200) -> None:
         try:
@@ -327,6 +348,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     # ---- GET routes
     def do_GET(self) -> None:
+        if not self._check_auth():
+            return
         path, qs = self._path_parts()
 
         if path == "/health":
@@ -477,6 +500,8 @@ class BridgeHandler(BaseHTTPRequestHandler):
 
     # ---- POST routes
     def do_POST(self) -> None:
+        if not self._check_auth():
+            return
         path, _qs = self._path_parts()
         body = self._read_body()
         if body is None:
@@ -621,12 +646,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
 # Server entry point
 # ---------------------------------------------------------------------------
 
+_BANNER = r"""
+  _____ __     __ _   _  _______  _    _    _____  _____  _______ __     __
+ / ____|\ \   / /| \ | ||__   __|| |  | |  / ____||_   _||__   __|\ \   / /
+| (___   \ \_/ / |  \| |   | |   | |__| | | |       | |     | |    \ \_/ /
+ \___ \   \   /  | . ` |   | |   |  __  | | |       | |     | |     \   /
+ ____) |   | |   | |\  |   | |   | |  | | | |____  _| |_    | |      | |
+|_____/    |_|   |_| \_|   |_|   |_|  |_|  \_____||_____|   |_|      |_|
+"""
+
+
 def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
     """Start the bridge HTTP server."""
     server = HTTPServer((host, port), BridgeHandler)
+    print(_BANNER)
     logger.info("synth-city bridge listening on http://%s:%d", host, port)
-    print(f"synth-city bridge listening on http://{host}:{port}")
-    print("Press Ctrl+C to stop.")
+    print(f"  bridge listening on http://{host}:{port}")
+    print("  Press Ctrl+C to stop.\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
