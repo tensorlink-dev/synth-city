@@ -1,0 +1,52 @@
+# synth-city docker-compose
+#
+# Usage:
+#   docker compose up bridge          # start the HTTP bridge
+#   docker compose run synth pipeline # run the full pipeline
+#   docker compose run synth sweep    # run a preset sweep
+#
+# GPU support:
+#   Requires nvidia-container-toolkit installed on the host.
+#   The bridge service has GPU access by default (see deploy section).
+#   Remove the deploy block if running CPU-only.
+#
+# Remote OpenClaw access:
+#   Set BRIDGE_API_KEY in .env to protect the bridge.
+#   The bridge binds to 0.0.0.0 inside the container — Docker handles
+#   port exposure.  Only port 8377 is published to the host.
+
+services:
+  bridge:
+    build: .
+    env_file: .env
+    ports:
+      - "${BRIDGE_PORT:-8377}:8377"
+    volumes:
+      - workspace:/app/workspace
+    restart: unless-stopped
+    command: ["bridge"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # One-off command runner (not a long-lived service)
+  synth:
+    build: .
+    env_file: .env
+    volumes:
+      - workspace:/app/workspace
+    profiles: ["cli"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  workspace:

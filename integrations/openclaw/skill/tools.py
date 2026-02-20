@@ -23,6 +23,7 @@ import subprocess
 import sys
 
 BRIDGE_URL = os.getenv("SYNTH_BRIDGE_URL", "http://127.0.0.1:8377")
+BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
 
 _GET_TIMEOUT = 120   # seconds
 _POST_TIMEOUT = 300  # seconds
@@ -37,6 +38,13 @@ def _check_curl() -> str | None:
     return None
 
 
+def _auth_headers() -> list[str]:
+    """Return curl ``-H`` flags for API key authentication, if configured."""
+    if not BRIDGE_API_KEY:
+        return []
+    return ["-H", f"X-API-Key: {BRIDGE_API_KEY}"]
+
+
 def _curl_get(path: str) -> str:
     """GET request to the bridge, return response body."""
     err = _check_curl()
@@ -44,7 +52,7 @@ def _curl_get(path: str) -> str:
         return err
     try:
         result = subprocess.run(
-            ["curl", "-sf", f"{BRIDGE_URL}{path}"],
+            ["curl", "-s", *_auth_headers(), f"{BRIDGE_URL}{path}"],
             capture_output=True,
             text=True,
             timeout=_GET_TIMEOUT,
@@ -53,6 +61,9 @@ def _curl_get(path: str) -> str:
         return json.dumps({
             "error": f"Request timed out after {_GET_TIMEOUT}s for GET {path}",
         })
+    # With -s (not -f), curl returns 0 for HTTP errors but keeps the response
+    # body.  This preserves the bridge's JSON error messages (e.g. 401 auth).
+    # Non-zero means a connection-level failure (exit 7 = refused, etc.).
     if result.returncode != 0:
         stderr = result.stderr.strip()
         return json.dumps({
@@ -62,7 +73,7 @@ def _curl_get(path: str) -> str:
             ),
             "detail": stderr or f"curl exit code {result.returncode}",
         })
-    return result.stdout
+    return result.stdout or json.dumps({"error": "Empty response from bridge"})
 
 
 def _curl_post(path: str, body: dict) -> str:
@@ -73,7 +84,8 @@ def _curl_post(path: str, body: dict) -> str:
     try:
         result = subprocess.run(
             [
-                "curl", "-sf",
+                "curl", "-s",
+                *_auth_headers(),
                 "-X", "POST",
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps(body),
@@ -96,7 +108,7 @@ def _curl_post(path: str, body: dict) -> str:
             ),
             "detail": stderr or f"curl exit code {result.returncode}",
         })
-    return result.stdout
+    return result.stdout or json.dumps({"error": "Empty response from bridge"})
 
 
 # ---------------------------------------------------------------------------

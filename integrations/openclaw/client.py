@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BRIDGE_URL = os.getenv("SYNTH_BRIDGE_URL", "http://127.0.0.1:8377")
 _DEFAULT_TIMEOUT = float(os.getenv("SYNTH_BRIDGE_TIMEOUT", "300"))
+_DEFAULT_API_KEY = os.getenv("BRIDGE_API_KEY", "")
 
 # Retry settings for transient failures
 _MAX_RETRIES = 3
@@ -49,10 +50,12 @@ class SynthCityClient:
         base_url: str = _DEFAULT_BRIDGE_URL,
         timeout: float = _DEFAULT_TIMEOUT,
         retries: int = _MAX_RETRIES,
+        api_key: str = _DEFAULT_API_KEY,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
+        self.api_key = api_key
 
     def _request(
         self,
@@ -64,14 +67,21 @@ class SynthCityClient:
     ) -> dict[str, Any]:
         """Send an HTTP request with automatic retry on transient failures."""
         url = f"{self.base_url}{path}"
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["X-API-Key"] = self.api_key
         last_exc: Exception | None = None
 
         for attempt in range(1, self.retries + 1):
             try:
                 if method == "GET":
-                    resp = httpx.get(url, params=params, timeout=self.timeout)
+                    resp = httpx.get(
+                        url, params=params, headers=headers, timeout=self.timeout,
+                    )
                 else:
-                    resp = httpx.post(url, json=body or {}, timeout=self.timeout)
+                    resp = httpx.post(
+                        url, json=body or {}, headers=headers, timeout=self.timeout,
+                    )
                 resp.raise_for_status()
                 return resp.json()
             except _RETRYABLE_EXCEPTIONS as exc:

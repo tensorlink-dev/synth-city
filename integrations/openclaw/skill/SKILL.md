@@ -1,3 +1,23 @@
+---
+name: synth-city
+description: >-
+  Autonomous AI research pipeline for Bittensor Subnet 50 (Synth).
+  Discovers, trains, debugs, and publishes probabilistic price forecasting models.
+metadata:
+  clawdbot:
+    requires:
+      bins:
+        - curl
+        - python
+      env:
+        - CHUTES_API_KEY
+      optionalEnv:
+        - BRIDGE_API_KEY
+        - SYNTH_BRIDGE_URL
+    primaryEnv: CHUTES_API_KEY
+    homepage: https://github.com/tensorlink-dev/synth-city
+---
+
 # synth-city — Bittensor SN50 Research Assistant
 
 You have access to **synth-city**, an agentic pipeline for competitive probabilistic price forecasting on Bittensor Subnet 50 (Synth). Use this skill to let the user manage experiments, run the research pipeline, check market data, review historical results, and monitor model performance — all from chat.
@@ -20,9 +40,51 @@ The full pipeline chains 4-5 agents together:
 
 The pipeline retries failed stages with escalating temperature (0.1 → 0.2 → 0.3...) and detects stalls when the debugger produces identical configs across attempts.
 
+## Remote setup
+
+The OpenClaw agent can run on a different machine from synth-city. The recommended approach is an **SSH tunnel** (encrypted, no domain needed, zero code changes). An optional API key is available for additional authentication.
+
+### Option A — SSH tunnel (recommended default)
+
+On the machine running OpenClaw, open a persistent tunnel to the GPU server:
+
+```bash
+# Forward local :8377 → GPU server's localhost:8377
+ssh -L 8377:localhost:8377 user@gpu-server -N
+
+# For resilience (auto-reconnects on drops):
+autossh -M 0 -o "ServerAliveInterval=30" -o "ServerAliveCountMax=3" \
+  -L 8377:localhost:8377 user@gpu-server -N
+```
+
+No env var changes needed — the bridge URL stays `http://127.0.0.1:8377` on both ends. The bridge stays bound to `127.0.0.1` (never exposed to the network).
+
+### Option B — API key (direct network access)
+
+If SSH tunnelling is not practical, bind the bridge to a public interface and protect it with an API key.
+
+On the GPU server:
+
+```bash
+# .env
+BRIDGE_HOST=0.0.0.0
+BRIDGE_API_KEY=your-secret-key-here
+```
+
+On the OpenClaw machine:
+
+```bash
+export SYNTH_BRIDGE_URL=http://<gpu-server-ip>:8377
+export BRIDGE_API_KEY=your-secret-key-here
+```
+
+When `BRIDGE_API_KEY` is set, every request must include an `X-API-Key` header with the matching value. Requests with a missing or wrong key receive a 401 response. When the variable is empty (the default), authentication is disabled for frictionless localhost use.
+
+**Important:** API key auth alone does **not** encrypt traffic. If the connection crosses untrusted networks, combine it with a VPN (e.g. WireGuard) or a TLS reverse proxy (e.g. Caddy).
+
 ## Bridge API
 
-All commands go through the synth-city bridge server. The bridge must be running on the same machine as the OpenClaw gateway (default: `http://127.0.0.1:8377`).
+All commands go through the synth-city bridge server. By default the bridge listens on `http://127.0.0.1:8377`. For remote setups see the section above.
 
 ## Available commands
 
