@@ -106,9 +106,9 @@ class GARCHForecaster(BaseForecaster):
         # Store state for simulation warm-start
         self.last_price = float(prices[-1])
         cond_var = result.conditional_volatility ** 2
-        self.last_variance = float(cond_var.iloc[-1]) if len(cond_var) > 0 else self.omega
+        self.last_variance = float(cond_var[-1]) if len(cond_var) > 0 else self.omega
         resids = result.resid
-        self.last_resid = float(resids.iloc[-1]) if len(resids) > 0 else 0.0
+        self.last_resid = float(resids[-1]) if len(resids) > 0 else 0.0
         self._fitted = True
 
         logger.info(

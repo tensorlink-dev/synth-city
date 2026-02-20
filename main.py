@@ -244,6 +244,20 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_live_validator(args: argparse.Namespace) -> None:
+    """Run the live validator test — scores top 3 models as the SN50 validator would."""
+    from live_validator.runner import run_live_validator
+
+    assets = [a.strip() for a in args.assets.split(",")] if args.assets else None
+    run_live_validator(
+        assets=assets,
+        mode=args.mode,
+        prediction_interval=args.prediction_interval,
+        price_poll_interval=args.price_poll_interval,
+        refit_interval=args.refit_interval,
+    )
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.agents.author import ComponentAuthorAgent
@@ -349,6 +363,32 @@ def main() -> None:
     p_hist.add_argument("--run-id", default=None, help="Load a specific Hippius run ID ('latest' for most recent)")
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # live-validator
+    p_lv = subparsers.add_parser(
+        "live-validator",
+        help="Run the live validator test — scores top 3 models as SN50 validator",
+    )
+    p_lv.add_argument(
+        "--assets", default=None,
+        help="Comma-separated assets (default: all SN50 assets)",
+    )
+    p_lv.add_argument(
+        "--mode", default="low", choices=["low", "high"],
+        help="Scoring mode: 'low' (24h window) or 'high' (1h window)",
+    )
+    p_lv.add_argument(
+        "--prediction-interval", type=int, default=3600,
+        help="Seconds between prediction rounds (default: 3600)",
+    )
+    p_lv.add_argument(
+        "--price-poll-interval", type=int, default=60,
+        help="Seconds between price recordings (default: 60)",
+    )
+    p_lv.add_argument(
+        "--refit-interval", type=int, default=3600,
+        help="Seconds between model refits (default: 3600)",
+    )
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -364,6 +404,7 @@ def main() -> None:
         "history": cmd_history,
         "bridge": cmd_bridge,
         "client": cmd_client,
+        "live-validator": cmd_live_validator,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)
