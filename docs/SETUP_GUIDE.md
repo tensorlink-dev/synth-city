@@ -179,13 +179,15 @@ RESEARCH_EPOCHS=1           # Training epochs per experiment
 
 These are deliberately small defaults for fast iteration during research. For production-quality results, increase `RESEARCH_N_PATHS` to 1000, `RESEARCH_EPOCHS` to 5+, and `RESEARCH_D_MODEL` to 64 or 128.
 
-### Basilica GPU Compute (Optional)
+### Basilica GPU Cloud (Optional)
 
-For offloading training to decentralised GPUs on Bittensor SN39 (see [Basilica GPU Compute](#basilica-gpu-compute)):
+For renting cheap GPUs via the Basilica marketplace (see [Basilica GPU Cloud](#basilica-gpu-cloud)):
 
 ```env
-BASILICA_API_KEY=your_basilica_api_key_here
-BASILICA_ENDPOINT=https://api.basilica.tplr.ai
+BASILICA_API_TOKEN=your_basilica_api_token_here
+BASILICA_API_URL=https://api.basilica.ai
+BASILICA_MAX_HOURLY_RATE=0.44
+BASILICA_ALLOWED_GPU_TYPES=TESLA V100,RTX-A4000,RTX-A6000
 ```
 
 ### Bittensor Wallet (Optional)
@@ -933,7 +935,7 @@ The registry:
 | Execution | `run_experiment`, `run_preset`, `sweep_presets` | Trainer, Debugger |
 | Analysis | `compare_results`, `session_summary` | Planner, Trainer |
 | Publishing | `publish_model`, `log_to_wandb` | Publisher |
-| Training | `run_training_local`, `submit_basilica_job` | (advanced) |
+| Training | `run_training_local`, `list_available_gpus`, `rent_cheapest_gpu`, `stop_gpu_rental` | Trainer |
 | Storage | `save_to_hippius`, `list_hippius_runs`, `load_hippius_run`, `load_hippius_history` | (advanced) |
 | Utilities | `run_python`, `read_file`, `write_file` | (advanced) |
 | Market Data | `get_price`, `get_price_history` | (advanced) |
@@ -1216,12 +1218,13 @@ The pipeline has built-in stall detection. If the same config is produced twice 
 - Try a different port: `python main.py bridge --port 9000`
 - Ensure all dependencies are installed (`pip install -r requirements.txt`)
 
-### Basilica job failures
+### Basilica GPU rental issues
 
-- Verify `BASILICA_API_KEY` is set in `.env`
-- Check the job status for error messages: the `JobStatus.error` field contains details
-- Ensure your training script is self-contained and can run inside the Docker container
-- Default timeout is 60 minutes — increase `timeout_minutes` for longer training runs
+- Verify `BASILICA_API_TOKEN` is set in `.env`
+- Run `list_available_gpus` to check if any offerings match your budget cap
+- If no offerings appear, increase `BASILICA_MAX_HOURLY_RATE` or broaden `BASILICA_ALLOWED_GPU_TYPES`
+- Use `list_active_rentals` to check the status of running rentals
+- Always call `stop_gpu_rental` when training completes to avoid unnecessary charges
 
 ### Hippius storage not working
 
