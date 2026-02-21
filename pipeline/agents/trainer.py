@@ -32,20 +32,22 @@ class TrainerAgent(BaseAgentWrapper):
             "session_summary",
             # Memory management
             "flush_session",
-            # Data loading (HF OHLCV datasets)
+            # Data loading (HF OHLCV datasets — for local/lightweight use only)
             "create_data_loader",
             "data_loader_info",
             "split_data",
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_experiment_runs",
-            # Basilica GPU cloud
+            # Basilica GPU cloud — rent, setup, train remotely, stop
             "list_available_gpus",
             "rent_gpu",
             "rent_cheapest_gpu",
             "list_active_rentals",
             "stop_gpu_rental",
             "check_gpu_balance",
+            "setup_basilica_pod",
+            "run_experiment_on_basilica",
         ]
         return build_toolset(*tool_names)
 
