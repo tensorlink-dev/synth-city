@@ -68,6 +68,9 @@ def bootstrap_hippius() -> list[str]:
 
     Returns a list of prefixes that were seeded (empty list if the bucket
     already has content or Hippius is not configured).
+
+    If the Hippius endpoint is unreachable the function returns immediately
+    instead of blocking on cascading retries.
     """
     try:
         from pipeline.tools.hippius_store import _ensure_bucket, _get_client, _list_keys, _put_json
@@ -78,6 +81,32 @@ def bootstrap_hippius() -> list[str]:
     if client is None:
         logger.debug("Hippius not configured — skipping bucket bootstrap")
         return []
+
+    # ------------------------------------------------------------------
+    # Quick reachability check — single attempt, no retries.
+    # If the endpoint is down we return immediately rather than spending
+    # minutes in cascading retry loops across _ensure_bucket / _list_keys
+    # / _put_json.
+    # ------------------------------------------------------------------
+    try:
+        from config import HIPPIUS_BUCKET
+        client.head_bucket(Bucket=HIPPIUS_BUCKET)
+    except Exception as exc:
+        exc_str = str(exc)
+        is_unreachable = any(s in exc_str for s in (
+            "Could not connect",
+            "EndpointConnectionError",
+            "ConnectionError",
+            "ConnectTimeoutError",
+            "ReadTimeoutError",
+        ))
+        if is_unreachable:
+            logger.warning(
+                "Hippius endpoint unreachable — skipping bootstrap: %s", exc,
+            )
+            return []
+        # Non-connection errors (e.g. NoSuchBucket, 403) are fine — the
+        # endpoint is reachable and _ensure_bucket will handle creation.
 
     _ensure_bucket()
 

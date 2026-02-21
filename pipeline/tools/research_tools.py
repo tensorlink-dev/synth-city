@@ -111,7 +111,12 @@ def _do_flush(keep_top_n: int = SESSION_KEEP_TOP_N) -> dict:
             if exp_config and isinstance(exp_config, dict):
                 session.create_experiment(
                     blocks=exp_config.get("model", {}).get("backbone", {}).get("blocks", []),
-                    head=exp_config.get("model", {}).get("head", {}).get("_target_", "GBMHead").split(".")[-1],
+                    head=(
+                        exp_config.get("model", {})
+                        .get("head", {})
+                        .get("_target_", "GBMHead")
+                        .split(".")[-1]
+                    ),
                     d_model=exp_config.get("model", {}).get("backbone", {}).get("d_model", 32),
                 )
                 restored += 1
@@ -129,7 +134,12 @@ def _do_flush(keep_top_n: int = SESSION_KEEP_TOP_N) -> dict:
 # Discovery tools
 # ---------------------------------------------------------------------------
 
-@tool(description="List all available backbone blocks with their parameters, strengths, and compute cost.")
+@tool(
+    description=(
+        "List all available backbone blocks with their"
+        " parameters, strengths, and compute cost."
+    ),
+)
 def list_blocks() -> str:
     """Discover registered blocks in open-synth-miner."""
     try:
@@ -171,7 +181,8 @@ def list_presets() -> str:
         "Create an experiment config from blocks and a head. "
         "blocks: JSON list of block names (e.g. [\"TransformerBlock\", \"LSTMBlock\"]). "
         "head: head name (e.g. \"GBMHead\"). "
-        "Optional overrides: d_model, horizon, n_paths, lr, seq_len, batch_size, feature_dim as JSON."
+        "Optional overrides: d_model, horizon, n_paths, lr, "
+        "seq_len, batch_size, feature_dim as JSON."
     ),
     parameters_schema={
         "type": "object",
@@ -186,7 +197,10 @@ def list_presets() -> str:
             "batch_size": {"type": "integer", "description": "Batch size (default: 4)"},
             "feature_dim": {"type": "integer", "description": "Input features (default: 4)"},
             "head_kwargs": {"type": "string", "description": "Extra head params as JSON dict"},
-            "block_kwargs": {"type": "string", "description": "Per-block extra params as JSON list of dicts"},
+            "block_kwargs": {
+                "type": "string",
+                "description": "Per-block extra params as JSON list of dicts",
+            },
         },
         "required": ["blocks"],
     },
@@ -226,7 +240,10 @@ def create_experiment(
         )
         return json.dumps(experiment, indent=2)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -323,7 +340,10 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
 
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 @tool(
@@ -350,7 +370,10 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
         result = session.run_preset(preset_name, epochs=epochs, overrides=ov)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 @tool(
@@ -361,7 +384,10 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
     parameters_schema={
         "type": "object",
         "properties": {
-            "preset_names": {"type": "string", "description": "JSON array of preset names (empty = all)"},
+            "preset_names": {
+                "type": "string",
+                "description": "JSON array of preset names (empty = all)",
+            },
             "epochs": {"type": "integer", "description": "Epochs per preset"},
         },
         "required": [],
@@ -375,14 +401,23 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
         result = session.sweep(preset_names=names, epochs=epochs)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 # ---------------------------------------------------------------------------
 # Comparison
 # ---------------------------------------------------------------------------
 
-@tool(description="Compare all experiment results accumulated in the current session. Returns ranking sorted by CRPS (best first).")
+@tool(
+    description=(
+        "Compare all experiment results accumulated in the"
+        " current session. Returns ranking sorted by CRPS"
+        " (best first)."
+    ),
+)
 def compare_results() -> str:
     """Compare all results from this session."""
     try:
@@ -404,7 +439,12 @@ def session_summary() -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
-@tool(description="Clear the research session (reset accumulated results). Use between unrelated experiment batches.")
+@tool(
+    description=(
+        "Clear the research session (reset accumulated results)."
+        " Use between unrelated experiment batches."
+    ),
+)
 def clear_session() -> str:
     """Reset the research session."""
     try:
@@ -427,7 +467,10 @@ def clear_session() -> str:
     parameters_schema={
         "type": "object",
         "properties": {
-            "keep_top_n": {"type": "integer", "description": "Keep top N results in memory (default 10)"},
+            "keep_top_n": {
+                "type": "integer",
+                "description": "Keep top N results in memory (default 10)",
+            },
         },
         "required": [],
     },

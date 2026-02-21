@@ -39,9 +39,18 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES: int = 3
 _BACKOFF_BASE: float = 2.0  # seconds: 2, 4, 8
 
+# Set to True after retries are exhausted on a connection error.  Once set,
+# all subsequent Hippius calls return immediately instead of blocking for
+# minutes with cascading retry cycles (e.g. when running inside Docker
+# without network access to the Hippius endpoint).
+_endpoint_unreachable: bool = False
+
 
 def _retry(func, *args, **kwargs):
     """Call *func* with retries and exponential backoff on connection errors."""
+    global _endpoint_unreachable
+    if _endpoint_unreachable:
+        raise ConnectionError("Hippius endpoint previously determined unreachable")
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
@@ -66,6 +75,7 @@ def _retry(func, *args, **kwargs):
                 attempt + 1, _MAX_RETRIES, delay, exc,
             )
             time.sleep(delay)
+    _endpoint_unreachable = True
     raise last_exc  # type: ignore[misc]
 
 
@@ -79,6 +89,8 @@ _client_lock = threading.Lock()
 def _get_client():
     """Return a boto3 S3 client pointed at the Hippius endpoint."""
     global _client
+    if _endpoint_unreachable:
+        return None
     if _client is not None:
         return _client
 
@@ -98,27 +110,44 @@ def _get_client():
             endpoint_url=HIPPIUS_ENDPOINT,
             aws_access_key_id=HIPPIUS_ACCESS_KEY,
             aws_secret_access_key=HIPPIUS_SECRET_KEY,
+            region_name="decentralized",
             config=BotoConfig(
                 signature_version="s3v4",
+                s3={"addressing_style": "path"},
                 retries={"max_attempts": 3, "mode": "adaptive"},
             ),
         )
         return _client
 
 
-def _ensure_bucket():
-    """Create the bucket if it doesn't exist yet."""
+_bucket_checked: bool = False
+
+
+def _ensure_bucket() -> bool:
+    """Create the bucket if it doesn't exist yet.  Returns True if reachable.
+
+    Results are cached so the (potentially expensive) check only runs once
+    per process lifetime.
+    """
+    global _bucket_checked
+    if _bucket_checked:
+        return True
     client = _get_client()
     if client is None:
-        return
+        return False
     try:
         _retry(client.head_bucket, Bucket=HIPPIUS_BUCKET)
+        _bucket_checked = True
+        return True
     except Exception:
         try:
             _retry(client.create_bucket, Bucket=HIPPIUS_BUCKET)
             logger.info("Created Hippius bucket: %s", HIPPIUS_BUCKET)
+            _bucket_checked = True
+            return True
         except Exception as exc:
             logger.warning("Could not create bucket %s: %s", HIPPIUS_BUCKET, exc)
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +333,10 @@ def save_comparison(comparison: dict) -> str | None:
         "properties": {
             "experiment": {"type": "string", "description": "Experiment config JSON"},
             "result": {"type": "string", "description": "Run result JSON"},
-            "name": {"type": "string", "description": "Experiment label (auto-generated if omitted)"},
+            "name": {
+                "type": "string",
+                "description": "Experiment label (auto-generated if omitted)",
+            },
         },
         "required": ["experiment", "result"],
     },

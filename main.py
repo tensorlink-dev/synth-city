@@ -179,7 +179,10 @@ def cmd_client(args: argparse.Namespace) -> None:
             result = client.get_history(args.extra[0], days=days)
         else:
             print(f"Unknown action: {action}")
-            print("Available: health blocks heads presets compare summary clear status run price history")
+            print(
+                "Available: health blocks heads presets compare"
+                " summary clear status run price history"
+            )
             sys.exit(1)
 
         print(json.dumps(result, indent=2, default=str))
@@ -301,6 +304,10 @@ def cmd_agent(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from cli.display import print_banner
+
+    print_banner()
+
     parser = argparse.ArgumentParser(
         description="synth-city — agentic pipeline for Bittensor SN50 competition"
     )
@@ -315,7 +322,10 @@ def main() -> None:
 
     # sweep
     p_sweep = subparsers.add_parser("sweep", help="Run a preset sweep")
-    p_sweep.add_argument("--presets", default=None, help="Comma-separated preset names (all if omitted)")
+    p_sweep.add_argument(
+        "--presets", default=None,
+        help="Comma-separated preset names (all if omitted)",
+    )
     p_sweep.add_argument("--epochs", type=int, default=1, help="Epochs per preset")
 
     # experiment
@@ -358,13 +368,19 @@ def main() -> None:
     p_client.add_argument("--publish", action="store_true", help="Publish when using 'run' action")
 
     # history
-    p_hist = subparsers.add_parser("history", help="Query experiment history (Hippius, W&B, HF Hub)")
+    p_hist = subparsers.add_parser(
+        "history",
+        help="Query experiment history (Hippius, W&B, HF Hub)",
+    )
     p_hist.add_argument("source", choices=["hippius", "wandb", "hf"], help="Data source")
     p_hist.add_argument("--limit", type=int, default=20, help="Max results to return")
     p_hist.add_argument("--order", default="best", choices=["best", "recent", "worst"],
                         help="Sort order for W&B runs")
     p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (W&B only)")
-    p_hist.add_argument("--run-id", default=None, help="Load a specific Hippius run ID ('latest' for most recent)")
+    p_hist.add_argument(
+        "--run-id", default=None,
+        help="Load a specific Hippius run ID ('latest' for most recent)",
+    )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
     # agent

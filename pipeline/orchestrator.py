@@ -72,7 +72,11 @@ class PipelineOrchestrator:
 
         # Extract plan for downstream agents
         plan_data = plan_result.structured or {}
-        task["plan"] = json.dumps(plan_data, indent=2) if isinstance(plan_data, dict) else str(plan_data)
+        task["plan"] = (
+            json.dumps(plan_data, indent=2)
+            if isinstance(plan_data, dict)
+            else str(plan_data)
+        )
 
         # Stage 2: Train (execute experiments from the plan)
         logger.info("=== STAGE 2: TRAINER ===")

@@ -42,7 +42,10 @@ def _ensure_dir(path: Path) -> None:
         "properties": {
             "filename": {
                 "type": "string",
-                "description": "Filename (e.g. 'wavelet_block.py'). Written to src/models/components/.",
+                "description": (
+                    "Filename (e.g. 'wavelet_block.py')."
+                    " Written to src/models/components/."
+                ),
             },
             "code": {
                 "type": "string",
@@ -117,7 +120,10 @@ def list_component_files() -> str:
     try:
         if not _COMPONENTS_DIR.exists():
             return json.dumps({"error": f"Directory not found: {_COMPONENTS_DIR}"})
-        files = sorted(f.name for f in _COMPONENTS_DIR.iterdir() if f.is_file() and f.suffix == ".py")
+        files = sorted(
+            f.name for f in _COMPONENTS_DIR.iterdir()
+            if f.is_file() and f.suffix == ".py"
+        )
         return json.dumps({"components_dir": str(_COMPONENTS_DIR), "files": files})
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
@@ -125,8 +131,10 @@ def list_component_files() -> str:
 
 @tool(
     description=(
-        "Trigger re-discovery of components so newly written blocks/heads appear in the registry. "
-        "Call this after write_component to make the new component available to list_blocks/list_heads."
+        "Trigger re-discovery of components so newly written "
+        "blocks/heads appear in the registry. "
+        "Call this after write_component to make the new component "
+        "available to list_blocks/list_heads."
     ),
 )
 def reload_registry() -> str:

@@ -18,6 +18,10 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git curl && \
     rm -rf /var/lib/apt/lists/*
 
+# ---- install uv for fast dependency resolution --------------------------------
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_SYSTEM_PYTHON=1
+
 WORKDIR /app
 
 # ---- install open-synth-miner first (changes less often) -------------------
@@ -26,18 +30,18 @@ ARG OSM_BRANCH=main
 
 RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner
 
-RUN pip install --no-cache-dir -e /app/open-synth-miner 2>/dev/null || \
+RUN uv pip install -e /app/open-synth-miner 2>/dev/null || \
     echo "open-synth-miner has no setup file — will use PYTHONPATH"
 
 ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
 
 # ---- install synth-city deps (cached layer) ---------------------------------
 COPY pyproject.toml requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN uv pip install -r requirements.txt
 
 # ---- copy synth-city source -------------------------------------------------
 COPY . .
-RUN pip install --no-cache-dir -e .
+RUN uv pip install -e .
 
 # ---- runtime ----------------------------------------------------------------
 # Bridge listens on 0.0.0.0 inside the container so Docker port mapping works
