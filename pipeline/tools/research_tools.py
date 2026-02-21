@@ -38,12 +38,20 @@ SESSION_MAX_RESULTS: int = 100
 SESSION_KEEP_TOP_N: int = 10
 
 # ---------------------------------------------------------------------------
-# Lazy-loaded singleton ResearchSession
+# Lazy-loaded ResearchSession — per-bot when running via bridge, global for CLI
 # ---------------------------------------------------------------------------
 _session = None
 
 
 def _get_session():
+    """Return the ResearchSession for the current bot, or the global fallback."""
+    from integrations.openclaw.bot_sessions import get_current_session
+
+    bot = get_current_session()
+    if bot is not None:
+        return bot.get_research_session()
+
+    # CLI / standalone fallback
     global _session
     if _session is None:
         from src.research.agent_api import ResearchSession

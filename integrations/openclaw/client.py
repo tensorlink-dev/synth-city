@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BRIDGE_URL = os.getenv("SYNTH_BRIDGE_URL", "http://127.0.0.1:8377")
 _DEFAULT_TIMEOUT = float(os.getenv("SYNTH_BRIDGE_TIMEOUT", "300"))
 _DEFAULT_API_KEY = os.getenv("BRIDGE_API_KEY", "")
+_DEFAULT_BOT_ID = os.getenv("SYNTH_BOT_ID", "")
 
 # Retry settings for transient failures
 _MAX_RETRIES = 3
@@ -51,11 +52,13 @@ class SynthCityClient:
         timeout: float = _DEFAULT_TIMEOUT,
         retries: int = _MAX_RETRIES,
         api_key: str = _DEFAULT_API_KEY,
+        bot_id: str = _DEFAULT_BOT_ID,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.retries = retries
         self.api_key = api_key
+        self.bot_id = bot_id
 
     def _request(
         self,
@@ -70,6 +73,8 @@ class SynthCityClient:
         headers: dict[str, str] = {}
         if self.api_key:
             headers["X-API-Key"] = self.api_key
+        if self.bot_id:
+            headers["X-Bot-Id"] = self.bot_id
         last_exc: Exception | None = None
 
         for attempt in range(1, self.retries + 1):
