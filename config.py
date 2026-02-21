@@ -102,6 +102,7 @@ RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "1"))
 # ---------------------------------------------------------------------------
 # Publishing (HF Hub + W&B + Trackio)
 # ---------------------------------------------------------------------------
+HF_TOKEN: str = os.getenv("HF_TOKEN", "")
 HF_REPO_ID: str = os.getenv("HF_REPO_ID", "")
 WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
 TRACKIO_PROJECT: str = os.getenv("TRACKIO_PROJECT", "synth-city")
