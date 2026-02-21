@@ -89,13 +89,13 @@ class Monitor:
         self._experiments_run: int = 0
         self._best_crps: float | None = None
         self._best_experiment_name: str = ""
-        self._crps_history: list[dict[str, Any]] = []
+        self._crps_history: deque[dict[str, Any]] = deque(maxlen=_MAX_CRPS_HISTORY)
 
         self._recent_tool_calls: deque[dict[str, Any]] = deque(maxlen=_MAX_TOOL_CALLS)
 
         self._started_at: float | None = None
         self._stall_detected: bool = False
-        self._errors: list[str] = []
+        self._errors: deque[str] = deque(maxlen=50)
 
     # ---- public API ----
 
@@ -142,12 +142,12 @@ class Monitor:
                 "experiments_run": self._experiments_run,
                 "best_crps": self._best_crps,
                 "best_experiment_name": self._best_experiment_name,
-                "crps_history": list(self._crps_history[-_MAX_CRPS_HISTORY:]),
+                "crps_history": list(self._crps_history),
                 "recent_tool_calls": list(self._recent_tool_calls),
                 "started_at": self._started_at,
                 "elapsed_seconds": elapsed,
                 "stall_detected": self._stall_detected,
-                "errors": list(self._errors[-20:]),
+                "errors": list(self._errors),
             }
 
     def events_since(self, after: float) -> list[dict[str, Any]]:

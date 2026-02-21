@@ -375,6 +375,12 @@ function drawChart(history) {
   ctx.fillText('Experiment #', pad.left + w / 2 - 30, canvas.height - 2);
 }
 
+// -- HTML escaping --
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
 // -- Event formatting --
 const STAGE_NAMES = {planner:'PLANNER', trainer:'TRAINER', check_debug:'CHECK/DEBUG', publisher:'PUBLISHER'};
 
@@ -386,28 +392,29 @@ function fmtEvent(ev) {
 
   switch (ev.event_type) {
     case 'stage_start':
-      detail = `STAGE ${d.stage_num}: ${STAGE_NAMES[d.stage] || d.stage}`; break;
+      detail = `STAGE ${esc(d.stage_num)}: ${esc(STAGE_NAMES[d.stage] || d.stage)}`; break;
     case 'agent_turn':
-      detail = `turn ${d.turn}`; break;
+      detail = `turn ${esc(d.turn)}`; break;
     case 'tool_call':
-      detail = `${d.name} called`; break;
+      detail = `${esc(d.name)} called`; break;
     case 'tool_result':
-      detail = `${d.name} -> ${(d.size||0).toLocaleString()} chars`; break;
+      detail = `${esc(d.name)} -&gt; ${(d.size||0).toLocaleString()} chars`; break;
     case 'experiment_result':
-      detail = `${d.name || '?'} CRPS=${d.crps != null ? d.crps.toFixed(6) : 'N/A'}`; break;
+      detail = `${esc(d.name || '?')} CRPS=${d.crps != null ? d.crps.toFixed(6) : 'N/A'}`; break;
     case 'retry_attempt':
-      detail = `attempt ${d.attempt}/${d.max_attempts} temp=${(d.temperature||0).toFixed(2)}`; break;
+      detail = `attempt ${esc(d.attempt)}/${esc(d.max_attempts)} temp=${(d.temperature||0).toFixed(2)}`; break;
     case 'stall_detected':
       detail = 'STALL DETECTED'; break;
     case 'pipeline_start':
       detail = 'pipeline started'; break;
     case 'pipeline_complete':
       detail = d.success ? 'pipeline completed' : 'pipeline FAILED'; break;
-    case 'agent_start':
-      const n = (d.name||'').split('/').pop();
-      detail = `${n} started (${d.max_turns} turns)`; break;
+    case 'agent_start': {
+      const n = esc((d.name||'').split('/').pop());
+      detail = `${n} started (${esc(d.max_turns)} turns)`; break;
+    }
     case 'agent_finish':
-      detail = `agent finished (${d.success ? 'OK' : 'FAIL'}, ${d.turns} turns)`; break;
+      detail = `agent finished (${d.success ? 'OK' : 'FAIL'}, ${esc(d.turns)} turns)`; break;
   }
 
   return `<div class="event-row">` +
@@ -466,7 +473,7 @@ function update(snap, newEvents) {
   // Experiments table
   const sorted = [...(snap.crps_history || [])].filter(h => h.crps != null).sort((a,b) => a.crps - b.crps);
   document.getElementById('expBody').innerHTML = sorted.slice(0, 15).map((e, i) =>
-    `<tr><td>${i+1}</td><td>${e.name || '?'}</td><td class="crps">${e.crps.toFixed(6)}</td></tr>`
+    `<tr><td>${i+1}</td><td>${esc(e.name || '?')}</td><td class="crps">${e.crps.toFixed(6)}</td></tr>`
   ).join('') || '<tr><td colspan="3" style="color:var(--text-dim)">No experiments yet</td></tr>';
 
   // Events feed
@@ -485,7 +492,7 @@ function update(snap, newEvents) {
   (snap.errors || []).slice(-5).forEach(e => alerts.push(e));
   if (alerts.length) {
     alertsEl.className = 'alerts-section';
-    alertsEl.innerHTML = alerts.map(a => `<div class="alert-item">${a}</div>`).join('');
+    alertsEl.innerHTML = alerts.map(a => `<div class="alert-item">${esc(a)}</div>`).join('');
   } else {
     alertsEl.className = 'alerts-section clear';
     alertsEl.innerHTML = '<div class="alert-none">No alerts</div>';

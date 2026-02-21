@@ -207,7 +207,7 @@ def _activity_panel(events: list[dict[str, Any]]) -> Panel:
         lines.append("\n")
 
     if not events:
-        lines.append("  [dim]Waiting for events...[/dim]")
+        lines.append("  Waiting for events...", style="dim")
 
     return Panel(lines, title="[bold yellow]Activity[/bold yellow]", border_style="yellow")
 
@@ -290,6 +290,9 @@ def run_dashboard(
             if new_events:
                 all_events.extend(new_events)
                 last_ts = new_events[-1]["timestamp"]
+                # Cap to prevent unbounded memory growth
+                if len(all_events) > 500:
+                    all_events = all_events[-500:]
             live.update(build_dashboard_layout(snap, all_events))
             time.sleep(1.0)
 
@@ -322,6 +325,9 @@ def run_dashboard_remote(bridge_url: str) -> None:
                     if isinstance(new, list) and new:
                         all_events.extend(new)
                         last_ts = new[-1].get("timestamp", last_ts)
+                        # Cap to prevent unbounded memory growth
+                        if len(all_events) > 500:
+                            all_events = all_events[-500:]
                 except Exception:
                     snap = {"status": "disconnected", "errors": ["Bridge unreachable"]}
                     new = []

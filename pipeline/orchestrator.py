@@ -75,6 +75,7 @@ class PipelineOrchestrator:
 
         if not plan_result.success:
             logger.error("Planner failed — aborting pipeline")
+            _mon.emit("pipeline", "pipeline_complete", success=False)
             return results
 
         # Extract plan for downstream agents
@@ -97,6 +98,7 @@ class PipelineOrchestrator:
 
         if not train_result.success:
             logger.error("Trainer failed after retries — aborting pipeline")
+            _mon.emit("pipeline", "pipeline_complete", success=False)
             return results
 
         # Extract best experiment and metrics from trainer result
