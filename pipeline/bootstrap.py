@@ -79,7 +79,9 @@ def bootstrap_hippius() -> list[str]:
         logger.debug("Hippius not configured — skipping bucket bootstrap")
         return []
 
-    _ensure_bucket()
+    if not _ensure_bucket():
+        logger.warning("Hippius endpoint unreachable — skipping bucket bootstrap")
+        return []
 
     seeded: list[str] = []
     for prefix in _HIPPIUS_PREFIXES:

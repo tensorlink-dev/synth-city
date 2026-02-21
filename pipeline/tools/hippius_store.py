@@ -38,9 +38,18 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES: int = 3
 _BACKOFF_BASE: float = 2.0  # seconds: 2, 4, 8
 
+# Set to True after retries are exhausted on a connection error.  Once set,
+# all subsequent Hippius calls return immediately instead of blocking for
+# minutes with cascading retry cycles (e.g. when running inside Docker
+# without network access to the Hippius endpoint).
+_endpoint_unreachable: bool = False
+
 
 def _retry(func, *args, **kwargs):
     """Call *func* with retries and exponential backoff on connection errors."""
+    global _endpoint_unreachable
+    if _endpoint_unreachable:
+        raise ConnectionError("Hippius endpoint previously determined unreachable")
     last_exc: Exception | None = None
     for attempt in range(_MAX_RETRIES):
         try:
@@ -65,6 +74,7 @@ def _retry(func, *args, **kwargs):
                 attempt + 1, _MAX_RETRIES, delay, exc,
             )
             time.sleep(delay)
+    _endpoint_unreachable = True
     raise last_exc  # type: ignore[misc]
 
 
@@ -77,6 +87,8 @@ _client = None
 def _get_client():
     """Return a boto3 S3 client pointed at the Hippius endpoint."""
     global _client
+    if _endpoint_unreachable:
+        return None
     if _client is not None:
         return _client
 
@@ -99,19 +111,22 @@ def _get_client():
     return _client
 
 
-def _ensure_bucket():
-    """Create the bucket if it doesn't exist yet."""
+def _ensure_bucket() -> bool:
+    """Create the bucket if it doesn't exist yet.  Returns True if reachable."""
     client = _get_client()
     if client is None:
-        return
+        return False
     try:
         _retry(client.head_bucket, Bucket=HIPPIUS_BUCKET)
+        return True
     except Exception:
         try:
             _retry(client.create_bucket, Bucket=HIPPIUS_BUCKET)
             logger.info("Created Hippius bucket: %s", HIPPIUS_BUCKET)
+            return True
         except Exception as exc:
             logger.warning("Could not create bucket %s: %s", HIPPIUS_BUCKET, exc)
+            return False
 
 
 # ---------------------------------------------------------------------------
