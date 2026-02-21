@@ -38,6 +38,13 @@ _DANGEROUS_PATTERNS: set[str] = {
     "compile",
 }
 
+# Core tool files that must never be overwritten by authored tools
+_PROTECTED_FILES: set[str] = {
+    "__init__.py",
+    "registry.py",
+    "tool_authoring.py",
+}
+
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
@@ -142,6 +149,13 @@ def write_tool(filename: str, code: str) -> str:
     """Write a tool module into pipeline/tools/ with multi-layer validation."""
     try:
         filename = _safe_filename(filename)
+
+        # Reject writes to core framework files
+        if filename in _PROTECTED_FILES:
+            return json.dumps({
+                "error": f"Cannot overwrite protected file: {filename!r}. "
+                f"Protected: {sorted(_PROTECTED_FILES)}"
+            })
 
         # Layer 1: syntax check
         err = _validate_python(code)
@@ -253,16 +267,23 @@ def validate_tool(tool_name: str, test_args: str) -> str:
         except json.JSONDecodeError as exc:
             return json.dumps({"error": f"Invalid test_args JSON: {exc}"})
 
+        # Determine the module that owns the tool function so we can
+        # import it in the subprocess (the subprocess starts with a
+        # fresh registry, so we must trigger the @tool registration).
+        tool_module = getattr(td.func, "__module__", None) or ""
+
         # Build a validation script that imports and calls the tool
         args_repr = json.dumps(args_dict)
         script = textwrap.dedent(f"""\
             import json, sys, traceback
             try:
+                # Import the specific module that registers the tool
+                tool_module = {tool_module!r}
+                if tool_module:
+                    import importlib
+                    importlib.import_module(tool_module)
+
                 from pipeline.tools.registry import get_tool
-                # Ensure tool modules are imported
-                import pipeline.tools  # noqa: F401
-                for attr in dir(pipeline.tools):
-                    pass
                 td = get_tool({tool_name!r})
                 if td is None:
                     print(json.dumps({{"error": "Tool not found after import"}}))

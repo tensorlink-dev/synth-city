@@ -56,10 +56,21 @@ class MetaStrategy:
 
         # Validate per-stage overrides
         for stage, overrides in self.per_stage_overrides.items():
+            if not isinstance(overrides, dict):
+                errors.append(
+                    f"per_stage_overrides[{stage!r}] must be a dict, "
+                    f"got {type(overrides).__name__}"
+                )
+                continue
             for param, val in overrides.items():
                 if param in _BOUNDS:
                     lo, hi = _BOUNDS[param]
-                    if val < lo or val > hi:
+                    if not isinstance(val, (int, float)):
+                        errors.append(
+                            f"per_stage_overrides[{stage!r}].{param}={val!r} "
+                            f"must be numeric"
+                        )
+                    elif val < lo or val > hi:
                         errors.append(
                             f"per_stage_overrides[{stage!r}].{param}={val} "
                             f"out of bounds [{lo}, {hi}]"

@@ -254,6 +254,11 @@ def reorder_pipeline_stage(name: str, after_stage: str) -> str:
                 "error": f"Cannot reorder protected stage: {name!r}"
             })
 
+        if name == after_stage:
+            return json.dumps({
+                "error": "Cannot place a stage after itself"
+            })
+
         # Find insertion point
         insert_after_idx = None
         for i, s in enumerate(specs):

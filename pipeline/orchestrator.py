@@ -188,9 +188,8 @@ class PipelineOrchestrator:
                 _mon.emit("pipeline", "pipeline_complete", success=False)
                 return results
 
-            # Set default user_message if not already set
-            if "user_message" not in task:
-                task["user_message"] = stage.user_message
+            # Always set the stage's user_message (prevents bleed from prior stages)
+            task["user_message"] = stage.user_message
 
             # Run the stage (with or without retry)
             if stage.retry:
@@ -234,6 +233,19 @@ class PipelineOrchestrator:
                 if result.structured:
                     results["publish_info"] = result.structured
 
+        # If we reached here without early return, the pipeline succeeded.
+        # (check_debug sets success based on its own pass/fail; if there's
+        # no check_debug stage in the pipeline we still mark success.)
+        if "success" not in results or not results["success"]:
+            # Only override if check_debug didn't already set it to True
+            # Check if all required stages passed
+            all_passed = all(
+                s.get("success", False) or s.get("passed", False)
+                for s in results["stages"]
+            )
+            if all_passed:
+                results["success"] = True
+
         # Attach best experiment info to the summary
         if best:
             results["best_experiment"] = best.get("experiment")
@@ -266,9 +278,6 @@ class PipelineOrchestrator:
         temp = params["base_temperature"]
         agent = agent_cls(temperature=temp)
 
-        if "user_message" not in task:
-            task["user_message"] = stage.user_message
-
         try:
             result = agent.run(task)
         except Exception as exc:
@@ -288,15 +297,6 @@ class PipelineOrchestrator:
         )
 
         return result
-
-    # ----------------------------------------------------------- planner
-    def _run_planner(self, task: dict[str, Any]) -> AgentResult:
-        agent = PlannerAgent(temperature=self.base_temperature)
-        task["user_message"] = (
-            "Discover the available components and produce an experiment plan "
-            "to find the best architecture for SN50 CRPS."
-        )
-        return agent.run(task)
 
     # ----------------------------------------------------------- retry wrapper
     def _run_with_retry(
@@ -329,14 +329,12 @@ class PipelineOrchestrator:
 
             agent = agent_cls(temperature=temp)
 
-            # Inject failure context from previous attempt
+            # Inject failure context from previous attempt, or use default
             if last_result and not last_result.success:
                 task["user_message"] = (
                     f"Previous attempt failed. Error: {last_result.raw_text[:1000]}\n\n"
                     f"Please try a different approach. Attempt {attempt + 1}/{max_retries}."
                 )
-            elif "user_message" not in task:
-                task["user_message"] = "Begin the task."
 
             try:
                 result = agent.run(task)
@@ -483,12 +481,6 @@ class PipelineOrchestrator:
                             break
 
         return {"passed": False, "attempts": max_retries, "stages": stage_results}
-
-    # ----------------------------------------------------------- publisher
-    def _run_publisher(self, task: dict[str, Any]) -> AgentResult:
-        agent = PublisherAgent(temperature=self.base_temperature)
-        task["user_message"] = "Publish the best model to HF Hub."
-        return agent.run(task)
 
     # ----------------------------------------------------------- context extraction
     @staticmethod
