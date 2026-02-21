@@ -29,26 +29,25 @@ console = Console(theme=_THEME, highlight=False)
 # ── Banner ───────────────────────────────────────────────────────────────────
 
 _BANNER_LINES = [
-    "███████╗██╗   ██╗███╗   ██╗████████╗██╗  ██╗",
-    "██╔════╝╚██╗ ██╔╝████╗  ██║╚══██╔══╝██║  ██║",
-    "███████╗ ╚████╔╝ ██╔██╗ ██║   ██║   ███████║",
-    "╚════██║  ╚██╔╝  ██║╚██╗██║   ██║   ██╔══██║",
-    "███████║   ██║   ██║ ╚████║   ██║   ██║  ██║",
-    "╚══════╝   ╚═╝   ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝",
+    "███████╗██╗   ██╗███╗   ██╗████████╗██╗  ██╗     ██████╗██╗████████╗██╗   ██╗",
+    "██╔════╝╚██╗ ██╔╝████╗  ██║╚══██╔══╝██║  ██║    ██╔════╝██║╚══██╔══╝╚██╗ ██╔╝",
+    "███████╗ ╚████╔╝ ██╔██╗ ██║   ██║   ███████║    ██║     ██║   ██║    ╚████╔╝",
+    "╚════██║  ╚██╔╝  ██║╚██╗██║   ██║   ██╔══██║    ██║     ██║   ██║     ╚██╔╝",
+    "███████║   ██║   ██║ ╚████║   ██║   ██║  ██║    ╚██████╗██║   ██║      ██║",
+    "╚══════╝   ╚═╝   ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝     ╚═════╝╚═╝   ╚═╝      ╚═╝",
 ]
 
 _GRADIENT = ["#00d4ff", "#00b4ff", "#0094ff", "#0074ff", "#0054ff", "#0034ff"]
 
 
 def print_banner(subtitle: str = "agentic pipeline for Bittensor SN50") -> None:
-    """Print the stylised SYNTH banner with gradient colouring."""
+    """Print the stylised SYNTH CITY banner with gradient colouring."""
     text = Text()
     for i, line in enumerate(_BANNER_LINES):
         colour = _GRADIENT[i % len(_GRADIENT)]
-        text.append(line + "\n", style=colour)
-
-    city = Text("              C I T Y", style="bold #00d4ff")
-    text.append(city)
+        text.append(line, style=colour)
+        if i < len(_BANNER_LINES) - 1:
+            text.append("\n")
 
     panel = Panel(
         text,

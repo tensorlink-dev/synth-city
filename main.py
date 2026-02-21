@@ -299,6 +299,10 @@ def cmd_agent(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    from cli.display import print_banner
+
+    print_banner()
+
     parser = argparse.ArgumentParser(
         description="synth-city — agentic pipeline for Bittensor SN50 competition"
     )
