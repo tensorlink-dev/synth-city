@@ -12,7 +12,7 @@ import json
 import logging
 import traceback
 
-from config import HF_REPO_ID, TRACKIO_PROJECT, WANDB_PROJECT
+from config import HF_REPO_ID, HF_TOKEN, TRACKIO_PROJECT, WANDB_PROJECT
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,10 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
         from src.models.factory import create_model
         from src.models.registry import discover_components, registry
         from src.tracking.hub_manager import HubManager
+
+        if HF_TOKEN:
+            from huggingface_hub import login
+            login(token=HF_TOKEN, add_to_git_credential=False)
 
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
         target_repo = repo_id or HF_REPO_ID

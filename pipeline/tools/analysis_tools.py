@@ -13,7 +13,7 @@ import logging
 import traceback
 from typing import Any
 
-from config import HF_REPO_ID
+from config import HF_REPO_ID, HF_TOKEN
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
@@ -252,7 +252,7 @@ def list_hf_models(repo_id: str = "") -> str:
         if not target_repo:
             return json.dumps({"error": "No HF_REPO_ID configured"})
 
-        api = HfApi()
+        api = HfApi(token=HF_TOKEN or None)
 
         # Get repo info
         info = api.repo_info(repo_id=target_repo, repo_type="model")
@@ -267,7 +267,7 @@ def list_hf_models(repo_id: str = "") -> str:
             file_list.append(entry)
 
         # List branches/tags (model versions)
-        refs = list_repo_refs(repo_id=target_repo, repo_type="model")
+        refs = list_repo_refs(repo_id=target_repo, repo_type="model", token=HF_TOKEN or None)
         branches = [{"name": b.name, "ref": b.ref} for b in refs.branches] if refs.branches else []
         tags = [{"name": t.name, "ref": t.ref} for t in refs.tags] if refs.tags else []
 
@@ -311,11 +311,11 @@ def fetch_hf_model_card(repo_id: str = "", revision: str = "main") -> str:
         if not target_repo:
             return json.dumps({"error": "No HF_REPO_ID configured"})
 
-        card = ModelCard.load(target_repo, revision=revision)
+        card = ModelCard.load(target_repo, revision=revision, token=HF_TOKEN or None)
         card_data = card.data.to_dict() if card.data else {}
 
         # Try to load config.json if it exists
-        api = HfApi()
+        api = HfApi(token=HF_TOKEN or None)
         config = None
         try:
             config_path = api.hf_hub_download(
@@ -365,7 +365,7 @@ def fetch_hf_artifact(filename: str, repo_id: str = "", revision: str = "main") 
         if not target_repo:
             return json.dumps({"error": "No HF_REPO_ID configured"})
 
-        api = HfApi()
+        api = HfApi(token=HF_TOKEN or None)
         local_path = api.hf_hub_download(
             repo_id=target_repo,
             filename=filename,
