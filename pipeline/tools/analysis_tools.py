@@ -45,14 +45,40 @@ logger = logging.getLogger(__name__)
 def fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
     """Fetch past experiment runs from Hippius storage."""
     try:
-        from pipeline.tools.hippius_store import _get_json, _list_keys
+        from pipeline.tools import hippius_store as _hs
 
-        keys = _list_keys("experiments/", max_keys=2000)
+        if _hs._endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+                "total": 0,
+                "runs": [],
+            })
+
+        keys = _hs._list_keys("experiments/", max_keys=2000)
+        if not keys:
+            return json.dumps({"total": 0, "order": order, "runs": []}, indent=2)
 
         experiments = []
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         for key in keys:
-            exp = _get_json(key)
-            if exp and isinstance(exp, dict):
+            if _hs._endpoint_unreachable:
+                break
+            exp = _hs._get_json(key)
+            if exp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(
+                        "fetch_experiment_runs: %d consecutive download failures, "
+                        "stopping early (%d/%d keys fetched)",
+                        consecutive_failures, len(experiments), len(keys),
+                    )
+                    break
+                continue
+            consecutive_failures = 0
+            if isinstance(exp, dict):
                 result = exp.get("result", {})
                 metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
                 crps = metrics.get("crps") if isinstance(metrics, dict) else None
@@ -108,15 +134,22 @@ def fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
 def get_experiment_run_detail(run_id: str) -> str:
     """Get full details for a specific pipeline run from Hippius."""
     try:
-        from pipeline.tools.hippius_store import _get_json, _list_keys
+        from pipeline.tools import hippius_store as _hs
+
+        if _hs._endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+            })
 
         if run_id == "latest":
-            latest = _get_json("pipeline_runs/latest.json")
+            latest = _hs._get_json("pipeline_runs/latest.json")
             if not latest:
                 return json.dumps({"error": "No runs found in Hippius"})
             run_id = latest["run_id"]
 
-        summary = _get_json(f"pipeline_runs/{run_id}/summary.json")
+        summary = _hs._get_json(f"pipeline_runs/{run_id}/summary.json")
 
         data: dict[str, Any] = {"run_id": run_id}
         if summary:
@@ -126,11 +159,20 @@ def get_experiment_run_detail(run_id: str) -> str:
             data["metrics"] = summary.get("metrics", {})
 
         # Load individual eval results for this run
-        exp_keys = _list_keys(f"experiments/{run_id}/")
+        exp_keys = _hs._list_keys(f"experiments/{run_id}/")
         experiments = []
+        consecutive_failures = 0
         for key in exp_keys:
-            exp = _get_json(key)
-            if exp and isinstance(exp, dict):
+            if _hs._endpoint_unreachable:
+                break
+            exp = _hs._get_json(key)
+            if exp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    break
+                continue
+            consecutive_failures = 0
+            if isinstance(exp, dict):
                 result = exp.get("result", {})
                 metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
                 experiments.append({
@@ -173,15 +215,35 @@ def get_experiment_run_detail(run_id: str) -> str:
 def analyze_experiment_trends(limit: int = 50) -> str:
     """Analyse CRPS improvement trends across experiments in Hippius."""
     try:
-        from pipeline.tools.hippius_store import _get_json, _list_keys
+        from pipeline.tools import hippius_store as _hs
 
-        keys = _list_keys("experiments/", max_keys=2000)
+        if _hs._endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+            })
+
+        keys = _hs._list_keys("experiments/", max_keys=2000)
 
         entries = []
+        consecutive_failures = 0
         for key in keys:
-            exp = _get_json(key)
+            if _hs._endpoint_unreachable:
+                break
+            exp = _hs._get_json(key)
             if not exp or not isinstance(exp, dict):
+                if exp is None:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        logger.warning(
+                            "analyze_experiment_trends: stopping early after %d "
+                            "consecutive failures (%d/%d keys fetched)",
+                            consecutive_failures, len(entries), len(keys),
+                        )
+                        break
                 continue
+            consecutive_failures = 0
             result = exp.get("result", {})
             metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
             crps = metrics.get("crps") if isinstance(metrics, dict) else None

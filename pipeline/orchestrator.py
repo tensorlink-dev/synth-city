@@ -165,6 +165,29 @@ class PipelineOrchestrator:
         return agent.run(task)
 
     # ----------------------------------------------------------- retry wrapper
+    @staticmethod
+    def _is_non_recoverable(result: AgentResult) -> bool:
+        """Check if an agent result indicates a non-recoverable error.
+
+        Detects environment errors (missing dependencies, broken imports) that
+        cannot be fixed by retrying with higher temperature.  Tools signal this
+        via ``"error_type": "environment"`` and ``"recoverable": false`` in their
+        structured output.
+        """
+        # Check structured result dict
+        if isinstance(result.structured, dict):
+            nested = result.structured.get("result", result.structured)
+            if isinstance(nested, dict):
+                if nested.get("error_type") == "environment":
+                    return True
+
+        # Check raw text for the JSON markers (agent may embed them in summary)
+        raw = result.raw_text or ""
+        if '"error_type": "environment"' in raw and '"recoverable": false' in raw:
+            return True
+
+        return False
+
     def _run_with_retry(
         self,
         agent_cls: type,
@@ -223,6 +246,19 @@ class PipelineOrchestrator:
                 attempt + 1,
                 result.raw_text[:500],
             )
+
+            # Stop retrying if the error is non-recoverable (e.g. missing dependency)
+            if self._is_non_recoverable(result):
+                logger.error(
+                    "%s: non-recoverable error detected — skipping remaining %d retries",
+                    stage_name,
+                    self.max_retries - attempt - 1,
+                )
+                _mon.emit(
+                    "pipeline", "non_recoverable_error",
+                    stage=stage_name, attempt=attempt + 1,
+                )
+                break
 
         return last_result or AgentResult(success=False, raw_text="No attempts made")
 

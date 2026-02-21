@@ -403,6 +403,13 @@ def load_hippius_run(run_id: str) -> str:
     single response so callers get the complete research picture.
     """
     try:
+        if _endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+            })
+
         if run_id == "latest":
             latest = _get_json("pipeline_runs/latest.json")
             if not latest:
@@ -422,10 +429,18 @@ def load_hippius_run(run_id: str) -> str:
         exp_keys = _list_keys(f"experiments/{run_id}/")
         if exp_keys:
             experiments = []
+            consecutive_failures = 0
             for key in exp_keys:
+                if _endpoint_unreachable:
+                    break
                 exp = _get_json(key)
-                if exp:
-                    experiments.append(exp)
+                if exp is None:
+                    consecutive_failures += 1
+                    if consecutive_failures >= 3:
+                        break
+                    continue
+                consecutive_failures = 0
+                experiments.append(exp)
             # Sort by CRPS (best first) for easy consumption
             experiments.sort(
                 key=lambda e: (
@@ -464,11 +479,41 @@ def load_hippius_run(run_id: str) -> str:
 def load_hippius_history(limit: int = 50) -> str:
     """Load all historical experiments from Hippius, ranked by CRPS."""
     try:
+        if _endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+                "total_stored": 0,
+                "returned": 0,
+                "experiments": [],
+            })
+
         keys = _list_keys("experiments/", max_keys=2000)
+        if not keys:
+            return json.dumps({
+                "total_stored": 0, "returned": 0, "experiments": [],
+            }, indent=2)
+
         experiments = []
+        consecutive_failures = 0
+        max_consecutive_failures = 3
         for key in keys:
+            if _endpoint_unreachable:
+                break
             exp = _get_json(key)
-            if exp and isinstance(exp, dict):
+            if exp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    logger.warning(
+                        "load_hippius_history: %d consecutive download failures, "
+                        "stopping early (%d/%d keys fetched)",
+                        consecutive_failures, len(experiments), len(keys),
+                    )
+                    break
+                continue
+            consecutive_failures = 0
+            if isinstance(exp, dict):
                 result = exp.get("result", {})
                 metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
                 crps = metrics.get("crps") if isinstance(metrics, dict) else None

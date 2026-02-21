@@ -45,6 +45,50 @@ SESSION_KEEP_TOP_N: int = 10
 # ---------------------------------------------------------------------------
 _session = None
 
+# Cached environment validation result: None = not checked, str = error message
+_env_error: str | None = None
+_env_checked: bool = False
+
+
+def _check_env() -> str | None:
+    """Validate that the ResearchSession can be imported.
+
+    Returns None if OK, or an error message string if the environment is broken.
+    The result is cached so the (potentially expensive) import check runs at most once.
+    """
+    global _env_error, _env_checked
+    if _env_checked:
+        return _env_error
+    try:
+        from integrations.openclaw.bot_sessions import get_current_session
+        bot = get_current_session()
+        if bot is not None:
+            # Bot session available — assume environment is OK
+            _env_checked = True
+            return None
+        from src.research.agent_api import ResearchSession  # noqa: F401
+        _env_checked = True
+        return None
+    except Exception as exc:
+        _env_error = f"{type(exc).__name__}: {exc}"
+        _env_checked = True
+        logger.error("Research environment check failed: %s", _env_error)
+        return _env_error
+
+
+def _env_error_response(tool_name: str) -> str:
+    """Return a structured JSON error for environment failures."""
+    return json.dumps({
+        "error": _env_error,
+        "error_type": "environment",
+        "recoverable": False,
+        "tool": tool_name,
+        "hint": (
+            "A required dependency is missing from the Python environment. "
+            "This cannot be fixed by retrying — install the missing package and restart."
+        ),
+    })
+
 
 def _get_session():
     """Return the ResearchSession for the current bot, or the global fallback."""
@@ -152,6 +196,9 @@ def _do_flush(keep_top_n: int = SESSION_KEEP_TOP_N) -> dict:
 )
 def list_blocks() -> str:
     """Discover registered blocks in open-synth-miner."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("list_blocks")
     try:
         session = _get_session()
         blocks = session.list_blocks()
@@ -163,6 +210,9 @@ def list_blocks() -> str:
 @tool(description="List all available head types with their parameters and expressiveness levels.")
 def list_heads() -> str:
     """Discover registered heads in open-synth-miner."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("list_heads")
     try:
         session = _get_session()
         heads = session.list_heads()
@@ -174,6 +224,9 @@ def list_heads() -> str:
 @tool(description="List all ready-to-run presets with their block+head combinations and tags.")
 def list_presets() -> str:
     """Discover built-in experiment presets."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("list_presets")
     try:
         session = _get_session()
         presets = session.list_presets()
@@ -238,6 +291,9 @@ def create_experiment(
     block_kwargs: str = "",
 ) -> str:
     """Create an experiment configuration dict."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("create_experiment")
     try:
         session = _get_session()
         block_list = json.loads(blocks) if isinstance(blocks, str) else blocks
@@ -299,6 +355,9 @@ def create_experiment(
 )
 def validate_experiment(experiment: str) -> str:
     """Validate an experiment config (no execution)."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("validate_experiment")
     try:
         session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
@@ -323,6 +382,9 @@ def validate_experiment(experiment: str) -> str:
 )
 def describe_experiment(experiment: str) -> str:
     """Get a full description of an experiment."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("describe_experiment")
     try:
         session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
@@ -355,6 +417,9 @@ def describe_experiment(experiment: str) -> str:
 )
 def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "") -> str:
     """Run an experiment and return metrics."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("run_experiment")
     try:
         session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
@@ -432,6 +497,9 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
 )
 def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str = "") -> str:
     """Run a preset experiment."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("run_preset")
     try:
         session = _get_session()
         ov = json.loads(overrides) if overrides else None
@@ -463,6 +531,9 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
 )
 def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
     """Sweep presets and return ranked comparison."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("sweep_presets")
     try:
         session = _get_session()
         names = json.loads(preset_names) if preset_names else None
@@ -488,6 +559,9 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
 )
 def compare_results() -> str:
     """Compare all results from this session."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("compare_results")
     try:
         session = _get_session()
         result = session.compare()
@@ -499,6 +573,9 @@ def compare_results() -> str:
 @tool(description="Get a summary of all experiments run in the current session.")
 def session_summary() -> str:
     """Get session summary: num experiments, comparison, all results."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("session_summary")
     try:
         session = _get_session()
         result = session.summary()
@@ -515,6 +592,9 @@ def session_summary() -> str:
 )
 def clear_session() -> str:
     """Reset the research session."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("clear_session")
     try:
         session = _get_session()
         session.clear()
@@ -545,6 +625,9 @@ def clear_session() -> str:
 )
 def flush_session(keep_top_n: int = SESSION_KEEP_TOP_N) -> str:
     """Flush session to Hippius and free memory, keeping top-N."""
+    env_err = _check_env()
+    if env_err:
+        return _env_error_response("flush_session")
     try:
         result = _do_flush(keep_top_n=keep_top_n)
         return json.dumps({"status": "flushed", **result}, indent=2)
