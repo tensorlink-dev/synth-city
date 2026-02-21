@@ -33,7 +33,7 @@ class TrainerAgent(BaseAgentWrapper):
             "flush_session",
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
-            "fetch_wandb_runs",
+            "fetch_experiment_runs",
             # Basilica GPU cloud
             "list_available_gpus",
             "rent_gpu",

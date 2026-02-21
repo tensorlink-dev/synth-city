@@ -11,9 +11,9 @@ Usage:
     # Run a single experiment
     python main.py experiment --blocks TransformerBlock,LSTMBlock --head SDEHead
 
-    # Query experiment history (Hippius, W&B, HF Hub)
+    # Query experiment history (Hippius, Trackio, HF Hub)
     python main.py history hippius
-    python main.py history wandb --order best --limit 10
+    python main.py history trackio --order best --limit 10
     python main.py history hf
 
     # Start the HTTP bridge server (works standalone or with OpenClaw)
@@ -215,29 +215,31 @@ def cmd_history(args: argparse.Namespace) -> None:
                 print(f"  {i}. [{exp.get('run_id', '?')[:15]}] {exp.get('name', '?'):20s}  "
                       f"CRPS={crps_str}  blocks=[{blocks}]  head={exp.get('head', '?')}")
 
-    elif source == "wandb":
-        from pipeline.tools.analysis_tools import analyze_wandb_trends, fetch_wandb_runs
+    elif source == "trackio":
+        from pipeline.tools.analysis_tools import (
+            analyze_experiment_trends,
+            fetch_experiment_runs,
+        )
         if args.trends:
-            result = analyze_wandb_trends(limit=args.limit)
+            result = analyze_experiment_trends(limit=args.limit)
             data = json.loads(result)
             print(json.dumps(data, indent=2, default=str))
             if "timeline" in data:
-                print(f"\n=== W&B CRPS TRENDS ({data.get('total_runs', '?')} runs) ===")
+                print(f"\n=== CRPS TRENDS ({data.get('total_runs', '?')} runs) ===")
                 print(f"  Best CRPS:   {data.get('best_crps', 'N/A')}")
                 print(f"  Best run:    {data.get('best_run', 'N/A')}")
                 print(f"  Latest CRPS: {data.get('latest_crps', 'N/A')}")
                 print(f"  Improvement: {data.get('improvement', 'N/A')}")
         else:
-            result = fetch_wandb_runs(limit=args.limit, order=args.order)
+            result = fetch_experiment_runs(limit=args.limit, order=args.order)
             data = json.loads(result)
             print(json.dumps(data, indent=2, default=str))
             if "runs" in data:
-                print(f"\n=== W&B RUNS (order={args.order}) ===")
+                print(f"\n=== EXPERIMENT RUNS (order={args.order}) ===")
                 for i, run in enumerate(data["runs"], 1):
                     crps = run.get("crps", "N/A")
                     crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
-                    print(f"  {i}. {run.get('name', '?'):30s}  CRPS={crps_str}  "
-                          f"state={run.get('state', '?')}")
+                    print(f"  {i}. {run.get('name', '?'):30s}  CRPS={crps_str}")
 
     elif source == "hf":
         from pipeline.tools.analysis_tools import list_hf_models
@@ -254,7 +256,7 @@ def cmd_history(args: argparse.Namespace) -> None:
 
     else:
         print(f"Unknown source: {source}")
-        print("Available: hippius, wandb, hf")
+        print("Available: hippius, trackio, hf")
         sys.exit(1)
 
 
@@ -370,13 +372,14 @@ def main() -> None:
     # history
     p_hist = subparsers.add_parser(
         "history",
-        help="Query experiment history (Hippius, W&B, HF Hub)",
+        help="Query experiment history (Hippius, Trackio, HF Hub)",
     )
-    p_hist.add_argument("source", choices=["hippius", "wandb", "hf"], help="Data source")
+    p_hist.add_argument("source", choices=["hippius", "trackio", "hf"], help="Data source")
     p_hist.add_argument("--limit", type=int, default=20, help="Max results to return")
     p_hist.add_argument("--order", default="best", choices=["best", "recent", "worst"],
-                        help="Sort order for W&B runs")
-    p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (W&B only)")
+                        help="Sort order for experiment runs")
+    p_hist.add_argument("--trends", action="store_true",
+                        help="Show CRPS trends (trackio only)")
     p_hist.add_argument(
         "--run-id", default=None,
         help="Load a specific Hippius run ID ('latest' for most recent)",

@@ -317,13 +317,13 @@ def synth_load_tested_experiments(limit: int = 50) -> str:
     return _curl_get(f"/history/experiments?limit={limit}")
 
 
-def synth_fetch_wandb_runs(limit: int = 20, order: str = "best") -> str:
-    """Fetch experiment runs from Weights & Biases.
+def synth_fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
+    """Fetch experiment runs from Hippius decentralised storage.
 
-    Returns run names, configs, CRPS scores, and W&B URLs.
+    Returns run names, configs, and CRPS scores.
     order: 'best' (lowest CRPS first), 'recent' (newest first), or 'worst'.
     """
-    return _curl_get(f"/history/wandb?limit={limit}&order={order}")
+    return _curl_get(f"/history/trackio?limit={limit}&order={order}")
 
 
 # ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@ The full pipeline chains 4-5 agents together:
 2. **Trainer** — executes experiments from the plan, reports the best result
 3. **CodeChecker** — validates the best experiment config and output shapes
 4. **Debugger** — fixes failed experiments (only runs if CodeChecker fails)
-5. **Publisher** — publishes the winning model to HF Hub + W&B (optional)
+5. **Publisher** — publishes the winning model to HF Hub + Trackio/Hippius (optional)
 
 The pipeline retries failed stages with escalating temperature (0.1 → 0.2 → 0.3...) and detects stalls when the debugger produces identical configs across attempts.
 
@@ -207,9 +207,9 @@ When the user asks about any of the topics below, call the bridge API using the 
   `GET http://127.0.0.1:8377/history/experiments?limit=50`
   Returns the best experiments across **all** pipeline runs, sorted by CRPS. Each entry includes block composition, head type, and full metrics. Use this to avoid re-testing architectures that have already been tried.
 
-- **"show W&B results"** / **"what does wandb say"**
-  `GET http://127.0.0.1:8377/history/wandb?limit=20&order=best`
-  Fetches runs from Weights & Biases. Order: `best` (lowest CRPS), `recent` (newest), or `worst`. Returns configs, metrics, tags, and W&B URLs.
+- **"show experiment results"** / **"what experiments have been run"**
+  `GET http://127.0.0.1:8377/history/trackio?limit=20&order=best`
+  Fetches experiment runs from Hippius decentralised storage. Order: `best` (lowest CRPS), `recent` (newest), or `worst`. Returns configs, metrics, and CRPS scores.
 
 ### Agent design (create new pipeline agents)
 
@@ -341,6 +341,6 @@ Higher-weighted assets (SPYX, XAU, AAPLX) have more impact on the overall score.
 - If the bridge returns `{"error": "..."}`, report the error clearly and suggest the user check that the bridge is running (`python main.py bridge`).
 - If pipeline status shows `"status": "failed"`, show the error and suggest rerunning with higher retries or different parameters.
 - If an experiment returns a CRPS of `null` or very high values (> 1.0), the model likely failed to converge — suggest trying a simpler architecture or lower learning rate.
-- If HF Hub or W&B endpoints return errors, verify that `HF_REPO_ID` / `WANDB_PROJECT` are configured in the `.env` file and that API tokens are set.
+- If HF Hub endpoints return errors, verify that `HF_REPO_ID` is configured in the `.env` file and that API tokens are set.
 - After writing a new component, **always** call the reload endpoint before attempting to use the new block/head in experiments. If reload fails, the component source likely has an import error — read it back and fix.
 - If Hippius history returns empty results, it means no experiments have been persisted to decentralised storage yet. Run the pipeline or manually save experiments first.

@@ -1,8 +1,8 @@
 """
-Analysis tools — read back from W&B and HF Hub for historical experiment analysis.
+Analysis tools — read back from Hippius and HF Hub for historical experiment analysis.
 
-These tools let agents query past results that were previously write-only sinks:
-  - W&B: fetch runs, compare CRPS trends, find best historical configs
+These tools let agents query past results from persistent storage:
+  - Hippius: fetch runs, compare CRPS trends, find best historical configs
   - HF Hub: list published models, read model cards, compare versions
 """
 
@@ -13,26 +13,20 @@ import logging
 import traceback
 from typing import Any
 
-from config import HF_REPO_ID, WANDB_PROJECT
+from config import HF_REPO_ID
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# W&B analysis tools
+# Hippius-backed experiment analysis tools
 # ---------------------------------------------------------------------------
-
-def _get_wandb_api():
-    """Lazy-load the W&B public API client."""
-    import wandb
-    return wandb.Api()
-
 
 @tool(
     description=(
-        "Fetch recent runs from Weights & Biases for this project. "
-        "Returns run names, configs, metrics, and status. "
+        "Fetch experiment runs from Hippius decentralised storage. "
+        "Returns run names, configs, metrics, and CRPS scores. "
         "limit: max runs to return (default 20). "
         "order: sort order — 'best' (lowest CRPS first), 'recent' (newest first), or 'worst'."
     ),
@@ -44,54 +38,50 @@ def _get_wandb_api():
                 "type": "string",
                 "description": "'best', 'recent', or 'worst' (default 'best')",
             },
-            "filters": {
-                "type": "string",
-                "description": 'Optional W&B filter JSON, e.g. {"state": "finished"}',
-            },
         },
         "required": [],
     },
 )
-def fetch_wandb_runs(limit: int = 20, order: str = "best", filters: str = "") -> str:
-    """Fetch past experiment runs from W&B."""
+def fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
+    """Fetch past experiment runs from Hippius storage."""
     try:
-        api = _get_wandb_api()
-        filter_dict = json.loads(filters) if filters else {"state": "finished"}
+        from pipeline.tools.hippius_store import _get_json, _list_keys
 
+        keys = _list_keys("experiments/", max_keys=2000)
+
+        experiments = []
+        for key in keys:
+            exp = _get_json(key)
+            if exp and isinstance(exp, dict):
+                result = exp.get("result", {})
+                metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+                crps = metrics.get("crps") if isinstance(metrics, dict) else None
+                experiments.append({
+                    "id": exp.get("run_id", "unknown"),
+                    "name": exp.get("name", "unknown"),
+                    "created_at": exp.get("timestamp", ""),
+                    "config": exp.get("experiment", {}),
+                    "metrics": metrics,
+                    "crps": crps,
+                })
+
+        # Sort based on order
         if order == "best":
-            sort_key = "+summary_metrics.crps"
+            experiments.sort(
+                key=lambda e: e["crps"] if e["crps"] is not None else float("inf")
+            )
         elif order == "worst":
-            sort_key = "-summary_metrics.crps"
-        else:
-            sort_key = "-created_at"
+            experiments.sort(
+                key=lambda e: e["crps"] if e["crps"] is not None else float("-inf"),
+                reverse=True,
+            )
+        else:  # recent
+            experiments.sort(key=lambda e: e["created_at"], reverse=True)
 
-        runs = api.runs(
-            path=WANDB_PROJECT,
-            filters=filter_dict,
-            order=sort_key,
-            per_page=limit,
-        )
-
-        results = []
-        for run in runs:
-            summary = dict(run.summary) if run.summary else {}
-            # Strip internal W&B keys
-            summary = {k: v for k, v in summary.items() if not k.startswith("_")}
-            results.append({
-                "id": run.id,
-                "name": run.name,
-                "state": run.state,
-                "created_at": run.created_at,
-                "duration_s": run.summary.get("_runtime"),
-                "config": dict(run.config) if run.config else {},
-                "metrics": summary,
-                "crps": summary.get("crps"),
-                "tags": list(run.tags) if run.tags else [],
-                "url": run.url,
-            })
+        experiments = experiments[:limit]
 
         return json.dumps(
-            {"total": len(results), "order": order, "runs": results},
+            {"total": len(experiments), "order": order, "runs": experiments},
             indent=2, default=str,
         )
     except Exception as exc:
@@ -103,48 +93,72 @@ def fetch_wandb_runs(limit: int = 20, order: str = "best", filters: str = "") ->
 
 @tool(
     description=(
-        "Get detailed information about a specific W&B run including full metric history. "
-        "run_id: the W&B run ID (from fetch_wandb_runs)."
+        "Get detailed information about a specific pipeline run from Hippius storage. "
+        "run_id: the pipeline run ID (from fetch_experiment_runs or list_hippius_runs). "
+        "Pass 'latest' to load the most recent run."
     ),
     parameters_schema={
         "type": "object",
         "properties": {
-            "run_id": {"type": "string", "description": "W&B run ID"},
+            "run_id": {"type": "string", "description": "Pipeline run ID or 'latest'"},
         },
         "required": ["run_id"],
     },
 )
-def get_wandb_run_detail(run_id: str) -> str:
-    """Get full details for a specific W&B run."""
+def get_experiment_run_detail(run_id: str) -> str:
+    """Get full details for a specific pipeline run from Hippius."""
     try:
-        api = _get_wandb_api()
-        run = api.run(f"{WANDB_PROJECT}/{run_id}")
+        from pipeline.tools.hippius_store import _get_json, _list_keys
 
-        summary = dict(run.summary) if run.summary else {}
-        summary = {k: v for k, v in summary.items() if not k.startswith("_")}
+        if run_id == "latest":
+            latest = _get_json("pipeline_runs/latest.json")
+            if not latest:
+                return json.dumps({"error": "No runs found in Hippius"})
+            run_id = latest["run_id"]
 
-        # Fetch metric history
-        history_df = run.history(samples=500)
-        history = history_df.to_dict(orient="records") if not history_df.empty else []
+        summary = _get_json(f"pipeline_runs/{run_id}/summary.json")
 
-        return json.dumps({
-            "id": run.id,
-            "name": run.name,
-            "state": run.state,
-            "created_at": run.created_at,
-            "config": dict(run.config) if run.config else {},
-            "metrics": summary,
-            "history": history,
-            "tags": list(run.tags) if run.tags else [],
-            "url": run.url,
-        }, indent=2, default=str)
+        data: dict[str, Any] = {"run_id": run_id}
+        if summary:
+            data["name"] = summary.get("name", run_id)
+            data["created_at"] = summary.get("timestamp", "")
+            data["config"] = summary.get("experiment", summary.get("config", {}))
+            data["metrics"] = summary.get("metrics", {})
+
+        # Load individual eval results for this run
+        exp_keys = _list_keys(f"experiments/{run_id}/")
+        experiments = []
+        for key in exp_keys:
+            exp = _get_json(key)
+            if exp and isinstance(exp, dict):
+                result = exp.get("result", {})
+                metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+                experiments.append({
+                    "name": exp.get("name", "unknown"),
+                    "timestamp": exp.get("timestamp", ""),
+                    "config": exp.get("experiment", {}),
+                    "metrics": metrics,
+                    "crps": metrics.get("crps") if isinstance(metrics, dict) else None,
+                })
+
+        # Sort by CRPS (best first)
+        experiments.sort(
+            key=lambda e: e["crps"] if e["crps"] is not None else float("inf")
+        )
+        data["experiments"] = experiments
+        data["experiment_count"] = len(experiments)
+
+        if not summary and not experiments:
+            return json.dumps({"error": f"Run {run_id} not found in Hippius"})
+
+        return json.dumps(data, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 @tool(
     description=(
-        "Analyse CRPS trends across W&B runs over time. "
+        "Analyse CRPS trends across experiment runs over time. "
         "Returns a time-ordered series of best CRPS scores showing improvement trajectory. "
         "limit: number of recent runs to analyse (default 50)."
     ),
@@ -156,35 +170,39 @@ def get_wandb_run_detail(run_id: str) -> str:
         "required": [],
     },
 )
-def analyze_wandb_trends(limit: int = 50) -> str:
-    """Analyse CRPS improvement trends across W&B runs."""
+def analyze_experiment_trends(limit: int = 50) -> str:
+    """Analyse CRPS improvement trends across experiments in Hippius."""
     try:
-        api = _get_wandb_api()
-        runs = api.runs(
-            path=WANDB_PROJECT,
-            filters={"state": "finished"},
-            order="-created_at",
-            per_page=limit,
-        )
+        from pipeline.tools.hippius_store import _get_json, _list_keys
+
+        keys = _list_keys("experiments/", max_keys=2000)
 
         entries = []
-        for run in runs:
-            crps = run.summary.get("crps") if run.summary else None
+        for key in keys:
+            exp = _get_json(key)
+            if not exp or not isinstance(exp, dict):
+                continue
+            result = exp.get("result", {})
+            metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+            crps = metrics.get("crps") if isinstance(metrics, dict) else None
             if crps is not None:
                 entries.append({
-                    "run_id": run.id,
-                    "name": run.name,
-                    "created_at": run.created_at,
+                    "run_id": exp.get("run_id", "unknown"),
+                    "name": exp.get("name", "unknown"),
+                    "created_at": exp.get("timestamp", ""),
                     "crps": crps,
-                    "sharpness": run.summary.get("sharpness"),
-                    "log_likelihood": run.summary.get("log_likelihood"),
+                    "sharpness": metrics.get("sharpness"),
+                    "log_likelihood": metrics.get("log_likelihood"),
                 })
 
         if not entries:
-            return json.dumps({"error": "No finished runs with CRPS found in W&B"})
+            return json.dumps({"error": "No experiments with CRPS found in Hippius"})
 
         # Sort chronologically
         entries.sort(key=lambda e: e["created_at"])
+
+        # Limit to the most recent N entries
+        entries = entries[-limit:]
 
         # Compute running best
         running_best = float("inf")

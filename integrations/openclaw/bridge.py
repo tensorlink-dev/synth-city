@@ -49,7 +49,7 @@ GET  /hf/artifact             → download a JSON artifact from HF Hub
 GET  /history/runs            → list pipeline runs from Hippius
 GET  /history/run/:run_id     → load a specific run from Hippius
 GET  /history/experiments     → best experiments across all runs
-GET  /history/wandb           → fetch runs from W&B
+GET  /history/trackio         → fetch experiment runs from Hippius
 GET  /agents/list             → list agent modules
 GET  /agents/read             → read an agent source file
 POST /agents/write            → write a new agent module
@@ -534,7 +534,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if self._load_tools_or_fail():
                 self._send_json(_research_call("load_hippius_history", limit=limit))
 
-        elif path == "/history/wandb":
+        elif path == "/history/trackio":
             raw_limit = qs.get("limit", ["20"])[0]
             limit, limit_err = _validate_positive_int(raw_limit, "limit")
             if limit_err:
@@ -549,7 +549,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if self._load_tools_or_fail():
                 self._send_json(
-                    _research_call("fetch_wandb_runs", limit=limit, order=order),
+                    _research_call("fetch_experiment_runs", limit=limit, order=order),
                 )
 
         # ---- agent design
