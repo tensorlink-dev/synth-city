@@ -12,9 +12,14 @@ import json
 import subprocess
 import sys
 import textwrap
-from pathlib import Path
 
-from config import SN50_ASSETS, SN50_HORIZON_MINUTES, SN50_NUM_PATHS, SN50_STEP_MINUTES, WORKSPACE_DIR
+from config import (
+    SN50_ASSETS,
+    SN50_HORIZON_MINUTES,
+    SN50_NUM_PATHS,
+    SN50_STEP_MINUTES,
+    WORKSPACE_DIR,
+)
 from pipeline.tools.registry import tool
 
 # Expected number of time steps (including t0)
@@ -90,7 +95,12 @@ def check_shapes(model_path: str) -> str:
             cwd=str(WORKSPACE_DIR),
         )
         if proc.returncode != 0:
-            return json.dumps({"error": f"Script failed:\nstdout: {proc.stdout}\nstderr: {proc.stderr}"})
+            return json.dumps({
+                "error": (
+                    f"Script failed:\nstdout: {proc.stdout}"
+                    f"\nstderr: {proc.stderr}"
+                ),
+            })
         return proc.stdout
     except subprocess.TimeoutExpired:
         return json.dumps({"error": "Shape check timed out after 120s"})

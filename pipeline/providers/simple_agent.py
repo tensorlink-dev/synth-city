@@ -163,9 +163,18 @@ class SimpleAgent:
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "success": {"type": "boolean", "description": "Whether the task succeeded."},
-                        "result": {"type": "string", "description": "Structured result as JSON string."},
-                        "summary": {"type": "string", "description": "Human-readable summary."},
+                        "success": {
+                            "type": "boolean",
+                            "description": "Whether the task succeeded.",
+                        },
+                        "result": {
+                            "type": "string",
+                            "description": "Structured result as JSON string.",
+                        },
+                        "summary": {
+                            "type": "string",
+                            "description": "Human-readable summary.",
+                        },
                     },
                     "required": ["success"],
                 },
@@ -247,7 +256,12 @@ class SimpleAgent:
 
         # Exhausted turns
         logger.warning("Agent exhausted %d turns without finishing", self.max_turns)
-        return AgentResult(success=False, raw_text="max turns exhausted", messages=messages, turns_used=self.max_turns)
+        return AgentResult(
+            success=False,
+            raw_text="max turns exhausted",
+            messages=messages,
+            turns_used=self.max_turns,
+        )
 
     # --------------------------------------------------------- tool dispatch
     def _execute_tool_call(self, tc: ChatCompletionMessageToolCall) -> ToolResult:

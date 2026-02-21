@@ -12,7 +12,7 @@ import httpx
 import numpy as np
 import pandas as pd
 
-from config import PYTH_PRICE_FEED_URL, SN50_ASSETS
+from config import PYTH_PRICE_FEED_URL
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,12 @@ def get_latest_price(asset: str) -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
-@tool(description="Fetch historical OHLCV data for an asset. Returns JSON with columns: timestamp, open, high, low, close, volume.")
+@tool(
+    description=(
+        "Fetch historical OHLCV data for an asset. Returns JSON"
+        " with columns: timestamp, open, high, low, close, volume."
+    ),
+)
 def get_historical_data(asset: str, days: int = 30) -> str:
     """Fetch historical price data.
 

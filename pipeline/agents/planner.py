@@ -45,6 +45,9 @@ class PlannerAgent(BaseAgentWrapper):
         if "prior_comparison" in task:
             context.append({
                 "role": "user",
-                "content": f"## Prior Experiment Comparison\n\n```json\n{task['prior_comparison']}\n```",
+                "content": (
+                    "## Prior Experiment Comparison\n\n"
+                    f"```json\n{task['prior_comparison']}\n```"
+                ),
             })
         return context

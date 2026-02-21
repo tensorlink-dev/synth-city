@@ -40,8 +40,14 @@ def _get_wandb_api():
         "type": "object",
         "properties": {
             "limit": {"type": "integer", "description": "Max runs to return (default 20)"},
-            "order": {"type": "string", "description": "'best', 'recent', or 'worst' (default 'best')"},
-            "filters": {"type": "string", "description": "Optional W&B filter JSON, e.g. {\"state\": \"finished\"}"},
+            "order": {
+                "type": "string",
+                "description": "'best', 'recent', or 'worst' (default 'best')",
+            },
+            "filters": {
+                "type": "string",
+                "description": 'Optional W&B filter JSON, e.g. {"state": "finished"}',
+            },
         },
         "required": [],
     },
@@ -84,9 +90,15 @@ def fetch_wandb_runs(limit: int = 20, order: str = "best", filters: str = "") ->
                 "url": run.url,
             })
 
-        return json.dumps({"total": len(results), "order": order, "runs": results}, indent=2, default=str)
+        return json.dumps(
+            {"total": len(results), "order": order, "runs": results},
+            indent=2, default=str,
+        )
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 @tool(

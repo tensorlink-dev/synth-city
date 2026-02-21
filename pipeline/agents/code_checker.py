@@ -31,7 +31,10 @@ class CodeCheckerAgent(BaseAgentWrapper):
         if "experiment" in task:
             context.append({
                 "role": "user",
-                "content": f"## Experiment Config to Validate\n\n```json\n{task['experiment']}\n```",
+                "content": (
+                    "## Experiment Config to Validate\n\n"
+                    f"```json\n{task['experiment']}\n```"
+                ),
             })
         if "run_result" in task:
             context.append({

@@ -299,7 +299,10 @@ def save_comparison(comparison: dict) -> str | None:
         "properties": {
             "experiment": {"type": "string", "description": "Experiment config JSON"},
             "result": {"type": "string", "description": "Run result JSON"},
-            "name": {"type": "string", "description": "Experiment label (auto-generated if omitted)"},
+            "name": {
+                "type": "string",
+                "description": "Experiment label (auto-generated if omitted)",
+            },
         },
         "required": ["experiment", "result"],
     },

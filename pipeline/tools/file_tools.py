@@ -5,7 +5,6 @@ never via raw text in their responses.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from config import WORKSPACE_DIR
