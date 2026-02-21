@@ -124,25 +124,34 @@ def _do_flush(keep_top_n: int = SESSION_KEEP_TOP_N) -> dict:
 @tool(description="List all available backbone blocks with their parameters, strengths, and compute cost.")
 def list_blocks() -> str:
     """Discover registered blocks in open-synth-miner."""
-    session = _get_session()
-    blocks = session.list_blocks()
-    return json.dumps(blocks, indent=2)
+    try:
+        session = _get_session()
+        blocks = session.list_blocks()
+        return json.dumps(blocks, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 @tool(description="List all available head types with their parameters and expressiveness levels.")
 def list_heads() -> str:
     """Discover registered heads in open-synth-miner."""
-    session = _get_session()
-    heads = session.list_heads()
-    return json.dumps(heads, indent=2)
+    try:
+        session = _get_session()
+        heads = session.list_heads()
+        return json.dumps(heads, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 @tool(description="List all ready-to-run presets with their block+head combinations and tags.")
 def list_presets() -> str:
     """Discover built-in experiment presets."""
-    session = _get_session()
-    presets = session.list_presets()
-    return json.dumps(presets, indent=2)
+    try:
+        session = _get_session()
+        presets = session.list_presets()
+        return json.dumps(presets, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +197,8 @@ def create_experiment(
     block_kwargs: str = "",
 ) -> str:
     """Create an experiment configuration dict."""
-    session = _get_session()
     try:
+        session = _get_session()
         block_list = json.loads(blocks) if isinstance(blocks, str) else blocks
         hk = json.loads(head_kwargs) if head_kwargs else None
         bk = json.loads(block_kwargs) if block_kwargs else None
@@ -232,8 +241,8 @@ def create_experiment(
 )
 def validate_experiment(experiment: str) -> str:
     """Validate an experiment config (no execution)."""
-    session = _get_session()
     try:
+        session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
         result = session.validate(exp)
         return json.dumps(result, indent=2)
@@ -256,8 +265,8 @@ def validate_experiment(experiment: str) -> str:
 )
 def describe_experiment(experiment: str) -> str:
     """Get a full description of an experiment."""
-    session = _get_session()
     try:
+        session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
         result = session.describe(exp)
         return json.dumps(result, indent=2)
@@ -288,8 +297,8 @@ def describe_experiment(experiment: str) -> str:
 )
 def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "") -> str:
     """Run an experiment and return metrics."""
-    session = _get_session()
     try:
+        session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
         result = session.run(exp, epochs=epochs, name=name or None)
 
@@ -327,8 +336,8 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
 )
 def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str = "") -> str:
     """Run a preset experiment."""
-    session = _get_session()
     try:
+        session = _get_session()
         ov = json.loads(overrides) if overrides else None
         result = session.run_preset(preset_name, epochs=epochs, overrides=ov)
         return json.dumps(result, indent=2, default=str)
@@ -352,8 +361,8 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
 )
 def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
     """Sweep presets and return ranked comparison."""
-    session = _get_session()
     try:
+        session = _get_session()
         names = json.loads(preset_names) if preset_names else None
         result = session.sweep(preset_names=names, epochs=epochs)
         return json.dumps(result, indent=2, default=str)
@@ -368,8 +377,8 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
 @tool(description="Compare all experiment results accumulated in the current session. Returns ranking sorted by CRPS (best first).")
 def compare_results() -> str:
     """Compare all results from this session."""
-    session = _get_session()
     try:
+        session = _get_session()
         result = session.compare()
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
@@ -379,8 +388,8 @@ def compare_results() -> str:
 @tool(description="Get a summary of all experiments run in the current session.")
 def session_summary() -> str:
     """Get session summary: num experiments, comparison, all results."""
-    session = _get_session()
     try:
+        session = _get_session()
         result = session.summary()
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
@@ -390,9 +399,12 @@ def session_summary() -> str:
 @tool(description="Clear the research session (reset accumulated results). Use between unrelated experiment batches.")
 def clear_session() -> str:
     """Reset the research session."""
-    session = _get_session()
-    session.clear()
-    return json.dumps({"status": "session cleared"})
+    try:
+        session = _get_session()
+        session.clear()
+        return json.dumps({"status": "session cleared"})
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
 @tool(

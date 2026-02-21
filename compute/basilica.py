@@ -71,7 +71,9 @@ class BasilicaGPUClient:
         all_offerings = self._client.list_secure_cloud_gpus()
         filtered = [
             o for o in all_offerings
-            if float(o.hourly_rate) <= self.max_hourly_rate
+            if o.hourly_rate is not None
+            and o.gpu_type is not None
+            and float(o.hourly_rate) <= self.max_hourly_rate
             and any(allowed.upper() in o.gpu_type.upper() for allowed in self.allowed_gpu_types)
         ]
         filtered.sort(key=lambda o: float(o.hourly_rate))
