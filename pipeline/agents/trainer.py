@@ -7,6 +7,7 @@ from typing import Any, Callable
 import pipeline.prompts.trainer_prompts  # noqa: F401
 import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
+import pipeline.tools.research_tools  # noqa: F401 — registers experiment tools
 import pipeline.tools.training_tools  # noqa: F401 — registers training/GPU tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt

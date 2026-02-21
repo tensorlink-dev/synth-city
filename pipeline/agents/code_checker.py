@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 import pipeline.prompts.checker_prompts  # noqa: F401
+import pipeline.tools.research_tools  # noqa: F401 — registers experiment tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset

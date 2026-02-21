@@ -9,9 +9,11 @@ build the OpenAI ``tools`` array and dispatch calls at runtime.
 from __future__ import annotations
 
 import inspect
-import json
-from dataclasses import dataclass, field
+import logging
+from dataclasses import dataclass
 from typing import Any, Callable, get_type_hints
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,7 +96,17 @@ def all_tool_names() -> list[str]:
 
 def build_toolset(*names: str) -> tuple[dict[str, Callable], list[dict[str, Any]]]:
     """Convenience: return (tools_dict, schemas_list) for the given names."""
-    return get_tools(*names), get_schemas(*names)
+    missing = [n for n in names if n not in _TOOLS]
+    if missing:
+        logger.warning(
+            "build_toolset: %d tool(s) not found in registry (missing imports?): %s",
+            len(missing),
+            ", ".join(missing),
+        )
+    tools = get_tools(*names)
+    schemas = get_schemas(*names)
+    logger.debug("build_toolset: requested %d, resolved %d tools", len(names), len(tools))
+    return tools, schemas
 
 
 # ---------------------------------------------------------------------------
