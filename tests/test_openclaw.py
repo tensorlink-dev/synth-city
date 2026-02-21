@@ -15,11 +15,11 @@ import httpx
 import pytest
 
 import integrations.openclaw.bridge as bridge_mod
+from integrations.openclaw.bot_sessions import PipelineState
 from integrations.openclaw.bridge import (
     MAX_CONTENT_LENGTH,
     VALID_ASSETS,
     BridgeHandler,
-    PipelineState,
     _validate_asset,
     _validate_positive_float,
     _validate_positive_int,

@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 import json
 import logging
+import threading
 from pathlib import Path
 
 from pipeline.tools.registry import tool
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 
 _AGENTS_DIR = Path("pipeline/agents")
 _PROMPTS_DIR = Path("pipeline/prompts")
+
+# Reentrant lock for shared writes — agent/prompt files are shared across bots
+_agent_write_lock = threading.RLock()
 
 
 def _ensure_dir(path: Path) -> None:
@@ -80,8 +84,9 @@ def write_agent(filename: str, code: str) -> str:
             return json.dumps({"error": f"Invalid Python: {err}"})
 
         target = _AGENTS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(code, encoding="utf-8")
+        with _agent_write_lock:
+            _ensure_dir(target.parent)
+            target.write_text(code, encoding="utf-8")
 
         return json.dumps({
             "status": "written",
@@ -178,8 +183,9 @@ def write_agent_prompt(filename: str, code: str) -> str:
             return json.dumps({"error": f"Invalid Python: {err}"})
 
         target = _PROMPTS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(code, encoding="utf-8")
+        with _agent_write_lock:
+            _ensure_dir(target.parent)
+            target.write_text(code, encoding="utf-8")
 
         return json.dumps({
             "status": "written",

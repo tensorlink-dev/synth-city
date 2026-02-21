@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -69,9 +70,10 @@ def _retry(func, *args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Lazy-loaded boto3 client
+# Lazy-loaded boto3 client (thread-safe init via double-checked locking)
 # ---------------------------------------------------------------------------
 _client = None
+_client_lock = threading.Lock()
 
 
 def _get_client():
@@ -83,20 +85,25 @@ def _get_client():
     if not HIPPIUS_ENDPOINT or not HIPPIUS_ACCESS_KEY:
         return None
 
-    import boto3
-    from botocore.config import Config as BotoConfig
+    with _client_lock:
+        # Double-check after acquiring lock
+        if _client is not None:
+            return _client
 
-    _client = boto3.client(
-        "s3",
-        endpoint_url=HIPPIUS_ENDPOINT,
-        aws_access_key_id=HIPPIUS_ACCESS_KEY,
-        aws_secret_access_key=HIPPIUS_SECRET_KEY,
-        config=BotoConfig(
-            signature_version="s3v4",
-            retries={"max_attempts": 3, "mode": "adaptive"},
-        ),
-    )
-    return _client
+        import boto3
+        from botocore.config import Config as BotoConfig
+
+        _client = boto3.client(
+            "s3",
+            endpoint_url=HIPPIUS_ENDPOINT,
+            aws_access_key_id=HIPPIUS_ACCESS_KEY,
+            aws_secret_access_key=HIPPIUS_SECRET_KEY,
+            config=BotoConfig(
+                signature_version="s3v4",
+                retries={"max_attempts": 3, "mode": "adaptive"},
+            ),
+        )
+        return _client
 
 
 def _ensure_bucket():
@@ -171,13 +178,19 @@ def _list_keys(prefix: str, max_keys: int = 1000) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Run-ID management
+# Run-ID management — per-bot when running via bridge, global for CLI
 # ---------------------------------------------------------------------------
 _current_run_id: str | None = None
 
 
 def get_run_id() -> str:
     """Return (or create) a run ID for the current pipeline invocation."""
+    from integrations.openclaw.bot_sessions import get_current_session
+
+    bot = get_current_session()
+    if bot is not None:
+        return bot.run_id
+
     global _current_run_id
     if _current_run_id is None:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -187,6 +200,13 @@ def get_run_id() -> str:
 
 def reset_run_id() -> None:
     """Reset so the next pipeline run gets a fresh ID."""
+    from integrations.openclaw.bot_sessions import get_current_session
+
+    bot = get_current_session()
+    if bot is not None:
+        bot.reset_run_id()
+        return
+
     global _current_run_id
     _current_run_id = None
 

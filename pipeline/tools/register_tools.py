@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import traceback
 from pathlib import Path
 
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 # open-synth-miner component directories (relative to repo root)
 _COMPONENTS_DIR = Path("src/models/components")
 _CONFIGS_DIR = Path("configs/model")
+
+# Reentrant lock for shared writes — components are shared across all bots
+_registry_lock = threading.RLock()
 
 
 def _ensure_dir(path: Path) -> None:
@@ -55,8 +59,9 @@ def write_component(filename: str, code: str) -> str:
             filename += ".py"
 
         target = _COMPONENTS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(code, encoding="utf-8")
+        with _registry_lock:
+            _ensure_dir(target.parent)
+            target.write_text(code, encoding="utf-8")
 
         return json.dumps({
             "status": "written",
@@ -124,9 +129,14 @@ def reload_registry() -> str:
     try:
         from src.models.registry import discover_components, registry
 
-        discover_components(str(_COMPONENTS_DIR))
-        block_count = len(registry.list_blocks()) if hasattr(registry, "list_blocks") else "unknown"
-        head_count = len(registry.list_heads()) if hasattr(registry, "list_heads") else "unknown"
+        with _registry_lock:
+            discover_components(str(_COMPONENTS_DIR))
+            block_count = (
+                len(registry.list_blocks()) if hasattr(registry, "list_blocks") else "unknown"
+            )
+            head_count = (
+                len(registry.list_heads()) if hasattr(registry, "list_heads") else "unknown"
+            )
 
         return json.dumps({
             "status": "reloaded",
@@ -134,7 +144,10 @@ def reload_registry() -> str:
             "heads": head_count,
         })
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
 
 
 @tool(
@@ -165,8 +178,9 @@ def write_config(filename: str, content: str) -> str:
             filename += ".yaml"
 
         target = _CONFIGS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(content, encoding="utf-8")
+        with _registry_lock:
+            _ensure_dir(target.parent)
+            target.write_text(content, encoding="utf-8")
 
         return json.dumps({
             "status": "written",

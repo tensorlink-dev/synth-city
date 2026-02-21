@@ -24,6 +24,7 @@ import sys
 
 BRIDGE_URL = os.getenv("SYNTH_BRIDGE_URL", "http://127.0.0.1:8377")
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
+SYNTH_BOT_ID = os.getenv("SYNTH_BOT_ID", "")
 
 _GET_TIMEOUT = 120   # seconds
 _POST_TIMEOUT = 300  # seconds
@@ -39,10 +40,13 @@ def _check_curl() -> str | None:
 
 
 def _auth_headers() -> list[str]:
-    """Return curl ``-H`` flags for API key authentication, if configured."""
-    if not BRIDGE_API_KEY:
-        return []
-    return ["-H", f"X-API-Key: {BRIDGE_API_KEY}"]
+    """Return curl ``-H`` flags for authentication and bot identification."""
+    headers: list[str] = []
+    if BRIDGE_API_KEY:
+        headers.extend(["-H", f"X-API-Key: {BRIDGE_API_KEY}"])
+    if SYNTH_BOT_ID:
+        headers.extend(["-H", f"X-Bot-Id: {SYNTH_BOT_ID}"])
+    return headers
 
 
 def _curl_get(path: str) -> str:

@@ -126,3 +126,9 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT: int = int(os.getenv("BRIDGE_PORT", "8377"))
 BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Multi-bot concurrency
+# ---------------------------------------------------------------------------
+BOT_SESSION_TTL_SECONDS: int = int(os.getenv("BOT_SESSION_TTL_SECONDS", "3600"))
+MAX_CONCURRENT_PIPELINES: int = int(os.getenv("MAX_CONCURRENT_PIPELINES", "10"))
