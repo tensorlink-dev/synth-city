@@ -26,6 +26,9 @@ dependencies = [
     "rich>=13.0",
 ]
 
+[project.scripts]
+synth-city = "cli.app:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
@@ -33,6 +36,9 @@ dev = [
     "ruff>=0.3.0",
     "mypy>=1.8.0",
 ]
+
+[tool.setuptools]
+py-modules = ["config"]
 
 [tool.setuptools.packages.find]
 include = ["pipeline*", "integrations*", "compute*", "subnet*", "cli*"]
