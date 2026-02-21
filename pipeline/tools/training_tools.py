@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -278,18 +279,44 @@ def _ssh_run(
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def _parse_ssh_command(ssh_command: str) -> dict:
+    """Parse a Basilica SSH command string into ``{host, port, user}``.
+
+    Basilica returns SSH access as a plain string, e.g.::
+
+        "ssh ubuntu@192.0.2.1 -p 22022"
+        "ssh -p 22022 ubuntu@192.0.2.1"
+
+    Returns a dict with keys ``host`` (str), ``port`` (int), ``user`` (str).
+    """
+    user_host = re.search(r"([A-Za-z0-9_]+)@([\w.\-]+)", ssh_command)
+    if not user_host:
+        raise RuntimeError(
+            f"Cannot parse user@host from Basilica SSH command: {ssh_command!r}"
+        )
+    user, host = user_host.groups()
+    port_m = re.search(r"-p\s+(\d+)", ssh_command)
+    port = int(port_m.group(1)) if port_m else 22
+    return {"host": host, "port": port, "user": user}
+
+
 def _get_ssh_creds(rental_id: str) -> dict:
-    """Return SSH credential dict for *rental_id* or raise RuntimeError."""
+    """Return ``{host, port, user}`` for *rental_id* or raise RuntimeError.
+
+    Calls ``get_rental_status()`` (which internally uses
+    ``list_secure_cloud_rentals``) and parses the ``ssh_command`` string
+    that Basilica returns.
+    """
     client = _get_gpu_client()
     status = client.get_rental_status(rental_id)
-    creds = status.get("ssh_credentials")
-    if not creds:
+    ssh_cmd = status.get("ssh_command")
+    if not ssh_cmd:
         raise RuntimeError(
-            f"No SSH credentials for rental {rental_id!r} "
+            f"No SSH command for rental {rental_id!r} "
             f"(status={status.get('status')!r}). "
             "The pod may still be provisioning — wait a moment and try again."
         )
-    return creds
+    return _parse_ssh_command(ssh_cmd)
 
 
 @tool(
