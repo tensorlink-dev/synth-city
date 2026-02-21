@@ -63,6 +63,45 @@ BT_NETUID: int = int(os.getenv("BT_NETUID", "50"))
 PYTH_PRICE_FEED_URL: str = os.getenv("PYTH_PRICE_FEED_URL", "https://hermes.pyth.network")
 
 # ---------------------------------------------------------------------------
+# HF training data (parquet datasets for MarketDataLoader)
+# ---------------------------------------------------------------------------
+HF_TRAINING_DATA_REPO: str = os.getenv(
+    "HF_TRAINING_DATA_REPO", "tensorlink-dev/open-synth-training-data"
+)
+
+# Maps SN50 asset names → HF dataset asset names
+SN50_TO_HF_ASSET: dict[str, str] = {
+    "BTC": "BTC_USD",
+    "ETH": "ETH_USD",
+    "SOL": "SOL_USD",
+    "SPYX": "SPY",
+    "NVDAX": "NVDA",
+    "TSLAX": "TSLA",
+    "AAPLX": "AAPL",
+    "GOOGLX": "GOOGL",
+}
+
+# Per-timeframe configuration
+TIMEFRAME_CONFIGS: dict[str, dict[str, int | str]] = {
+    "5m": {
+        "pred_len": 288,       # 24 h ÷ 5 min = 288 steps
+        "input_len": 288,
+        "file_suffix": "5m.parquet",
+    },
+    "1m": {
+        "pred_len": 60,        # 1 h ÷ 1 min = 60 steps
+        "input_len": 60,
+        "file_suffix": "1m.parquet",
+    },
+}
+
+# Data loader defaults
+DATA_BATCH_SIZE: int = int(os.getenv("DATA_BATCH_SIZE", "64"))
+DATA_STRIDE: int = int(os.getenv("DATA_STRIDE", "12"))
+DATA_GAP_HANDLING: str = os.getenv("DATA_GAP_HANDLING", "ffill")
+DATA_FEATURE_ENGINEER: str = os.getenv("DATA_FEATURE_ENGINEER", "zscore")
+
+# ---------------------------------------------------------------------------
 # SN50 asset configuration (asset -> scoring weight)
 # ---------------------------------------------------------------------------
 SN50_ASSETS: dict[str, float] = {

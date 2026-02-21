@@ -47,13 +47,35 @@ run_preset("pure_transformer", epochs=1)
 create_experiment(
     blocks='["RevIN", "TransformerBlock", "LSTMBlock"]',
     head="SDEHead",
+    timeframe="5m",
     d_model=64,
-    horizon=12,
     n_paths=100,
     lr=0.001
 )
 ```
 Then run the returned config with `run_experiment`.
+
+### Timeframe Selection
+Set `timeframe` on `create_experiment` to auto-configure horizon and seq_len:
+- **`"5m"`** — 5-minute candles, pred_len=288 (24-hour forecast horizon)
+- **`"1m"`** — 1-minute candles, pred_len=60 (1-hour HFT forecast horizon)
+
+Both timeframes should be trained. The model needs:
+- 288-step output for the 5m SN50 submission
+- 60-step output for the 1m HFT submission
+
+### Data Loading
+Training data comes from the HuggingFace dataset `tensorlink-dev/open-synth-training-data`.
+Use `create_data_loader` to configure the data pipeline before running experiments:
+```
+create_data_loader(timeframe="5m", engineer="zscore")
+create_data_loader(timeframe="1m", engineer="zscore")
+```
+When a `timeframe` is set on `create_experiment`, the matching data loader is
+automatically attached to the training run. Use `data_loader_info` to check
+available assets and loader status.
+
+Available assets: BTC_USD, ETH_USD, SOL_USD, SPY, NVDA, TSLA, AAPL, GOOGL
 
 ### Sweep for Broad Exploration
 Use `sweep_presets` to run all (or selected) presets at once:
@@ -86,6 +108,7 @@ This is especially useful when the session was cleared or the process restarted.
 - CRPS is the ONLY metric that matters for SN50 ranking.
 - Research mode: n_paths=100, epochs=1 for fast iteration.
 - Production mode: n_paths=1000, more epochs for final model.
+- Train BOTH timeframes: 5m (288-step, 24h) and 1m (60-step, 1h).
 - If an experiment returns status="error", do NOT count it as failed overall.
   Note the error and move on to the next experiment.
 """, priority=10)

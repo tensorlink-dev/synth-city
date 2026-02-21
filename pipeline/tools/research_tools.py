@@ -27,6 +27,7 @@ from config import (
     RESEARCH_LR,
     RESEARCH_N_PATHS,
     RESEARCH_SEQ_LEN,
+    TIMEFRAME_CONFIGS,
 )
 from pipeline.tools.registry import tool
 
@@ -54,9 +55,15 @@ def _get_session():
     # CLI / standalone fallback
     global _session
     if _session is None:
-        from src.research.agent_api import ResearchSession
+        from src.research.agent_api import ResearchSession  # type: ignore[import-untyped]
         _session = ResearchSession()
     return _session
+
+
+def _get_data_loader(timeframe: str = "5m"):
+    """Return a MarketDataLoader for the given timeframe (lazy-created)."""
+    from pipeline.tools.data_loader import get_loader
+    return get_loader(timeframe=timeframe)
 
 
 def _maybe_auto_flush():
@@ -181,6 +188,8 @@ def list_presets() -> str:
         "Create an experiment config from blocks and a head. "
         "blocks: JSON list of block names (e.g. [\"TransformerBlock\", \"LSTMBlock\"]). "
         "head: head name (e.g. \"GBMHead\"). "
+        "timeframe: '5m' (pred_len=288, 24h) or '1m' (pred_len=60, 1h). "
+        "When timeframe is set, horizon and seq_len default to the timeframe's pred_len/input_len. "
         "Optional overrides: d_model, horizon, n_paths, lr, "
         "seq_len, batch_size, feature_dim as JSON."
     ),
@@ -189,11 +198,17 @@ def list_presets() -> str:
         "properties": {
             "blocks": {"type": "string", "description": "JSON array of block names"},
             "head": {"type": "string", "description": "Head name (default: GBMHead)"},
+            "timeframe": {
+                "type": "string",
+                "enum": ["5m", "1m"],
+                "description": "Candle interval: '5m' (288-step) or '1m' (60-step). "
+                "Auto-sets horizon and seq_len.",
+            },
             "d_model": {"type": "integer", "description": "Hidden dimension (default: 32)"},
-            "horizon": {"type": "integer", "description": "Prediction steps (default: 12)"},
+            "horizon": {"type": "integer", "description": "Prediction steps (auto from timeframe)"},
             "n_paths": {"type": "integer", "description": "Monte Carlo paths (default: 100)"},
             "lr": {"type": "number", "description": "Learning rate (default: 0.001)"},
-            "seq_len": {"type": "integer", "description": "Input sequence length (default: 32)"},
+            "seq_len": {"type": "integer", "description": "Input sequence length (auto from timeframe)"},
             "batch_size": {"type": "integer", "description": "Batch size (default: 4)"},
             "feature_dim": {"type": "integer", "description": "Input features (default: 4)"},
             "head_kwargs": {"type": "string", "description": "Extra head params as JSON dict"},
@@ -208,6 +223,7 @@ def list_presets() -> str:
 def create_experiment(
     blocks: str,
     head: str = "GBMHead",
+    timeframe: str = "",
     d_model: int = RESEARCH_D_MODEL,
     horizon: int = RESEARCH_HORIZON,
     n_paths: int = RESEARCH_N_PATHS,
@@ -225,6 +241,15 @@ def create_experiment(
         hk = json.loads(head_kwargs) if head_kwargs else None
         bk = json.loads(block_kwargs) if block_kwargs else None
 
+        # Apply timeframe defaults if specified
+        if timeframe and timeframe in TIMEFRAME_CONFIGS:
+            tf_cfg = TIMEFRAME_CONFIGS[timeframe]
+            # Only override if the caller used the global defaults
+            if horizon == RESEARCH_HORIZON:
+                horizon = int(tf_cfg["pred_len"])
+            if seq_len == RESEARCH_SEQ_LEN:
+                seq_len = int(tf_cfg["input_len"])
+
         experiment = session.create_experiment(
             blocks=block_list,
             head=head,
@@ -238,6 +263,11 @@ def create_experiment(
             head_kwargs=hk,
             block_kwargs=bk,
         )
+
+        # Tag the experiment with timeframe for downstream tools
+        if timeframe:
+            experiment["timeframe"] = timeframe
+
         return json.dumps(experiment, indent=2)
     except Exception as exc:
         return json.dumps({
@@ -325,7 +355,21 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
     try:
         session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
-        result = session.run(exp, epochs=epochs, name=name or None)
+
+        # If the experiment was tagged with a timeframe, attach the data loader
+        run_kwargs: dict = {"epochs": epochs}
+        if name:
+            run_kwargs["name"] = name
+        timeframe = exp.pop("timeframe", None)
+        if timeframe:
+            try:
+                loader = _get_data_loader(timeframe)
+                run_kwargs["data_loader"] = loader
+                logger.info("Using HF data loader for timeframe=%s", timeframe)
+            except Exception as dl_exc:
+                logger.warning("Could not attach data loader (%s), falling back", dl_exc)
+
+        result = session.run(exp, **run_kwargs)
 
         # Auto-save to Hippius if configured
         try:
