@@ -23,7 +23,11 @@ dependencies = [
     "huggingface_hub",
     "python-dotenv>=1.0.0",
     "basilica-sdk>=0.17.0",
+    "rich>=13.0",
 ]
+
+[project.scripts]
+synth-city = "cli.app:main"
 
 [project.optional-dependencies]
 dev = [
@@ -33,8 +37,11 @@ dev = [
     "mypy>=1.8.0",
 ]
 
+[tool.setuptools]
+py-modules = ["config"]
+
 [tool.setuptools.packages.find]
-include = ["pipeline*", "integrations*", "compute*", "subnet*"]
+include = ["pipeline*", "integrations*", "compute*", "subnet*", "cli*"]
 
 [tool.ruff]
 line-length = 100
