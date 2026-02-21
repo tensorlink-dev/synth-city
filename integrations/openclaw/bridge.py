@@ -65,6 +65,7 @@ DELETE /bots/session/:id      → force-remove a bot session
 from __future__ import annotations
 
 import contextvars
+import hmac
 import json
 import logging
 import os
@@ -279,7 +280,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if not BRIDGE_API_KEY:
             return True
         provided = self.headers.get("X-API-Key", "")
-        if provided == BRIDGE_API_KEY:
+        if hmac.compare_digest(provided, BRIDGE_API_KEY):
             return True
         self._send_json({"error": "Invalid or missing API key"}, status=401)
         return False
@@ -869,13 +870,16 @@ class BridgeHandler(BaseHTTPRequestHandler):
         if session is None:
             self._send_json({"error": f"No session for bot: {bot_id!r}"}, status=404)
             return
-        if session.pipeline_state.running:
-            self._send_json(
-                {"error": f"Cannot remove bot {bot_id!r}: pipeline is running"},
-                status=409,
-            )
-            return
-        registry.remove(bot_id)
+        # Hold pipeline_lock to prevent a concurrent /pipeline/run from
+        # starting between our check and the removal.
+        with session.pipeline_lock:
+            if session.pipeline_state.running:
+                self._send_json(
+                    {"error": f"Cannot remove bot {bot_id!r}: pipeline is running"},
+                    status=409,
+                )
+                return
+            registry.remove(bot_id)
         self._send_json({"status": "removed", "bot_id": bot_id})
 
 

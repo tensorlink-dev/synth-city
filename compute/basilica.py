@@ -94,8 +94,8 @@ class BasilicaGPUClient:
             ssh_public_key_id=ssh_public_key_id,
         )
         logger.info(
-            "Started rental %s — %s @ $%s/hr (provider=%s)",
-            resp.rental_id, resp.provider, resp.hourly_cost, resp.provider,
+            "Started rental %s @ $%s/hr (provider=%s, status=%s)",
+            resp.rental_id, resp.hourly_cost, resp.provider, resp.status,
         )
         return resp
 

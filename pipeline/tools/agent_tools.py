@@ -30,9 +30,12 @@ def _ensure_dir(path: Path) -> None:
 
 
 def _safe_filename(name: str, suffix: str = ".py") -> str:
-    """Ensure *name* ends with the expected suffix."""
+    """Ensure *name* ends with the expected suffix and has no path separators."""
     if not name.endswith(suffix):
         name += suffix
+    # Reject path separators to prevent directory traversal
+    if "/" in name or "\\" in name:
+        raise ValueError(f"Filename must not contain path separators: {name!r}")
     return name
 
 

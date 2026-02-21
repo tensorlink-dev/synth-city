@@ -20,7 +20,7 @@ services:
     build: .
     env_file: .env
     ports:
-      - "${BRIDGE_PORT:-8377}:8377"
+      - "${BRIDGE_PORT:-8377}:${BRIDGE_PORT:-8377}"
     volumes:
       - workspace:/app/workspace
     restart: unless-stopped

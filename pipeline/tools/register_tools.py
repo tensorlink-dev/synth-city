@@ -57,6 +57,8 @@ def write_component(filename: str, code: str) -> str:
     try:
         if not filename.endswith(".py"):
             filename += ".py"
+        if "/" in filename or "\\" in filename:
+            return json.dumps({"error": "Filename must not contain path separators"})
 
         target = _COMPONENTS_DIR / filename
         with _registry_lock:
@@ -91,7 +93,10 @@ def write_component(filename: str, code: str) -> str:
 def read_component(path: str) -> str:
     """Read a component source file for reference."""
     try:
-        target = Path(path)
+        target = Path(path).resolve()
+        components_root = _COMPONENTS_DIR.resolve()
+        if not str(target).startswith(str(components_root)):
+            return json.dumps({"error": f"Path must be within {_COMPONENTS_DIR}"})
         if not target.exists():
             return json.dumps({"error": f"File not found: {path}"})
         content = target.read_text(encoding="utf-8")
@@ -176,6 +181,8 @@ def write_config(filename: str, content: str) -> str:
     try:
         if not filename.endswith(".yaml") and not filename.endswith(".yml"):
             filename += ".yaml"
+        if "/" in filename or "\\" in filename:
+            return json.dumps({"error": "Filename must not contain path separators"})
 
         target = _CONFIGS_DIR / filename
         with _registry_lock:

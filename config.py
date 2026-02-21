@@ -38,8 +38,8 @@ def model_for(agent_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Basilica GPU cloud (basilica-sdk)
 # ---------------------------------------------------------------------------
-BASILICA_API_TOKEN: str = os.getenv("BASILICA_API_TOKEN", "")
-BASILICA_API_URL: str = os.getenv("BASILICA_API_URL", "https://api.basilica.ai")
+BASILICA_API_TOKEN: str = os.getenv("BASILICA_API_TOKEN", "") or os.getenv("BASILICA_API_KEY", "")
+BASILICA_API_URL: str = os.getenv("BASILICA_API_URL", "") or os.getenv("BASILICA_ENDPOINT", "https://api.basilica.ai")
 # Budget cap — only rent GPUs at or below this hourly rate (USD)
 BASILICA_MAX_HOURLY_RATE: float = float(os.getenv("BASILICA_MAX_HOURLY_RATE", "0.44"))
 # Allowed GPU types (case-insensitive substring match against offering gpu_type)

@@ -122,8 +122,10 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
 def cmd_quick(args: argparse.Namespace) -> None:
     """One-liner convenience experiment."""
+    from pipeline.bootstrap import bootstrap_dirs
     from src.research.agent_api import quick_experiment
 
+    bootstrap_dirs()
     section_header("Quick Experiment")
     blocks = [b.strip() for b in args.blocks.split(",")] if args.blocks else None
     result = quick_experiment(
