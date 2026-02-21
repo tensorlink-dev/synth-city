@@ -726,26 +726,21 @@ class BridgeHandler(BaseHTTPRequestHandler):
 # Server entry point
 # ---------------------------------------------------------------------------
 
-_BANNER = r"""
-  _____ __     __ _   _  _______  _    _    _____  _____  _______ __     __
- / ____|\ \   / /| \ | ||__   __|| |  | |  / ____||_   _||__   __|\ \   / /
-| (___   \ \_/ / |  \| |   | |   | |__| | | |       | |     | |    \ \_/ /
- \___ \   \   /  | . ` |   | |   |  __  | | |       | |     | |     \   /
- ____) |   | |   | |\  |   | |   | |  | | | |____  _| |_    | |      | |
-|_____/    |_|   |_| \_|   |_|   |_|  |_|  \_____||_____|   |_|      |_|
-"""
-
-
 def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
     """Start the bridge HTTP server."""
+    from cli.display import console, print_banner
+
     server = HTTPServer((host, port), BridgeHandler)
-    print(_BANNER)
+    print_banner(subtitle="bridge server")
     logger.info("synth-city bridge listening on http://%s:%d", host, port)
-    print(f"  bridge listening on http://{host}:{port}")
-    print("  Press Ctrl+C to stop.\n")
+    console.print(
+        f"  [bold cyan]bridge listening on[/bold cyan] "
+        f"[link=http://{host}:{port}]http://{host}:{port}[/link]"
+    )
+    console.print("  [muted]Press Ctrl+C to stop.[/muted]\n")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down bridge server.")
+        console.print("\n[warning]Shutting down bridge server.[/warning]")
     finally:
         server.server_close()

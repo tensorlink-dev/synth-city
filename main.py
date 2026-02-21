@@ -35,6 +35,22 @@ import json
 import logging
 import sys
 
+from cli.display import (
+    agent_result_panel,
+    console,
+    hf_panel,
+    hippius_table,
+    metrics_panel,
+    print_banner,
+    print_error,
+    print_json,
+    print_validation_errors,
+    ranking_table,
+    section_header,
+    wandb_runs_table,
+    wandb_trends_panel,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -47,6 +63,7 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     """Run the full agentic improvement pipeline."""
     from pipeline.orchestrator import PipelineOrchestrator
 
+    section_header("Pipeline")
     task: dict = {"channel": args.channel}
     orchestrator = PipelineOrchestrator(
         max_retries=args.retries,
@@ -54,29 +71,32 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
         publish=args.publish,
     )
     result = orchestrator.run(task)
-    print(json.dumps(result, indent=2, default=str))
+    print_json(result)
 
 
 def cmd_sweep(args: argparse.Namespace) -> None:
     """Run a quick preset sweep via ResearchSession."""
     from src.research.agent_api import ResearchSession
 
+    section_header("Sweep")
     session = ResearchSession()
     presets = [p.strip() for p in args.presets.split(",")] if args.presets else None
     result = session.sweep(preset_names=presets, epochs=args.epochs)
 
-    print(json.dumps(result, indent=2, default=str))
+    print_json(result)
 
     comparison = session.compare()
-    print("\n=== RANKING (by CRPS, best first) ===")
-    for i, entry in enumerate(comparison.get("ranking", []), 1):
-        print(f"  {i}. {entry['name']}  CRPS={entry['crps']:.6f}  params={entry['param_count']}")
+    ranking = comparison.get("ranking", [])
+    if ranking:
+        console.print()
+        ranking_table(ranking)
 
 
 def cmd_experiment(args: argparse.Namespace) -> None:
     """Run a single experiment."""
     from src.research.agent_api import ResearchSession
 
+    section_header("Experiment")
     session = ResearchSession()
     blocks = [b.strip() for b in args.blocks.split(",")]
 
@@ -92,26 +112,22 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     # Validate first
     validation = session.validate(experiment)
     if not validation["valid"]:
-        print("Validation FAILED:")
-        for err in validation["errors"]:
-            print(f"  - {err}")
+        print_validation_errors(validation["errors"])
         sys.exit(1)
 
     # Run
     result = session.run(experiment, epochs=args.epochs)
-    print(json.dumps(result, indent=2, default=str))
+    print_json(result)
 
     if result.get("status") == "ok":
-        metrics = result["metrics"]
-        print(f"\nCRPS: {metrics['crps']:.6f}")
-        print(f"Sharpness: {metrics['sharpness']:.6f}")
-        print(f"Log-likelihood: {metrics['log_likelihood']:.6f}")
+        metrics_panel(result["metrics"])
 
 
 def cmd_quick(args: argparse.Namespace) -> None:
     """One-liner convenience experiment."""
     from src.research.agent_api import quick_experiment
 
+    section_header("Quick Experiment")
     blocks = [b.strip() for b in args.blocks.split(",")] if args.blocks else None
     result = quick_experiment(
         blocks=blocks,
@@ -119,7 +135,7 @@ def cmd_quick(args: argparse.Namespace) -> None:
         d_model=args.d_model,
         horizon=args.horizon,
     )
-    print(json.dumps(result, indent=2, default=str))
+    print_json(result)
 
 
 def cmd_bridge(args: argparse.Namespace) -> None:
@@ -157,24 +173,27 @@ def cmd_client(args: argparse.Namespace) -> None:
             result = client.pipeline_run(publish=args.publish)
         elif action == "price":
             if not args.extra:
-                print("Usage: python main.py client price <ASSET>")
+                print_error("Usage: python main.py client price <ASSET>")
                 sys.exit(1)
             result = client.get_price(args.extra[0])
         elif action == "history":
             if not args.extra:
-                print("Usage: python main.py client history <ASSET> [days]")
+                print_error("Usage: python main.py client history <ASSET> [days]")
                 sys.exit(1)
             days = int(args.extra[1]) if len(args.extra) > 1 else 30
             result = client.get_history(args.extra[0], days=days)
         else:
-            print(f"Unknown action: {action}")
-            print("Available: health blocks heads presets compare summary clear status run price history")
+            print_error(f"Unknown action: {action}")
+            console.print(
+                "[muted]Available: health blocks heads presets compare "
+                "summary clear status run price history[/muted]"
+            )
             sys.exit(1)
 
-        print(json.dumps(result, indent=2, default=str))
+        print_json(result)
     except Exception as exc:
-        print(f"Error: {exc}")
-        print("Is the bridge running? Start it with: python main.py bridge")
+        print_error(f"Error: {exc}")
+        console.print("[muted]Is the bridge running? Start it with: python main.py bridge[/muted]")
         sys.exit(1)
 
 
@@ -184,63 +203,49 @@ def cmd_history(args: argparse.Namespace) -> None:
 
     if source == "hippius":
         from pipeline.tools.hippius_store import load_hippius_history, load_hippius_run
+
         if args.run_id:
             result = load_hippius_run(args.run_id)
         else:
             result = load_hippius_history(limit=args.limit)
         data = json.loads(result)
-        print(json.dumps(data, indent=2, default=str))
+        print_json(data)
 
-        # Print summary table for history queries
         if not args.run_id and "experiments" in data:
-            print(f"\n=== HIPPIUS HISTORY ({data.get('total_stored', '?')} total) ===")
-            for i, exp in enumerate(data["experiments"], 1):
-                crps = exp.get("crps", "N/A")
-                crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
-                blocks = ", ".join(exp.get("blocks", []))
-                print(f"  {i}. [{exp.get('run_id', '?')[:15]}] {exp.get('name', '?'):20s}  "
-                      f"CRPS={crps_str}  blocks=[{blocks}]  head={exp.get('head', '?')}")
+            console.print()
+            hippius_table(data["experiments"], total=data.get("total_stored", "?"))
 
     elif source == "wandb":
         from pipeline.tools.analysis_tools import analyze_wandb_trends, fetch_wandb_runs
+
         if args.trends:
             result = analyze_wandb_trends(limit=args.limit)
             data = json.loads(result)
-            print(json.dumps(data, indent=2, default=str))
+            print_json(data)
             if "timeline" in data:
-                print(f"\n=== W&B CRPS TRENDS ({data.get('total_runs', '?')} runs) ===")
-                print(f"  Best CRPS:   {data.get('best_crps', 'N/A')}")
-                print(f"  Best run:    {data.get('best_run', 'N/A')}")
-                print(f"  Latest CRPS: {data.get('latest_crps', 'N/A')}")
-                print(f"  Improvement: {data.get('improvement', 'N/A')}")
+                console.print()
+                wandb_trends_panel(data)
         else:
             result = fetch_wandb_runs(limit=args.limit, order=args.order)
             data = json.loads(result)
-            print(json.dumps(data, indent=2, default=str))
+            print_json(data)
             if "runs" in data:
-                print(f"\n=== W&B RUNS (order={args.order}) ===")
-                for i, run in enumerate(data["runs"], 1):
-                    crps = run.get("crps", "N/A")
-                    crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
-                    print(f"  {i}. {run.get('name', '?'):30s}  CRPS={crps_str}  "
-                          f"state={run.get('state', '?')}")
+                console.print()
+                wandb_runs_table(data["runs"], order=args.order)
 
     elif source == "hf":
         from pipeline.tools.analysis_tools import list_hf_models
+
         result = list_hf_models(repo_id=args.repo_id or "")
         data = json.loads(result)
-        print(json.dumps(data, indent=2, default=str))
+        print_json(data)
         if "files" in data:
-            print(f"\n=== HF HUB: {data.get('repo_id', '?')} ===")
-            print(f"  Downloads: {data.get('downloads', 'N/A')}")
-            print(f"  Likes: {data.get('likes', 'N/A')}")
-            print(f"  Files: {len(data.get('files', []))}")
-            for f in data.get("files", []):
-                print(f"    - {f.get('path', '?')}")
+            console.print()
+            hf_panel(data)
 
     else:
-        print(f"Unknown source: {source}")
-        print("Available: hippius, wandb, hf")
+        print_error(f"Unknown source: {source}")
+        console.print("[muted]Available: hippius, wandb, hf[/muted]")
         sys.exit(1)
 
 
@@ -266,9 +271,11 @@ def cmd_agent(args: argparse.Namespace) -> None:
 
     agent_cls = agents.get(args.name.lower())
     if not agent_cls:
-        logger.error("Unknown agent: %s (available: %s)", args.name, list(agents.keys()))
+        print_error(f"Unknown agent: {args.name}")
+        console.print(f"[muted]Available: {', '.join(agents.keys())}[/muted]")
         sys.exit(1)
 
+    section_header(f"Agent: {args.name}")
     task: dict = {
         "channel": "default",
         "user_message": args.message or "Begin the task.",
@@ -276,18 +283,20 @@ def cmd_agent(args: argparse.Namespace) -> None:
 
     agent = agent_cls(temperature=args.temperature)
     result = agent.run(task)
-    print(f"\nAgent: {args.name}")
-    print(f"Success: {result.success}")
-    print(f"Turns: {result.turns_used}")
-    if result.structured:
-        print(f"Structured output:\n{json.dumps(result.structured, indent=2, default=str)}")
-    if result.raw_text:
-        print(f"Raw text:\n{result.raw_text[:2000]}")
+    agent_result_panel(
+        name=args.name,
+        success=result.success,
+        turns=result.turns_used,
+        structured=result.structured,
+        raw_text=result.raw_text,
+    )
 
 
 def main() -> None:
+    print_banner()
+
     parser = argparse.ArgumentParser(
-        description="synth-city — agentic pipeline for Bittensor SN50 competition"
+        description="synth-city — agentic pipeline for Bittensor SN50 competition",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -300,7 +309,9 @@ def main() -> None:
 
     # sweep
     p_sweep = subparsers.add_parser("sweep", help="Run a preset sweep")
-    p_sweep.add_argument("--presets", default=None, help="Comma-separated preset names (all if omitted)")
+    p_sweep.add_argument(
+        "--presets", default=None, help="Comma-separated preset names (all if omitted)"
+    )
     p_sweep.add_argument("--epochs", type=int, default=1, help="Epochs per preset")
 
     # experiment
@@ -322,6 +333,7 @@ def main() -> None:
 
     # bridge
     from config import BRIDGE_HOST, BRIDGE_PORT
+
     p_bridge = subparsers.add_parser("bridge", help="Start the HTTP bridge server")
     p_bridge.add_argument("--host", default=BRIDGE_HOST, help="Bind address")
     p_bridge.add_argument("--port", type=int, default=BRIDGE_PORT, help="Listen port")
@@ -333,23 +345,36 @@ def main() -> None:
     )
     p_client.add_argument(
         "action",
-        choices=["health", "blocks", "heads", "presets", "compare", "summary",
-                 "clear", "status", "run", "price", "history"],
+        choices=[
+            "health", "blocks", "heads", "presets", "compare", "summary",
+            "clear", "status", "run", "price", "history",
+        ],
         help="Action to perform",
     )
-    p_client.add_argument("extra", nargs="*", help="Extra args (e.g. asset name for price/history)")
+    p_client.add_argument(
+        "extra", nargs="*", help="Extra args (e.g. asset name for price/history)"
+    )
     p_client.add_argument("--host", default=BRIDGE_HOST, help="Bridge host")
     p_client.add_argument("--port", type=int, default=BRIDGE_PORT, help="Bridge port")
-    p_client.add_argument("--publish", action="store_true", help="Publish when using 'run' action")
+    p_client.add_argument(
+        "--publish", action="store_true", help="Publish when using 'run' action"
+    )
 
     # history
-    p_hist = subparsers.add_parser("history", help="Query experiment history (Hippius, W&B, HF Hub)")
+    p_hist = subparsers.add_parser(
+        "history", help="Query experiment history (Hippius, W&B, HF Hub)"
+    )
     p_hist.add_argument("source", choices=["hippius", "wandb", "hf"], help="Data source")
     p_hist.add_argument("--limit", type=int, default=20, help="Max results to return")
-    p_hist.add_argument("--order", default="best", choices=["best", "recent", "worst"],
-                        help="Sort order for W&B runs")
+    p_hist.add_argument(
+        "--order", default="best", choices=["best", "recent", "worst"],
+        help="Sort order for W&B runs",
+    )
     p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (W&B only)")
-    p_hist.add_argument("--run-id", default=None, help="Load a specific Hippius run ID ('latest' for most recent)")
+    p_hist.add_argument(
+        "--run-id", default=None,
+        help="Load a specific Hippius run ID ('latest' for most recent)",
+    )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
     # agent
