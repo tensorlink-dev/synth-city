@@ -601,16 +601,15 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 if isinstance(comparison, dict):
                     ranking = comparison.get("ranking", [])
                     for entry in ranking:
-                        entry["bot_id"] = info["bot_id"]
-                    all_rankings.extend(ranking)
+                        # Copy to avoid mutating session-internal data
+                        tagged = {**entry, "bot_id": info["bot_id"]}
+                        all_rankings.append(tagged)
             except Exception:
                 continue
 
         # Sort by CRPS (lower is better)
         all_rankings.sort(
-            key=lambda e: e.get("crps", float("inf"))
-            if e.get("crps") is not None
-            else float("inf"),
+            key=lambda e: float("inf") if e.get("crps") is None else e["crps"],
         )
         self._send_json({
             "ranking": all_rankings,
@@ -703,9 +702,20 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "temperature": temp_v,
                 "publish": bool(body.get("publish", False)),
             }
-            _pipeline_executor.submit(
-                _run_pipeline_for_bot, task, session.bot_id,
-            )
+            try:
+                _pipeline_executor.submit(
+                    _run_pipeline_for_bot, task, session.bot_id,
+                )
+            except RuntimeError as exc:
+                # Executor shut down or cannot accept work
+                with session.pipeline_lock:
+                    session.pipeline_state.mark_failed(exc)
+                registry.pipeline_semaphore.release()
+                self._send_json(
+                    {"error": f"Failed to start pipeline: {exc}"},
+                    status=503,
+                )
+                return
             self._send_json({
                 "status": "started",
                 "message": "Pipeline running in background",

@@ -136,8 +136,9 @@ class BotSession:
     last_active: float = field(default_factory=time.time)
     created_at: float = field(default_factory=time.time)
 
-    # Lazily initialised per-bot ResearchSession (set by research_tools)
+    # Lazily initialised per-bot ResearchSession
     _research_session: Any = field(default=None, repr=False)
+    _research_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
         if not self.run_id:
@@ -155,10 +156,14 @@ class BotSession:
 
     def get_research_session(self):
         """Return (or lazily create) the per-bot ResearchSession."""
-        if self._research_session is None:
-            from src.research.agent_api import ResearchSession
-            self._research_session = ResearchSession()
-        return self._research_session
+        if self._research_session is not None:
+            return self._research_session
+        with self._research_lock:
+            # Double-check after acquiring lock
+            if self._research_session is None:
+                from src.research.agent_api import ResearchSession
+                self._research_session = ResearchSession()
+            return self._research_session
 
     def reset_run_id(self) -> None:
         """Generate a fresh run ID for the next pipeline invocation."""
