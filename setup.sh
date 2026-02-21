@@ -14,7 +14,7 @@
 #   4. Copies .env.example → .env if .env doesn't exist
 #   5. Optionally installs the OpenClaw skill
 #
-# Requirements: Python 3.10+, git, pip
+# Requirements: Python 3.10+, git, uv (or pip)
 
 set -euo pipefail
 
@@ -105,11 +105,19 @@ if [[ "$PYTHON_MAJOR" -lt 3 ]] || { [[ "$PYTHON_MAJOR" -eq 3 ]] && [[ "$PYTHON_M
 fi
 ok "Python $PYTHON_VERSION"
 
+# ---- install uv if missing ---------------------------------------------------
+if ! command -v uv >/dev/null 2>&1; then
+    info "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+fi
+ok "uv $(uv --version)"
+
 # ---- virtualenv -------------------------------------------------------------
 if [[ "$SKIP_VENV" == false ]]; then
     if [[ ! -d "$VENV_DIR" ]]; then
         info "Creating virtualenv at $VENV_DIR..."
-        python3 -m venv "$VENV_DIR"
+        uv venv "$VENV_DIR"
     else
         info "Virtualenv already exists at $VENV_DIR"
     fi
@@ -120,10 +128,6 @@ if [[ "$SKIP_VENV" == false ]]; then
 else
     info "Skipping virtualenv (--no-venv)"
 fi
-
-# ---- upgrade pip ------------------------------------------------------------
-info "Upgrading pip..."
-python -m pip install --upgrade pip --quiet
 
 # ---- open-synth-miner ------------------------------------------------------
 if [[ -z "$OSM_PATH" ]]; then
@@ -148,7 +152,7 @@ ok "open-synth-miner: $OSM_PATH"
 # ---- install open-synth-miner ----------------------------------------------
 info "Installing open-synth-miner (editable)..."
 if [[ -f "$OSM_PATH/pyproject.toml" ]] || [[ -f "$OSM_PATH/setup.py" ]]; then
-    pip install -e "$OSM_PATH" --quiet
+    uv pip install -e "$OSM_PATH" --quiet
 else
     # Fallback: add to path if no setup file
     warn "No pyproject.toml or setup.py in open-synth-miner — adding to PYTHONPATH"
@@ -158,9 +162,9 @@ fi
 # ---- install synth-city -----------------------------------------------------
 info "Installing synth-city (editable)..."
 if [[ "$WITH_DEV" == true ]]; then
-    pip install -e "$SCRIPT_DIR[dev]" --quiet
+    uv pip install -e "$SCRIPT_DIR[dev]" --quiet
 else
-    pip install -e "$SCRIPT_DIR" --quiet
+    uv pip install -e "$SCRIPT_DIR" --quiet
 fi
 
 ok "synth-city installed"

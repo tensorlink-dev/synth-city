@@ -41,7 +41,6 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
     try:
         import wandb
         from omegaconf import OmegaConf
-
         from src.models.factory import create_model
         from src.models.registry import discover_components, registry
         from src.tracking.hub_manager import HubManager
@@ -49,7 +48,10 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
         target_repo = repo_id or HF_REPO_ID
         if not target_repo:
-            return json.dumps({"error": "No HF_REPO_ID configured. Set it in .env or pass repo_id."})
+            return json.dumps({
+                "error": "No HF_REPO_ID configured."
+                " Set it in .env or pass repo_id.",
+            })
 
         # Recreate model from config
         discover_components("src/models/components")

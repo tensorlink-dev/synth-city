@@ -21,6 +21,7 @@ dependencies = [
     "torchsde",
     "wandb",
     "huggingface_hub",
+    "boto3>=1.34.0",
     "python-dotenv>=1.0.0",
     "basilica-sdk>=0.17.0",
     "rich>=13.0",
