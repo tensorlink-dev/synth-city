@@ -94,6 +94,20 @@ def all_tool_names() -> list[str]:
     return list(_TOOLS.keys())
 
 
+def register_tool_def(tool_def: ToolDef) -> None:
+    """Programmatically register a ToolDef (e.g. from dynamic tool authoring)."""
+    _TOOLS[tool_def.name] = tool_def
+    logger.info("Registered tool: %s", tool_def.name)
+
+
+def unregister_tool(name: str) -> bool:
+    """Remove a tool from the registry. Returns True if the tool existed."""
+    removed = _TOOLS.pop(name, None)
+    if removed:
+        logger.info("Unregistered tool: %s", name)
+    return removed is not None
+
+
 def build_toolset(*names: str) -> tuple[dict[str, Callable], list[dict[str, Any]]]:
     """Convenience: return (tools_dict, schemas_list) for the given names."""
     missing = [n for n in names if n not in _TOOLS]

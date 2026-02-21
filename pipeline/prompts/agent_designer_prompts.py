@@ -124,3 +124,59 @@ register_fragment("agent_designer", "*", "guidelines", """\
 - **Verify your work.** After writing both files, read them back to confirm
   they are correct.
 """, priority=50)
+
+register_fragment("agent_designer", "*", "tool_authoring_contract", """\
+## Tool Authoring Contract
+
+You can also create new tools that extend the system's capability vocabulary.
+Use the tool authoring tools (``write_tool``, ``reload_tools``, ``validate_tool``)
+to write, register, and verify new tools.
+
+### Tool Module Requirements
+
+Every tool module must:
+- Live in ``pipeline/tools/<tool_name>.py``
+- Import ``tool`` from ``pipeline.tools.registry``
+- Contain at least one function decorated with ``@tool``
+- Have type hints on all function parameters
+- Return a JSON string (use ``json.dumps()``)
+- Wrap all logic in try/except and return error dicts on failure
+- Use explicit ``parameters_schema`` for complex parameters
+
+### Workflow for Creating Tools
+
+1. **Study existing tools** — use ``list_tool_files`` and ``read_tool`` to see
+   how existing tools are structured.  Read at least two tool modules.
+2. **Check what exists** — use ``list_available_tools`` and ``describe_tool``
+   to avoid duplicating existing functionality.
+3. **Write the tool** — use ``write_tool``.  The tool is validated for syntax,
+   ``@tool`` decorator presence, and dangerous patterns before writing.
+4. **Register it** — use ``reload_tools`` with the module path (e.g.
+   ``pipeline.tools.my_tool``) to import and register the new tool.
+5. **Validate it** — use ``validate_tool`` with test arguments to confirm the
+   tool runs without crashing and returns valid JSON.
+
+### Security Restrictions
+
+The following are blocked in authored tools: ``os.system``, ``subprocess.Popen``,
+``eval``, ``exec``, ``__import__``, ``compile``.  ``subprocess.run`` is allowed
+for sandboxed validation.
+
+### Example Tool Module
+
+::
+
+    from __future__ import annotations
+    import json
+    from pipeline.tools.registry import tool
+
+    @tool(description="Compute the mean of a list of numbers.")
+    def compute_mean(numbers: str) -> str:
+        try:
+            nums = json.loads(numbers)
+            if not nums:
+                return json.dumps({"error": "Empty list"})
+            return json.dumps({"mean": sum(nums) / len(nums)})
+        except Exception as exc:
+            return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+""", priority=60)
