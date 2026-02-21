@@ -12,7 +12,7 @@ import json
 import logging
 import traceback
 
-from config import HF_REPO_ID, WANDB_PROJECT
+from config import HF_REPO_ID, TRACKIO_PROJECT, WANDB_PROJECT
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,8 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
 
 @tool(
     description=(
-        "Log experiment metrics to W&B without publishing to HF Hub. "
+        "Log experiment metrics to Trackio for local tracking and dashboard. "
+        "Also persists to Hippius for long-term decentralised storage. "
         "Useful for tracking intermediate results."
     ),
     parameters_schema={
@@ -110,22 +111,31 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
         "required": ["experiment_name", "metrics"],
     },
 )
-def log_to_wandb(experiment_name: str, metrics: str, config: str = "") -> str:
-    """Log metrics to W&B for tracking."""
+def log_to_trackio(experiment_name: str, metrics: str, config: str = "") -> str:
+    """Log metrics to Trackio for local tracking and persist to Hippius."""
     try:
-        import wandb
+        import trackio
 
         metrics_dict = json.loads(metrics) if isinstance(metrics, str) else metrics
         config_dict = json.loads(config) if config else {}
 
-        run = wandb.init(
-            project=WANDB_PROJECT,
+        trackio.init(
+            project=TRACKIO_PROJECT,
             name=experiment_name,
             config=config_dict,
         )
-        wandb.log(metrics_dict)
-        wandb.finish()
+        trackio.log(metrics_dict)
+        trackio.finish()
 
-        return json.dumps({"status": "logged", "run_url": run.url})
+        # Also persist to Hippius for cross-session history
+        from pipeline.tools.hippius_store import save_experiment_result
+
+        save_experiment_result(
+            name=experiment_name,
+            experiment=config_dict,
+            result={"metrics": metrics_dict},
+        )
+
+        return json.dumps({"status": "logged", "project": TRACKIO_PROJECT})
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})

@@ -75,10 +75,10 @@ call `flush_session(keep_top_n=10)` explicitly to:
 
 ## Historical Context
 
-Results from past pipeline runs are persisted to Hippius storage and W&B.
+Results from past pipeline runs are persisted to Hippius decentralised storage.
 Use these tools to inform your decisions:
 - `load_hippius_history(limit=20)` — all past experiments ranked by CRPS
-- `fetch_wandb_runs(limit=10, order="best")` — best runs from W&B
+- `fetch_experiment_runs(limit=10, order="best")` — best experiments from Hippius
 
 This is especially useful when the session was cleared or the process restarted.
 

@@ -100,10 +100,11 @@ RESEARCH_LR: float = float(os.getenv("RESEARCH_LR", "0.001"))
 RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "1"))
 
 # ---------------------------------------------------------------------------
-# Publishing (HF Hub + W&B)
+# Publishing (HF Hub + W&B + Trackio)
 # ---------------------------------------------------------------------------
 HF_REPO_ID: str = os.getenv("HF_REPO_ID", "")
 WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
+TRACKIO_PROJECT: str = os.getenv("TRACKIO_PROJECT", "synth-city")
 
 # ---------------------------------------------------------------------------
 # Hippius decentralised storage (S3-compatible)

@@ -113,34 +113,30 @@ def hippius_table(experiments: list[dict[str, Any]], total: int | str = "?") -> 
     console.print(table)
 
 
-def wandb_runs_table(runs: list[dict[str, Any]], order: str = "best") -> None:
-    """Print a styled W&B runs table."""
+def experiment_runs_table(runs: list[dict[str, Any]], order: str = "best") -> None:
+    """Print a styled experiment runs table."""
     table = Table(
-        title=f"W&B Runs (order={order})",
+        title=f"Experiment Runs (order={order})",
         border_style="cyan",
         header_style="bold cyan",
     )
     table.add_column("#", style="muted", justify="right", width=4)
     table.add_column("Name", style="label", min_width=30)
     table.add_column("CRPS", style="metric", justify="right")
-    table.add_column("State", justify="center")
 
     for i, run in enumerate(runs, 1):
         crps = run.get("crps", "N/A")
         crps_str = f"{crps:.6f}" if isinstance(crps, (int, float)) else str(crps)
-        state = str(run.get("state", "?"))
-        state_style = "green" if state == "finished" else "yellow" if state == "running" else "dim"
         table.add_row(
             str(i),
             str(run.get("name", "?")),
             crps_str,
-            f"[{state_style}]{state}[/{state_style}]",
         )
     console.print(table)
 
 
-def wandb_trends_panel(data: dict[str, Any]) -> None:
-    """Print a styled W&B CRPS trends panel."""
+def experiment_trends_panel(data: dict[str, Any]) -> None:
+    """Print a styled CRPS trends panel."""
     lines = Text()
     lines.append("  Best CRPS:   ", style="label")
     lines.append(f"{data.get('best_crps', 'N/A')}\n", style="metric")
@@ -155,7 +151,7 @@ def wandb_trends_panel(data: dict[str, Any]) -> None:
 
     panel = Panel(
         lines,
-        title=f"[bold cyan]W&B CRPS Trends ({data.get('total_runs', '?')} runs)[/bold cyan]",
+        title=f"[bold cyan]CRPS Trends ({data.get('total_runs', '?')} runs)[/bold cyan]",
         border_style="cyan",
     )
     console.print(panel)

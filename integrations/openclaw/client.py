@@ -239,7 +239,7 @@ class SynthCityClient:
     def load_hippius_history(self, limit: int = 50) -> dict[str, Any]:
         return self._get("/history/experiments", params={"limit": limit})
 
-    def fetch_wandb_runs(
+    def fetch_experiment_runs(
         self, limit: int = 20, order: str = "best",
     ) -> dict[str, Any]:
-        return self._get("/history/wandb", params={"limit": limit, "order": order})
+        return self._get("/history/trackio", params={"limit": limit, "order": order})

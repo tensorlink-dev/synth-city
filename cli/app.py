@@ -22,6 +22,8 @@ import sys
 from cli.display import (
     agent_result_panel,
     console,
+    experiment_runs_table,
+    experiment_trends_panel,
     hf_panel,
     hippius_table,
     metrics_panel,
@@ -31,8 +33,6 @@ from cli.display import (
     print_validation_errors,
     ranking_table,
     section_header,
-    wandb_runs_table,
-    wandb_trends_panel,
 )
 
 logging.basicConfig(
@@ -197,7 +197,7 @@ def cmd_client(args: argparse.Namespace) -> None:
 
 
 def cmd_history(args: argparse.Namespace) -> None:
-    """Query experiment history from Hippius, W&B, or HF Hub."""
+    """Query experiment history from Hippius, Trackio, or HF Hub."""
     source = args.source
 
     if source == "hippius":
@@ -214,23 +214,26 @@ def cmd_history(args: argparse.Namespace) -> None:
             console.print()
             hippius_table(data["experiments"], total=data.get("total_stored", "?"))
 
-    elif source == "wandb":
-        from pipeline.tools.analysis_tools import analyze_wandb_trends, fetch_wandb_runs
+    elif source == "trackio":
+        from pipeline.tools.analysis_tools import (
+            analyze_experiment_trends,
+            fetch_experiment_runs,
+        )
 
         if args.trends:
-            result = analyze_wandb_trends(limit=args.limit)
+            result = analyze_experiment_trends(limit=args.limit)
             data = json.loads(result)
             print_json(data)
             if "timeline" in data:
                 console.print()
-                wandb_trends_panel(data)
+                experiment_trends_panel(data)
         else:
-            result = fetch_wandb_runs(limit=args.limit, order=args.order)
+            result = fetch_experiment_runs(limit=args.limit, order=args.order)
             data = json.loads(result)
             print_json(data)
             if "runs" in data:
                 console.print()
-                wandb_runs_table(data["runs"], order=args.order)
+                experiment_runs_table(data["runs"], order=args.order)
 
     elif source == "hf":
         from pipeline.tools.analysis_tools import list_hf_models
@@ -244,7 +247,7 @@ def cmd_history(args: argparse.Namespace) -> None:
 
     else:
         print_error(f"Unknown source: {source}")
-        console.print("[muted]Available: hippius, wandb, hf[/muted]")
+        console.print("[muted]Available: hippius, trackio, hf[/muted]")
         sys.exit(1)
 
 
@@ -370,15 +373,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     # history
     p_hist = subparsers.add_parser(
-        "history", help="Query experiment history (Hippius, W&B, HF Hub)"
+        "history", help="Query experiment history (Hippius, Trackio, HF Hub)"
     )
-    p_hist.add_argument("source", choices=["hippius", "wandb", "hf"], help="Data source")
+    p_hist.add_argument("source", choices=["hippius", "trackio", "hf"], help="Data source")
     p_hist.add_argument("--limit", type=int, default=20, help="Max results to return")
     p_hist.add_argument(
         "--order", default="best", choices=["best", "recent", "worst"],
-        help="Sort order for W&B runs",
+        help="Sort order for experiment runs",
     )
-    p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (W&B only)")
+    p_hist.add_argument("--trends", action="store_true", help="Show CRPS trends (trackio only)")
     p_hist.add_argument(
         "--run-id", default=None,
         help="Load a specific Hippius run ID ('latest' for most recent)",

@@ -29,8 +29,8 @@ Before proposing any architecture, you MUST:
 3. **Check prior results** — call `session_summary` to see if there are existing results
    to build on. If there are results, call `compare_results` to see the current ranking.
 4. **Review historical data** — call `load_hippius_history` to see experiment results
-   from ALL past pipeline runs (persisted across restarts). Also call `analyze_wandb_trends`
-   to see CRPS improvement over time, and `fetch_wandb_runs` to review the best historical
+   from ALL past pipeline runs (persisted across restarts). Also call `analyze_experiment_trends`
+   to see CRPS improvement over time, and `fetch_experiment_runs` to review the best historical
    configs. Use `list_hf_models` to check what has already been published to HF Hub.
 5. **Identify gaps** — which block families (recurrent, convolutional, attention,
    decomposition) haven't been tried? Which heads beyond GBMHead? What architectures
@@ -149,8 +149,8 @@ You MUST use tools before calling finish. Never skip the diagnostic phase.
 ### Historical Analysis (past runs persisted across restarts)
 - `load_hippius_history(limit)` — load all past experiments from Hippius storage, ranked by CRPS
 - `load_hippius_run(run_id)` — load a specific past pipeline run ('latest' for most recent)
-- `fetch_wandb_runs(limit, order)` — fetch past runs from W&B ('best', 'recent', or 'worst')
-- `analyze_wandb_trends(limit)` — CRPS improvement trajectory over time
+- `fetch_experiment_runs(limit, order)` — past runs from Hippius ('best'/'recent'/'worst')
+- `analyze_experiment_trends(limit)` — CRPS improvement trajectory over time
 - `list_hf_models(repo_id)` — list published models on HF Hub
 
 ### Completion
