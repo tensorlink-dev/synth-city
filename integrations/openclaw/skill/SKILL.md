@@ -1,6 +1,6 @@
 ---
 name: synth-city
-version: 0.1.0
+version: 0.1.2
 description: >-
   Autonomous AI research pipeline for Bittensor Subnet 50 (Synth).
   Discovers, trains, debugs, and publishes probabilistic price forecasting models.
@@ -344,3 +344,20 @@ Higher-weighted assets (SPYX, XAU, AAPLX) have more impact on the overall score.
 - If HF Hub endpoints return errors, verify that `HF_REPO_ID` is configured in the `.env` file and that API tokens are set.
 - After writing a new component, **always** call the reload endpoint before attempting to use the new block/head in experiments. If reload fails, the component source likely has an import error — read it back and fix.
 - If Hippius history returns empty results, it means no experiments have been persisted to decentralised storage yet. Run the pipeline or manually save experiments first.
+
+## Publishing this skill to ClawHub
+
+Use `integrations/openclaw/publish.py` instead of calling `clawhub publish` directly. It wraps the CLI with automatic exponential-backoff retry (up to 5 attempts: 2 s, 4 s, 8 s, 16 s, 32 s) so transient rate-limit errors are handled transparently.
+
+```bash
+# Publish current version (reads version from clawhub.json)
+python integrations/openclaw/publish.py
+
+# Publish an explicit version
+python integrations/openclaw/publish.py --version 0.1.2
+
+# Publish from a custom skill directory
+python integrations/openclaw/publish.py --skill-dir ./integrations/openclaw/skill --version 0.1.2
+```
+
+If the ClawHub registry is still rate-limiting after all retries, the script exits with a non-zero code and an explanatory message — wait a few minutes and try again.
