@@ -50,8 +50,10 @@ logger = logging.getLogger("synth-city")
 
 def cmd_pipeline(args: argparse.Namespace) -> None:
     """Run the full agentic improvement pipeline."""
+    from pipeline.bootstrap import bootstrap_all
     from pipeline.orchestrator import PipelineOrchestrator
 
+    bootstrap_all()
     section_header("Pipeline")
     task: dict = {"channel": args.channel}
     orchestrator = PipelineOrchestrator(
@@ -67,6 +69,9 @@ def cmd_sweep(args: argparse.Namespace) -> None:
     """Run a quick preset sweep via ResearchSession."""
     from src.research.agent_api import ResearchSession
 
+    from pipeline.bootstrap import bootstrap_dirs
+
+    bootstrap_dirs()
     section_header("Sweep")
     session = ResearchSession()
     presets = [p.strip() for p in args.presets.split(",")] if args.presets else None
@@ -85,6 +90,9 @@ def cmd_experiment(args: argparse.Namespace) -> None:
     """Run a single experiment."""
     from src.research.agent_api import ResearchSession
 
+    from pipeline.bootstrap import bootstrap_dirs
+
+    bootstrap_dirs()
     section_header("Experiment")
     session = ResearchSession()
     blocks = [b.strip() for b in args.blocks.split(",")]
@@ -242,6 +250,10 @@ def cmd_history(args: argparse.Namespace) -> None:
 
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
+    from pipeline.bootstrap import bootstrap_dirs
+
+    bootstrap_dirs()
+
     from pipeline.agents.agent_designer import AgentDesignerAgent
     from pipeline.agents.author import ComponentAuthorAgent
     from pipeline.agents.code_checker import CodeCheckerAgent
