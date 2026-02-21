@@ -180,8 +180,6 @@ class PipelineOrchestrator:
             if isinstance(nested, dict):
                 if nested.get("error_type") == "environment":
                     return True
-                if nested.get("recoverable") is False and nested.get("error_type"):
-                    return True
 
         # Check raw text for the JSON markers (agent may embed them in summary)
         raw = result.raw_text or ""
