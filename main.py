@@ -261,6 +261,48 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_update(args: argparse.Namespace) -> None:
+    """Pull the latest open-synth-miner and reinstall it."""
+    import subprocess
+    import shutil
+
+    script_dir = __import__("pathlib").Path(__file__).parent
+    osm_path = (script_dir / ".." / "open-synth-miner").resolve()
+
+    if not osm_path.is_dir():
+        logger.error("open-synth-miner not found at %s. Run ./setup.sh first.", osm_path)
+        sys.exit(1)
+
+    logger.info("Pulling latest open-synth-miner from %s ...", osm_path)
+    result = subprocess.run(
+        ["git", "-C", str(osm_path), "pull", "--ff-only"],
+        check=False,
+    )
+    if result.returncode != 0:
+        logger.error("git pull failed — resolve conflicts in %s and retry.", osm_path)
+        sys.exit(result.returncode)
+
+    rev = subprocess.check_output(
+        ["git", "-C", str(osm_path), "rev-parse", "--short", "HEAD"],
+        text=True,
+    ).strip()
+    logger.info("open-synth-miner updated to %s", rev)
+
+    installer = shutil.which("uv") or shutil.which("pip")
+    if installer is None:
+        logger.error("Neither uv nor pip found on PATH.")
+        sys.exit(1)
+
+    cmd = (
+        [installer, "pip", "install", "-e", str(osm_path)]
+        if installer.endswith("uv")
+        else [installer, "install", "-e", str(osm_path)]
+    )
+    logger.info("Reinstalling open-synth-miner dependencies (%s)...", installer)
+    subprocess.run(cmd, check=True)
+    logger.info("Done. open-synth-miner is up to date.")
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.bootstrap import bootstrap_dirs
@@ -393,6 +435,12 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # update
+    subparsers.add_parser(
+        "update",
+        help="Pull latest open-synth-miner and reinstall its dependencies",
+    )
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -408,6 +456,7 @@ def main() -> None:
         "history": cmd_history,
         "bridge": cmd_bridge,
         "client": cmd_client,
+        "update": cmd_update,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)

@@ -25,6 +25,7 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 SKIP_VENV=false
 WITH_DEV=false
 WITH_OPENCLAW=false
+UPDATE_ONLY=false
 
 # ---- parse args -------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -34,6 +35,7 @@ while [[ $# -gt 0 ]]; do
         --no-venv)    SKIP_VENV=true; shift ;;
         --dev)        WITH_DEV=true; shift ;;
         --with-openclaw) WITH_OPENCLAW=true; shift ;;
+        --update)     UPDATE_ONLY=true; shift ;;
         -h|--help)
             echo "Usage: ./setup.sh [OPTIONS]"
             echo ""
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv         Skip virtualenv creation (use current Python)"
             echo "  --dev             Also install dev dependencies (pytest, ruff, mypy)"
             echo "  --with-openclaw   Install the OpenClaw skill after setup"
+            echo "  --update          Pull latest open-synth-miner and reinstall"
             echo "  -h, --help        Show this help message"
             exit 0
             ;;
@@ -136,6 +139,9 @@ if [[ -z "$OSM_PATH" ]]; then
         OSM_PATH="$(cd "$SCRIPT_DIR/../open-synth-miner" && pwd)"
         info "Found open-synth-miner at $OSM_PATH"
     else
+        if [[ "$UPDATE_ONLY" == true ]]; then
+            fail "open-synth-miner not found. Run ./setup.sh first to clone it."
+        fi
         OSM_PATH="$SCRIPT_DIR/../open-synth-miner"
         info "Cloning open-synth-miner..."
         git clone https://github.com/tensorlink-dev/open-synth-miner.git "$OSM_PATH"
@@ -148,6 +154,13 @@ if [[ ! -d "$OSM_PATH" ]]; then
 fi
 
 ok "open-synth-miner: $OSM_PATH"
+
+# ---- update open-synth-miner if requested ----------------------------------
+if [[ "$UPDATE_ONLY" == true ]]; then
+    info "Pulling latest open-synth-miner..."
+    git -C "$OSM_PATH" pull --ff-only
+    ok "open-synth-miner updated to $(git -C "$OSM_PATH" rev-parse --short HEAD)"
+fi
 
 # ---- install open-synth-miner ----------------------------------------------
 info "Installing open-synth-miner (editable)..."
@@ -200,6 +213,10 @@ echo "  Quick start:"
 echo "    python main.py sweep                      # baseline sweep"
 echo "    python main.py pipeline                   # full agent pipeline"
 echo "    python main.py bridge                     # start HTTP bridge"
+echo ""
+echo "  Update open-synth-miner:"
+echo "    ./setup.sh --update                       # pull + reinstall OSM"
+echo "    python main.py update                     # same, from Python"
 echo ""
 if grep -q "^CHUTES_API_KEY=$" "$SCRIPT_DIR/.env" 2>/dev/null; then
     warn "Don't forget to edit .env with your API keys!"
