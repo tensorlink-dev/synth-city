@@ -103,8 +103,10 @@ def _get_client():
         endpoint_url=HIPPIUS_ENDPOINT,
         aws_access_key_id=HIPPIUS_ACCESS_KEY,
         aws_secret_access_key=HIPPIUS_SECRET_KEY,
+        region_name="decentralized",
         config=BotoConfig(
             signature_version="s3v4",
+            s3={"addressing_style": "path"},
             retries={"max_attempts": 3, "mode": "adaptive"},
         ),
     )
