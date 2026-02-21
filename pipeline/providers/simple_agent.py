@@ -189,6 +189,11 @@ class SimpleAgent:
         messages.append({"role": "user", "content": user_message})
 
         all_schemas = self.tool_schemas + [self._finish_schema]
+        tool_names = sorted(self.tools.keys())
+        logger.info(
+            "Agent starting: model=%s  tools=%d [%s]  max_turns=%d",
+            self.model, len(tool_names), ", ".join(tool_names), self.max_turns,
+        )
 
         for turn in range(self.max_turns):
             logger.debug("turn %d  model=%s  msgs=%d", turn, self.model, len(messages))
@@ -271,6 +276,8 @@ class SimpleAgent:
 
         func = self.tools.get(name)
         if func is None:
+            available = ", ".join(sorted(self.tools))
+            logger.warning("Tool call for unknown tool: %s (available: %s)", name, available)
             return ToolResult(
                 tool_call_id=tc.id,
                 name=name,
@@ -282,6 +289,7 @@ class SimpleAgent:
         if schema:
             raw_args = _coerce_args(raw_args, schema)
 
+        logger.debug("Tool %s called with args: %s", name, json.dumps(raw_args, default=str)[:500])
         try:
             result = func(**raw_args)
             # If the tool returns a Pydantic model, serialize it
@@ -291,6 +299,7 @@ class SimpleAgent:
                 content = json.dumps(result)
             else:
                 content = str(result)
+            logger.debug("Tool %s returned %d chars", name, len(content))
         except Exception as exc:
             logger.exception("Tool %s raised an exception", name)
             content = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
