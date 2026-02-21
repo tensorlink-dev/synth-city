@@ -271,9 +271,11 @@ def cmd_agent(args: argparse.Namespace) -> None:
     from pipeline.agents.author import ComponentAuthorAgent
     from pipeline.agents.code_checker import CodeCheckerAgent
     from pipeline.agents.debugger import DebuggerAgent
+    from pipeline.agents.pipeline_architect import PipelineArchitectAgent
     from pipeline.agents.planner import PlannerAgent
     from pipeline.agents.publisher import PublisherAgent
     from pipeline.agents.trainer import TrainerAgent
+    from pipeline.orchestrator import resolve_agent
 
     agents = {
         "planner": PlannerAgent,
@@ -283,9 +285,13 @@ def cmd_agent(args: argparse.Namespace) -> None:
         "publisher": PublisherAgent,
         "author": ComponentAuthorAgent,
         "agent_designer": AgentDesignerAgent,
+        "pipeline_architect": PipelineArchitectAgent,
     }
 
     agent_cls = agents.get(args.name.lower())
+    # Fall back to dynamic resolution for authored agents
+    if not agent_cls:
+        agent_cls = resolve_agent(args.name.lower())
     if not agent_cls:
         logger.error("Unknown agent: %s (available: %s)", args.name, list(agents.keys()))
         sys.exit(1)

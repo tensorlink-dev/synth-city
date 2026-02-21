@@ -1,10 +1,11 @@
-"""AgentDesigner agent — creates new pipeline agents and their prompt modules."""
+"""AgentDesigner agent — creates new pipeline agents, prompt modules, and tools."""
 
 from __future__ import annotations
 
 from typing import Any, Callable
 
 import pipeline.prompts.agent_designer_prompts  # noqa: F401 — registers fragments
+import pipeline.tools.tool_authoring  # noqa: F401 — registers tool authoring tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -18,15 +19,22 @@ class AgentDesignerAgent(BaseAgentWrapper):
 
     def build_tools(self, task: dict[str, Any]) -> tuple[dict[str, Callable], list[dict]]:
         tool_names = [
-            # Discovery (read-only)
+            # Agent discovery (read-only)
             "list_agents",
             "read_agent",
             "list_agent_prompts",
             "read_agent_prompt",
             "list_available_tools",
-            # Writing
+            # Agent writing
             "write_agent",
             "write_agent_prompt",
+            # Tool authoring
+            "write_tool",
+            "reload_tools",
+            "validate_tool",
+            "read_tool",
+            "list_tool_files",
+            "describe_tool",
         ]
         return build_toolset(*tool_names)
 
