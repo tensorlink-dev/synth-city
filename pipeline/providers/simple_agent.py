@@ -22,9 +22,11 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel
 
+from pipeline.monitor import get_monitor
 from pipeline.providers.chutes_client import chat_completion_with_backoff
 
 logger = logging.getLogger(__name__)
+_mon = get_monitor()
 
 # ---------------------------------------------------------------------------
 # Types
@@ -205,9 +207,15 @@ class SimpleAgent:
             "Agent starting: model=%s  tools=%d [%s]  max_turns=%d",
             self.model, len(tool_names), ", ".join(tool_names), self.max_turns,
         )
+        _mon.emit(
+            "agent", "agent_start",
+            name=self.model, model=self.model,
+            tools=tool_names, max_turns=self.max_turns,
+        )
 
         for turn in range(self.max_turns):
             logger.debug("turn %d  model=%s  msgs=%d", turn, self.model, len(messages))
+            _mon.emit("agent", "agent_turn", turn=turn + 1)
 
             try:
                 response = chat_completion_with_backoff(
@@ -235,6 +243,7 @@ class SimpleAgent:
             if not choice.message.tool_calls:
                 assistant_msg.setdefault("content", "")
                 messages.append(assistant_msg)
+                _mon.emit("agent", "agent_finish", success=True, turns=turn + 1)
                 return AgentResult(
                     success=True,
                     raw_text=choice.message.content or "",
@@ -256,10 +265,14 @@ class SimpleAgent:
                     "content": result.content,
                 })
                 if result.is_finish:
-                    return AgentResult(
-                        success=result.structured.get("success", True)
+                    finish_success = (
+                        result.structured.get("success", True)
                         if isinstance(result.structured, dict)
-                        else True,
+                        else True
+                    )
+                    _mon.emit("agent", "agent_finish", success=finish_success, turns=turn + 1)
+                    return AgentResult(
+                        success=finish_success,
                         structured=result.structured,
                         raw_text=result.content,
                         messages=messages,
@@ -268,6 +281,7 @@ class SimpleAgent:
 
         # Exhausted turns
         logger.warning("Agent exhausted %d turns without finishing", self.max_turns)
+        _mon.emit("agent", "agent_finish", success=False, turns=self.max_turns)
         return AgentResult(
             success=False,
             raw_text="max turns exhausted",
@@ -321,6 +335,7 @@ class SimpleAgent:
             raw_args = _coerce_args(raw_args, schema)
 
         logger.info("Tool call: %s(%s)", name, json.dumps(raw_args, default=str)[:200])
+        _mon.emit("tool", "tool_call", name=name)
         try:
             result = func(**raw_args)
             # If the tool returns a Pydantic model, serialize it
@@ -331,9 +346,11 @@ class SimpleAgent:
             else:
                 content = str(result)
             logger.info("Tool %s returned %d chars", name, len(content))
+            _mon.emit("tool", "tool_result", name=name, size=len(content))
         except Exception as exc:
             logger.exception("Tool %s raised an exception", name)
             content = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+            _mon.emit("tool", "tool_result", name=name, size=len(content), error=True)
 
         return ToolResult(tool_call_id=tc.id, name=name, content=content)
 
