@@ -68,7 +68,6 @@ import contextvars
 import hmac
 import json
 import logging
-import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -76,17 +75,14 @@ from socketserver import ThreadingMixIn
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from config import MAX_CONCURRENT_PIPELINES
+from config import BRIDGE_API_KEY, MAX_CONCURRENT_PIPELINES
 
 logger = logging.getLogger(__name__)
 
 # Maximum request body size (1 MB) to prevent memory exhaustion
 MAX_CONTENT_LENGTH = 1 * 1024 * 1024
 
-# Optional API key — when set, every request must include a matching
-# ``X-API-Key`` header.  When empty (the default), authentication is
-# disabled so localhost use works without configuration.
-BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
+# BRIDGE_API_KEY is imported from config.py
 
 # Valid SN50 asset identifiers
 VALID_ASSETS = frozenset({
