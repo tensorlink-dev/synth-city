@@ -99,17 +99,29 @@ def _get_client():
     return _client
 
 
+_bucket_checked: bool = False
+
+
 def _ensure_bucket():
-    """Create the bucket if it doesn't exist yet."""
+    """Create the bucket if it doesn't exist yet.
+
+    Results are cached so the (potentially expensive) check only runs once
+    per process lifetime.
+    """
+    global _bucket_checked
+    if _bucket_checked:
+        return
     client = _get_client()
     if client is None:
         return
     try:
         _retry(client.head_bucket, Bucket=HIPPIUS_BUCKET)
+        _bucket_checked = True
     except Exception:
         try:
             _retry(client.create_bucket, Bucket=HIPPIUS_BUCKET)
             logger.info("Created Hippius bucket: %s", HIPPIUS_BUCKET)
+            _bucket_checked = True
         except Exception as exc:
             logger.warning("Could not create bucket %s: %s", HIPPIUS_BUCKET, exc)
 
