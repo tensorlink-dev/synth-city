@@ -16,7 +16,10 @@ from pathlib import Path
 from config import WORKSPACE_DIR
 from pipeline.tools.registry import tool
 
-# Per-file write locks to prevent concurrent writes to the same file
+# Per-file write locks to prevent concurrent writes to the same file.
+# Capped at _MAX_FILE_LOCKS to avoid unbounded memory growth on long-running
+# servers.  When the limit is reached, all currently-unheld locks are pruned.
+_MAX_FILE_LOCKS = 1024
 _file_locks: dict[str, threading.Lock] = {}
 _file_locks_guard = threading.Lock()
 
@@ -27,6 +30,11 @@ def _get_file_lock(path: Path) -> threading.Lock:
     with _file_locks_guard:
         lock = _file_locks.get(key)
         if lock is None:
+            if len(_file_locks) >= _MAX_FILE_LOCKS:
+                # Prune locks that are not currently held
+                to_delete = [k for k, v in _file_locks.items() if not v.locked()]
+                for k in to_delete:
+                    del _file_locks[k]
             lock = threading.Lock()
             _file_locks[key] = lock
         return lock

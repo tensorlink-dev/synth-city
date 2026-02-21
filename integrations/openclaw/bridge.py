@@ -69,6 +69,7 @@ import hmac
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
@@ -152,24 +153,33 @@ def _run_pipeline_for_bot(task: dict[str, Any], bot_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 _tools_loaded = False
+_tools_load_lock = threading.Lock()
 
 
 def _ensure_tools_loaded() -> None:
-    """Import tool modules so they register with the tool registry."""
+    """Import tool modules so they register with the tool registry.
+
+    Uses double-checked locking so concurrent request threads don't race
+    through the import sequence or leave ``_tools_loaded`` in an
+    inconsistent state on partial failure.
+    """
     global _tools_loaded
     if _tools_loaded:
         return
-    try:
-        import pipeline.tools.agent_tools  # noqa: F401
-        import pipeline.tools.analysis_tools  # noqa: F401
-        import pipeline.tools.hippius_store  # noqa: F401
-        import pipeline.tools.market_data  # noqa: F401
-        import pipeline.tools.register_tools  # noqa: F401
-        import pipeline.tools.research_tools  # noqa: F401
-        _tools_loaded = True
-    except Exception:
-        logger.exception("Failed to load tool modules")
-        raise
+    with _tools_load_lock:
+        if _tools_loaded:  # re-check after acquiring lock
+            return
+        try:
+            import pipeline.tools.agent_tools  # noqa: F401
+            import pipeline.tools.analysis_tools  # noqa: F401
+            import pipeline.tools.hippius_store  # noqa: F401
+            import pipeline.tools.market_data  # noqa: F401
+            import pipeline.tools.register_tools  # noqa: F401
+            import pipeline.tools.research_tools  # noqa: F401
+            _tools_loaded = True
+        except Exception:
+            logger.exception("Failed to load tool modules")
+            raise
 
 
 def _research_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:

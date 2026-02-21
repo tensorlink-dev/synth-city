@@ -55,12 +55,15 @@ def get_current_session() -> BotSession | None:
 
 def set_current_session(session: BotSession) -> contextvars.Token:
     """Set the bot session for the current context.  Returns a reset token."""
-    session.touch()
+    session.acquire_request()
     return _current_bot.set(session)
 
 
 def reset_current_session(token: contextvars.Token) -> None:
     """Restore the previous context after a request completes."""
+    session = _current_bot.get()
+    if session is not None:
+        session.release_request()
     _current_bot.reset(token)
 
 
@@ -140,6 +143,10 @@ class BotSession:
     _research_session: Any = field(default=None, repr=False)
     _research_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
+    # Track in-flight HTTP requests so the reaper doesn't evict active sessions
+    _active_requests: int = field(default=0, repr=False)
+    _active_requests_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
     def __post_init__(self) -> None:
         if not self.run_id:
             ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -153,6 +160,23 @@ class BotSession:
     def touch(self) -> None:
         """Update last-active timestamp."""
         self.last_active = time.time()
+
+    def acquire_request(self) -> None:
+        """Mark the start of an in-flight HTTP request."""
+        with self._active_requests_lock:
+            self._active_requests += 1
+        self.touch()
+
+    def release_request(self) -> None:
+        """Mark the end of an in-flight HTTP request."""
+        self.touch()
+        with self._active_requests_lock:
+            self._active_requests = max(0, self._active_requests - 1)
+
+    def has_active_requests(self) -> bool:
+        """Return ``True`` if any HTTP requests are currently in-flight."""
+        with self._active_requests_lock:
+            return self._active_requests > 0
 
     def get_research_session(self):
         """Return (or lazily create) the per-bot ResearchSession."""
@@ -258,6 +282,8 @@ class SessionRegistry:
                         continue  # never evict the default session
                     if session.pipeline_state.running:
                         continue  # don't evict while pipeline is active
+                    if session.has_active_requests():
+                        continue  # don't evict while HTTP requests are in-flight
                     if now - session.last_active > self._ttl:
                         to_remove.append(bot_id)
                 for bot_id in to_remove:
