@@ -77,6 +77,7 @@ class PipelineOrchestrator:
             if isinstance(plan_data, dict)
             else str(plan_data)
         )
+        logger.info("Plan passed to trainer: %s", task["plan"][:500])
 
         # Stage 2: Train (execute experiments from the plan)
         logger.info("=== STAGE 2: TRAINER ===")
@@ -88,7 +89,15 @@ class PipelineOrchestrator:
         results["stages"].append({"agent": "trainer", "success": train_result.success})
 
         if not train_result.success:
-            logger.error("Trainer failed after retries — aborting pipeline")
+            logger.error(
+                "Trainer failed after retries — aborting pipeline. Last failure: %s",
+                train_result.raw_text[:1000],
+            )
+            if train_result.structured:
+                logger.error(
+                    "Trainer structured output: %s",
+                    json.dumps(train_result.structured, default=str)[:1000],
+                )
             return results
 
         # Extract best experiment and metrics from trainer result
@@ -168,12 +177,29 @@ class PipelineOrchestrator:
             elif "user_message" not in task:
                 task["user_message"] = "Begin the task."
 
-            result = agent.run(task)
+            try:
+                result = agent.run(task)
+            except Exception as exc:
+                logger.exception(
+                    "%s attempt %d crashed with unhandled exception",
+                    stage_name,
+                    attempt + 1,
+                )
+                result = AgentResult(
+                    success=False,
+                    raw_text=f"Agent crashed: {type(exc).__name__}: {exc}",
+                )
+
             if result.success:
                 return result
 
             last_result = result
-            logger.warning("%s attempt %d failed", stage_name, attempt + 1)
+            logger.warning(
+                "%s attempt %d failed: %s",
+                stage_name,
+                attempt + 1,
+                result.raw_text[:500],
+            )
 
         return last_result or AgentResult(success=False, raw_text="No attempts made")
 
@@ -187,7 +213,14 @@ class PipelineOrchestrator:
             # Check
             checker = CodeCheckerAgent(temperature=self.base_temperature)
             task["user_message"] = "Validate the best experiment config and its results."
-            check_result = checker.run(task)
+            try:
+                check_result = checker.run(task)
+            except Exception as exc:
+                logger.exception("CodeChecker crashed on attempt %d", attempt + 1)
+                check_result = AgentResult(
+                    success=False,
+                    raw_text=f"CodeChecker crashed: {type(exc).__name__}: {exc}",
+                )
 
             stage_results.append({
                 "agent": "codechecker",
@@ -221,7 +254,14 @@ class PipelineOrchestrator:
             prev_experiment_json = current_exp
 
             debugger = DebuggerAgent(temperature=temp)
-            debug_result = debugger.run(task)
+            try:
+                debug_result = debugger.run(task)
+            except Exception as exc:
+                logger.exception("Debugger crashed on attempt %d", attempt + 1)
+                debug_result = AgentResult(
+                    success=False,
+                    raw_text=f"Debugger crashed: {type(exc).__name__}: {exc}",
+                )
             stage_results.append({
                 "agent": "debugger",
                 "attempt": attempt,

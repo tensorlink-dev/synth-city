@@ -22,6 +22,8 @@ from openai import OpenAI
 from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel
 
+from pipeline.providers.chutes_client import chat_completion_with_backoff
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -207,12 +209,22 @@ class SimpleAgent:
         for turn in range(self.max_turns):
             logger.debug("turn %d  model=%s  msgs=%d", turn, self.model, len(messages))
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=all_schemas if all_schemas else None,
-                temperature=self.temperature,
-            )
+            try:
+                response = chat_completion_with_backoff(
+                    self.client,
+                    model=self.model,
+                    messages=messages,
+                    tools=all_schemas if all_schemas else None,
+                    temperature=self.temperature,
+                )
+            except Exception as exc:
+                logger.error("LLM call failed on turn %d after retries: %s", turn, exc)
+                return AgentResult(
+                    success=False,
+                    raw_text=f"LLM call failed: {type(exc).__name__}: {exc}",
+                    messages=messages,
+                    turns_used=turn + 1,
+                )
             choice = response.choices[0]
             assistant_msg: dict[str, Any] = {"role": "assistant"}
 
@@ -280,6 +292,11 @@ class SimpleAgent:
                     structured["result"] = json.loads(structured["result"])
                 except json.JSONDecodeError:
                     pass
+            logger.info(
+                "Agent finishing: success=%s summary=%s",
+                structured.get("success"),
+                str(structured.get("summary", ""))[:200],
+            )
             return ToolResult(
                 tool_call_id=tc.id,
                 name="finish",
@@ -303,7 +320,7 @@ class SimpleAgent:
         if schema:
             raw_args = _coerce_args(raw_args, schema)
 
-        logger.debug("Tool %s called with args: %s", name, json.dumps(raw_args, default=str)[:500])
+        logger.info("Tool call: %s(%s)", name, json.dumps(raw_args, default=str)[:200])
         try:
             result = func(**raw_args)
             # If the tool returns a Pydantic model, serialize it
@@ -313,7 +330,7 @@ class SimpleAgent:
                 content = json.dumps(result)
             else:
                 content = str(result)
-            logger.debug("Tool %s returned %d chars", name, len(content))
+            logger.info("Tool %s returned %d chars", name, len(content))
         except Exception as exc:
             logger.exception("Tool %s raised an exception", name)
             content = json.dumps({"error": f"{type(exc).__name__}: {exc}"})
