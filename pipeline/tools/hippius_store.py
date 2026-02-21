@@ -33,6 +33,42 @@ from pipeline.tools.registry import tool
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Retry configuration
+# ---------------------------------------------------------------------------
+_MAX_RETRIES: int = 3
+_BACKOFF_BASE: float = 2.0  # seconds: 2, 4, 8
+
+
+def _retry(func, *args, **kwargs):
+    """Call *func* with retries and exponential backoff on connection errors."""
+    last_exc: Exception | None = None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return func(*args, **kwargs)
+        except Exception as exc:
+            last_exc = exc
+            exc_str = str(exc)
+            # Only retry on transient network / connection errors
+            is_transient = any(s in exc_str for s in (
+                "Could not connect",
+                "EndpointConnectionError",
+                "ConnectionError",
+                "ConnectTimeoutError",
+                "ReadTimeoutError",
+                "BrokenPipeError",
+            ))
+            if not is_transient:
+                raise
+            delay = _BACKOFF_BASE ** (attempt + 1)
+            logger.warning(
+                "Hippius request failed (attempt %d/%d), retrying in %.0fs: %s",
+                attempt + 1, _MAX_RETRIES, delay, exc,
+            )
+            time.sleep(delay)
+    raise last_exc  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
 # Lazy-loaded boto3 client
 # ---------------------------------------------------------------------------
 _client = None
@@ -69,10 +105,10 @@ def _ensure_bucket():
     if client is None:
         return
     try:
-        client.head_bucket(Bucket=HIPPIUS_BUCKET)
+        _retry(client.head_bucket, Bucket=HIPPIUS_BUCKET)
     except Exception:
         try:
-            client.create_bucket(Bucket=HIPPIUS_BUCKET)
+            _retry(client.create_bucket, Bucket=HIPPIUS_BUCKET)
             logger.info("Created Hippius bucket: %s", HIPPIUS_BUCKET)
         except Exception as exc:
             logger.warning("Could not create bucket %s: %s", HIPPIUS_BUCKET, exc)
@@ -91,7 +127,11 @@ def _put_json(key: str, data: Any) -> bool:
     _ensure_bucket()
     try:
         body = json.dumps(data, indent=2, default=str).encode()
-        client.put_object(Bucket=HIPPIUS_BUCKET, Key=key, Body=body, ContentType="application/json")
+        _retry(
+            client.put_object,
+            Bucket=HIPPIUS_BUCKET, Key=key, Body=body,
+            ContentType="application/json",
+        )
         logger.info("Uploaded %s (%d bytes)", key, len(body))
         return True
     except Exception as exc:
@@ -105,7 +145,7 @@ def _get_json(key: str) -> Any | None:
     if client is None:
         return None
     try:
-        resp = client.get_object(Bucket=HIPPIUS_BUCKET, Key=key)
+        resp = _retry(client.get_object, Bucket=HIPPIUS_BUCKET, Key=key)
         return json.loads(resp["Body"].read().decode())
     except client.exceptions.NoSuchKey:
         return None
@@ -120,7 +160,10 @@ def _list_keys(prefix: str, max_keys: int = 1000) -> list[str]:
     if client is None:
         return []
     try:
-        resp = client.list_objects_v2(Bucket=HIPPIUS_BUCKET, Prefix=prefix, MaxKeys=max_keys)
+        resp = _retry(
+            client.list_objects_v2,
+            Bucket=HIPPIUS_BUCKET, Prefix=prefix, MaxKeys=max_keys,
+        )
         return [obj["Key"] for obj in resp.get("Contents", [])]
     except Exception as exc:
         logger.warning("Hippius list failed for prefix %s: %s", prefix, exc)
