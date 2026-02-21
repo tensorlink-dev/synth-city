@@ -93,7 +93,8 @@ def get_loader(
             f"Unknown timeframe {timeframe!r}. Choose from: {list(TIMEFRAME_CONFIGS)}"
         )
 
-    cache_key = f"{timeframe}:{','.join(sorted(assets)) if assets else 'all'}"
+    eng_name = (engineer or DATA_FEATURE_ENGINEER).lower()
+    cache_key = f"{timeframe}:{eng_name}:{','.join(sorted(assets)) if assets else 'all'}"
     if not force_new and cache_key in _loaders:
         return _loaders[cache_key]
 
@@ -280,11 +281,8 @@ def split_data(
 ) -> str:
     """Create train/val/test split from the active loader."""
     try:
-        cache_key = f"{timeframe}:all"
-        loader = _loaders.get(cache_key)
-        if loader is None:
-            # Auto-create with defaults
-            loader = get_loader(timeframe=timeframe)
+        # Reuse cached loader or auto-create with defaults
+        loader = get_loader(timeframe=timeframe)
 
         train_dl, val_dl, test_dl = loader.static_holdout(
             cutoff=cutoff, val_size=val_size

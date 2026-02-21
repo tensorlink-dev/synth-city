@@ -369,7 +369,17 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
             except Exception as dl_exc:
                 logger.warning("Could not attach data loader (%s), falling back", dl_exc)
 
-        result = session.run(exp, **run_kwargs)
+        try:
+            result = session.run(exp, **run_kwargs)
+        except TypeError:
+            # ResearchSession.run() may not accept data_loader yet — retry without it
+            run_kwargs.pop("data_loader", None)
+            logger.warning("session.run() rejected data_loader kwarg, retrying without it")
+            result = session.run(exp, **run_kwargs)
+
+        # Restore timeframe tag for provenance before persisting
+        if timeframe:
+            exp["timeframe"] = timeframe
 
         # Auto-save to Hippius if configured
         try:
