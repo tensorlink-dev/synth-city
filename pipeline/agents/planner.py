@@ -29,8 +29,8 @@ class PlannerAgent(BaseAgentWrapper):
             # Historical analysis
             "load_hippius_history",
             "load_hippius_run",
-            "fetch_wandb_runs",
-            "analyze_wandb_trends",
+            "fetch_experiment_runs",
+            "analyze_experiment_trends",
             "list_hf_models",
         ]
         return build_toolset(*tool_names)

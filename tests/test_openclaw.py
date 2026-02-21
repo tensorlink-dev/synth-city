@@ -15,11 +15,11 @@ import httpx
 import pytest
 
 import integrations.openclaw.bridge as bridge_mod
+from integrations.openclaw.bot_sessions import PipelineState
 from integrations.openclaw.bridge import (
     MAX_CONTENT_LENGTH,
     VALID_ASSETS,
     BridgeHandler,
-    PipelineState,
     _validate_asset,
     _validate_positive_float,
     _validate_positive_int,
@@ -544,6 +544,231 @@ class TestBridgeNoAPIKey:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# File locks pruning tests
+# ---------------------------------------------------------------------------
+
+class TestFileLocksPruning:
+    """Test that _file_locks dict is pruned when it exceeds the cap."""
+
+    def test_locks_pruned_when_cap_reached(self) -> None:
+        from pathlib import Path
+
+        import pipeline.tools.file_tools as ft
+
+        original_locks = ft._file_locks
+        original_max = ft._MAX_FILE_LOCKS
+        try:
+            ft._file_locks = {}
+            ft._MAX_FILE_LOCKS = 5
+
+            # Fill up to the cap
+            for i in range(5):
+                ft._get_file_lock(Path(f"/fake/path/{i}.txt"))
+            assert len(ft._file_locks) == 5
+
+            # Adding one more should trigger pruning of unheld locks
+            ft._get_file_lock(Path("/fake/path/new.txt"))
+            # All prior locks were unheld so they should be pruned;
+            # only the new lock remains
+            assert len(ft._file_locks) == 1
+            assert "/fake/path/new.txt" in str(list(ft._file_locks.keys())[0])
+        finally:
+            ft._file_locks = original_locks
+            ft._MAX_FILE_LOCKS = original_max
+
+    def test_held_locks_survive_pruning(self) -> None:
+        from pathlib import Path
+
+        import pipeline.tools.file_tools as ft
+
+        original_locks = ft._file_locks
+        original_max = ft._MAX_FILE_LOCKS
+        try:
+            ft._file_locks = {}
+            ft._MAX_FILE_LOCKS = 3
+
+            # Create and hold one lock
+            held = ft._get_file_lock(Path("/fake/held.txt"))
+            held.acquire()
+
+            ft._get_file_lock(Path("/fake/a.txt"))
+            ft._get_file_lock(Path("/fake/b.txt"))
+            assert len(ft._file_locks) == 3
+
+            # Trigger pruning — held lock should survive
+            ft._get_file_lock(Path("/fake/c.txt"))
+            assert "/fake/held.txt" in str(list(ft._file_locks.keys()))
+            held.release()
+        finally:
+            ft._file_locks = original_locks
+            ft._MAX_FILE_LOCKS = original_max
+
+
+# ---------------------------------------------------------------------------
+# _ensure_tools_loaded thread safety tests
+# ---------------------------------------------------------------------------
+
+class TestEnsureToolsLoaded:
+    """Test double-checked locking in _ensure_tools_loaded."""
+
+    def test_lock_exists(self) -> None:
+        """The module-level lock used for double-checked locking must exist."""
+        assert hasattr(bridge_mod, "_tools_load_lock")
+        assert isinstance(bridge_mod._tools_load_lock, type(threading.Lock()))
+
+    def test_idempotent_when_already_loaded(self) -> None:
+        """If _tools_loaded is True, the function returns immediately."""
+        original = bridge_mod._tools_loaded
+        try:
+            bridge_mod._tools_loaded = True
+            # Should return without attempting any imports
+            bridge_mod._ensure_tools_loaded()
+            assert bridge_mod._tools_loaded is True
+        finally:
+            bridge_mod._tools_loaded = original
+
+    def test_concurrent_calls_serialize(self) -> None:
+        """Multiple threads should serialize through the lock without error."""
+        original_loaded = bridge_mod._tools_loaded
+        try:
+            # Pre-set as loaded so concurrent calls hit the fast path
+            bridge_mod._tools_loaded = True
+
+            barrier = threading.Barrier(4)
+            errors: list[Exception] = []
+
+            def load() -> None:
+                barrier.wait()
+                try:
+                    bridge_mod._ensure_tools_loaded()
+                except Exception as exc:
+                    errors.append(exc)
+
+            threads = [threading.Thread(target=load) for _ in range(4)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+            assert bridge_mod._tools_loaded is True
+            assert not errors, f"Unexpected errors: {errors}"
+        finally:
+            bridge_mod._tools_loaded = original_loaded
+
+    def test_failed_load_leaves_flag_false(self) -> None:
+        """If imports fail, _tools_loaded stays False so retry is possible."""
+        original_loaded = bridge_mod._tools_loaded
+        try:
+            bridge_mod._tools_loaded = False
+
+            with mock.patch(
+                "pipeline.tools.agent_tools",
+                create=True,
+                side_effect=ImportError("test"),
+            ):
+                # Patch the actual import to raise
+                import builtins
+                original_import = builtins.__import__
+
+                def failing_import(name, *args, **kwargs):
+                    if name == "pipeline.tools.agent_tools":
+                        raise ImportError("test failure")
+                    return original_import(name, *args, **kwargs)
+
+                builtins.__import__ = failing_import
+                try:
+                    with pytest.raises(ImportError):
+                        bridge_mod._ensure_tools_loaded()
+                    assert bridge_mod._tools_loaded is False
+                finally:
+                    builtins.__import__ = original_import
+        finally:
+            bridge_mod._tools_loaded = original_loaded
+
+
+# ---------------------------------------------------------------------------
+# Bot session active-request tracking tests
+# ---------------------------------------------------------------------------
+
+class TestBotSessionActiveRequests:
+    """Test in-flight request tracking on BotSession."""
+
+    def test_acquire_release_cycle(self) -> None:
+        from integrations.openclaw.bot_sessions import BotSession
+
+        session = BotSession(bot_id="test-req")
+        assert session.has_active_requests() is False
+
+        session.acquire_request()
+        assert session.has_active_requests() is True
+
+        session.release_request()
+        assert session.has_active_requests() is False
+
+    def test_multiple_concurrent_requests(self) -> None:
+        from integrations.openclaw.bot_sessions import BotSession
+
+        session = BotSession(bot_id="test-multi")
+        session.acquire_request()
+        session.acquire_request()
+        assert session.has_active_requests() is True
+
+        session.release_request()
+        assert session.has_active_requests() is True  # still one in-flight
+
+        session.release_request()
+        assert session.has_active_requests() is False
+
+    def test_release_does_not_go_negative(self) -> None:
+        from integrations.openclaw.bot_sessions import BotSession
+
+        session = BotSession(bot_id="test-neg")
+        session.release_request()  # no prior acquire
+        assert session.has_active_requests() is False
+
+    def test_set_and_reset_session_tracks_requests(self) -> None:
+        from integrations.openclaw.bot_sessions import (
+            BotSession,
+            reset_current_session,
+            set_current_session,
+        )
+
+        session = BotSession(bot_id="test-ctx")
+        assert session.has_active_requests() is False
+
+        token = set_current_session(session)
+        assert session.has_active_requests() is True
+
+        reset_current_session(token)
+        assert session.has_active_requests() is False
+
+    def test_reaper_skips_session_with_active_requests(self) -> None:
+        from integrations.openclaw.bot_sessions import SessionRegistry
+
+        reg = SessionRegistry(ttl_seconds=0)  # immediate expiry
+        session = reg.get_or_create("active-bot")
+        session.acquire_request()
+        session.last_active = 0  # force it to look expired
+
+        # Simulate reaper check
+        now = time.time()
+        to_remove: list[str] = []
+        with reg._lock:
+            for bot_id, s in reg._sessions.items():
+                if bot_id == "default":
+                    continue
+                if s.pipeline_state.running:
+                    continue
+                if s.has_active_requests():
+                    continue
+                if now - s.last_active > reg._ttl:
+                    to_remove.append(bot_id)
+
+        assert "active-bot" not in to_remove
+        session.release_request()
 
 
 # ---------------------------------------------------------------------------

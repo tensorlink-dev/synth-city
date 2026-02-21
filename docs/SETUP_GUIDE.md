@@ -214,6 +214,7 @@ Price data is fetched from the [Pyth Network](https://pyth.network/) oracle. The
 ```env
 HF_REPO_ID=your-username/SN50-Hybrid-Hub
 WANDB_PROJECT=synth-city
+TRACKIO_PROJECT=synth-city
 ```
 
 Before publishing, authenticate with each service:
@@ -223,7 +224,10 @@ Before publishing, authenticate with each service:
 pip install huggingface-cli
 huggingface-cli login
 
-# Weights & Biases
+# Trackio (local experiment tracking — free, no account needed)
+pip install trackio
+
+# Weights & Biases (only needed for HubManager publish flow)
 pip install wandb
 wandb login
 ```
@@ -474,17 +478,17 @@ python main.py history hippius --run-id 20250101-120000-abc12345
 python main.py history hippius --run-id latest
 ```
 
-### Weights & Biases history
+### Trackio / Hippius experiment history
 
 ```bash
-# List runs sorted by best CRPS
-python main.py history wandb --order best
+# List experiment runs sorted by best CRPS
+python main.py history trackio --order best
 
-# List most recent runs
-python main.py history wandb --order recent --limit 10
+# List most recent experiment runs
+python main.py history trackio --order recent --limit 10
 
 # Show CRPS trends over time
-python main.py history wandb --trends
+python main.py history trackio --trends
 ```
 
 ### Hugging Face Hub history
@@ -754,7 +758,7 @@ Each agent is a thin wrapper (`BaseAgentWrapper` subclass) that configures:
 
 **Purpose:** Push the validated model to production tracking systems.
 
-**Tools:** `validate_experiment`, `publish_model`, `log_to_wandb`
+**Tools:** `validate_experiment`, `publish_model`, `log_to_trackio`
 
 **Behavior:**
 
@@ -850,8 +854,8 @@ If FAIL:
 Publisher receives validated experiment + metrics
   → validate_experiment()       (final check)
   → publish_model(experiment)   → pushes to HF Hub
-  → log_to_wandb(metrics)       → logs to W&B
-  → finish(hf_url, wandb_url)
+  → log_to_trackio(metrics)     → logs to Trackio + Hippius
+  → finish(hf_url)
 ```
 
 ### Experiment Format
@@ -934,7 +938,7 @@ The registry:
 | Experiment CRUD | `create_experiment`, `validate_experiment`, `describe_experiment` | Trainer, Checker, Debugger |
 | Execution | `run_experiment`, `run_preset`, `sweep_presets` | Trainer, Debugger |
 | Analysis | `compare_results`, `session_summary` | Planner, Trainer |
-| Publishing | `publish_model`, `log_to_wandb` | Publisher |
+| Publishing | `publish_model`, `log_to_trackio` | Publisher |
 | Training | `run_training_local`, `list_available_gpus`, `rent_cheapest_gpu`, `stop_gpu_rental` | Trainer |
 | Storage | `save_to_hippius`, `list_hippius_runs`, `load_hippius_run`, `load_hippius_history` | (advanced) |
 | Utilities | `run_python`, `read_file`, `write_file` | (advanced) |
@@ -1207,8 +1211,8 @@ The pipeline has built-in stall detection. If the same config is produced twice 
 
 - Ensure `HF_REPO_ID` is set and you have write access to the Hugging Face repo
 - Run `huggingface-cli login` to authenticate
-- For W&B, run `wandb login` first
-- Check that the `wandb` and `huggingface_hub` packages are installed
+- For W&B (HubManager publish flow), run `wandb login` first
+- Check that `trackio`, `wandb`, and `huggingface_hub` packages are installed
 
 ### Bridge server won't start
 

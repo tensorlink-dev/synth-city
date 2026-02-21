@@ -5,6 +5,12 @@ Exposes synth-city's pipeline operations and research tools as a lightweight
 HTTP API.  Works standalone (curl, Python, any HTTP client) or as a backend
 for agent frameworks like OpenClaw.
 
+Multi-bot support:
+    Each bot identifies itself via the ``X-Bot-Id`` header.  The bridge
+    creates an isolated session (ResearchSession, run ID, workspace, pipeline
+    state) per bot.  Requests without ``X-Bot-Id`` use the ``"default"``
+    session for backward compatibility.
+
 Start with::
 
     python main.py bridge            # default: 127.0.0.1:8377
@@ -13,29 +19,24 @@ Start with::
 Then interact via curl::
 
     curl http://127.0.0.1:8377/health
-    curl http://127.0.0.1:8377/components/blocks
-    curl -X POST http://127.0.0.1:8377/pipeline/run -d '{}'
-
-Or the built-in CLI client::
-
-    python main.py client blocks
-    python main.py client status
-    python main.py client price BTC
+    curl -H "X-Bot-Id: alpha" http://127.0.0.1:8377/components/blocks
+    curl -H "X-Bot-Id: alpha" -X POST http://127.0.0.1:8377/pipeline/run -d '{}'
 
 Endpoints
 ---------
-GET  /health                  → liveness check
-POST /pipeline/run            → kick off a full pipeline run (async)
-GET  /pipeline/status         → poll current pipeline status
+GET  /health                  → liveness check (includes active_bots count)
+POST /pipeline/run            → kick off a full pipeline run (async, per-bot)
+GET  /pipeline/status         → poll current pipeline status (per-bot)
 POST /experiment/create       → create an experiment config
 POST /experiment/run          → run an experiment and return metrics
 POST /experiment/validate     → validate an experiment config
-GET  /experiment/compare      → compare all session results
+GET  /experiment/compare      → compare all session results (per-bot)
+GET  /experiment/compare/all  → merged comparison across all bots
 GET  /components/blocks       → list available backbone blocks
 GET  /components/heads        → list available head types
 GET  /components/presets      → list ready-to-run presets
-GET  /session/summary         → current research session summary
-POST /session/clear           → reset research session
+GET  /session/summary         → current research session summary (per-bot)
+POST /session/clear           → reset research session (per-bot)
 GET  /market/price/:asset     → live price from Pyth oracle
 GET  /market/history/:asset   → historical OHLCV data
 GET  /registry/files          → list component files in the registry
@@ -48,7 +49,7 @@ GET  /hf/artifact             → download a JSON artifact from HF Hub
 GET  /history/runs            → list pipeline runs from Hippius
 GET  /history/run/:run_id     → load a specific run from Hippius
 GET  /history/experiments     → best experiments across all runs
-GET  /history/wandb           → fetch runs from W&B
+GET  /history/trackio         → fetch experiment runs from Hippius
 GET  /agents/list             → list agent modules
 GET  /agents/read             → read an agent source file
 POST /agents/write            → write a new agent module
@@ -56,31 +57,34 @@ GET  /agents/prompts/list     → list prompt modules
 GET  /agents/prompts/read     → read a prompt source file
 POST /agents/prompts/write    → write a new prompt module
 GET  /agents/tools            → list all registered tool names
+GET  /bots/sessions           → list all active bot sessions
+GET  /bots/session/:id        → get a single bot session
+DELETE /bots/session/:id      → force-remove a bot session
 """
 
 from __future__ import annotations
 
+import contextvars
+import hmac
 import json
 import logging
-import os
 import re
 import threading
-import time
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import ThreadingMixIn
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+from config import BRIDGE_API_KEY, MAX_CONCURRENT_PIPELINES
 
 logger = logging.getLogger(__name__)
 
 # Maximum request body size (1 MB) to prevent memory exhaustion
 MAX_CONTENT_LENGTH = 1 * 1024 * 1024
 
-# Optional API key — when set, every request must include a matching
-# ``X-API-Key`` header.  When empty (the default), authentication is
-# disabled so localhost use works without configuration.
-BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
+# BRIDGE_API_KEY is imported from config.py
 
 # Valid SN50 asset identifiers
 VALID_ASSETS = frozenset({
@@ -93,70 +97,39 @@ _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_]+$")
 # Path to the self-contained HTML dashboard
 _DASHBOARD_HTML = Path(__file__).resolve().parent.parent.parent / "dashboard" / "index.html"
 
+# Bot ID validation: alphanumeric, hyphens, underscores, dots (1-64 chars)
+_BOT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+# Thread pool for pipeline runs (capped at MAX_CONCURRENT_PIPELINES)
+_pipeline_executor = ThreadPoolExecutor(
+    max_workers=MAX_CONCURRENT_PIPELINES,
+    thread_name_prefix="pipeline",
+)
+
 
 # ---------------------------------------------------------------------------
-# Pipeline state (shared across requests)
+# Threading HTTP server
 # ---------------------------------------------------------------------------
 
-@dataclass
-class PipelineState:
-    """Tracks the status of asynchronous pipeline runs."""
-
-    running: bool = False
-    status: str = "idle"
-    started_at: float | None = None
-    finished_at: float | None = None
-    result: dict[str, Any] | None = None
-    error: str | None = None
-    current_stage: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "running": self.running,
-            "status": self.status,
-            "current_stage": self.current_stage,
-            "started_at": self.started_at,
-            "finished_at": self.finished_at,
-            "elapsed_seconds": (
-                round(time.time() - self.started_at, 1)
-                if self.started_at and self.running
-                else None
-            ),
-            "result": self.result,
-            "error": self.error,
-        }
-
-    def reset(self) -> None:
-        """Clear state for a new pipeline run."""
-        self.running = True
-        self.status = "running"
-        self.started_at = time.time()
-        self.finished_at = None
-        self.result = None
-        self.error = None
-        self.current_stage = "initializing"
-
-    def mark_completed(self, result: dict[str, Any]) -> None:
-        self.running = False
-        self.status = "completed"
-        self.finished_at = time.time()
-        self.result = result
-        self.current_stage = ""
-
-    def mark_failed(self, exc: Exception) -> None:
-        self.running = False
-        self.status = "failed"
-        self.finished_at = time.time()
-        self.error = f"{type(exc).__name__}: {exc}"
-        self.current_stage = ""
+class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+    """HTTP server that handles each request in a new thread."""
+    daemon_threads = True
 
 
-_pipeline_state = PipelineState()
-_pipeline_lock = threading.Lock()
+# ---------------------------------------------------------------------------
+# Pipeline runner (per-bot, context-aware)
+# ---------------------------------------------------------------------------
 
+def _run_pipeline_for_bot(task: dict[str, Any], bot_id: str) -> None:
+    """Execute the pipeline in a worker thread with the correct bot context."""
+    from integrations.openclaw.bot_sessions import (
+        registry,
+        reset_current_session,
+        set_current_session,
+    )
 
-def _run_pipeline_async(task: dict[str, Any]) -> None:
-    """Execute the pipeline in a background thread."""
+    session = registry.get_or_create(bot_id)
+    token = set_current_session(session)
     try:
         from pipeline.orchestrator import PipelineOrchestrator
 
@@ -167,13 +140,16 @@ def _run_pipeline_async(task: dict[str, Any]) -> None:
         )
         result = orchestrator.run(task)
 
-        with _pipeline_lock:
-            _pipeline_state.mark_completed(result)
-
+        with session.pipeline_lock:
+            session.pipeline_state.mark_completed(result)
     except Exception as exc:
-        logger.exception("Pipeline failed")
-        with _pipeline_lock:
-            _pipeline_state.mark_failed(exc)
+        logger.exception("Pipeline failed for bot %s", bot_id)
+        with session.pipeline_lock:
+            session.pipeline_state.mark_failed(exc)
+    finally:
+        # Release the global pipeline semaphore
+        registry.pipeline_semaphore.release()
+        reset_current_session(token)
 
 
 # ---------------------------------------------------------------------------
@@ -181,24 +157,33 @@ def _run_pipeline_async(task: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 _tools_loaded = False
+_tools_load_lock = threading.Lock()
 
 
 def _ensure_tools_loaded() -> None:
-    """Import tool modules so they register with the tool registry."""
+    """Import tool modules so they register with the tool registry.
+
+    Uses double-checked locking so concurrent request threads don't race
+    through the import sequence or leave ``_tools_loaded`` in an
+    inconsistent state on partial failure.
+    """
     global _tools_loaded
     if _tools_loaded:
         return
-    try:
-        import pipeline.tools.agent_tools  # noqa: F401
-        import pipeline.tools.analysis_tools  # noqa: F401
-        import pipeline.tools.hippius_store  # noqa: F401
-        import pipeline.tools.market_data  # noqa: F401
-        import pipeline.tools.register_tools  # noqa: F401
-        import pipeline.tools.research_tools  # noqa: F401
-        _tools_loaded = True
-    except Exception:
-        logger.exception("Failed to load tool modules")
-        raise
+    with _tools_load_lock:
+        if _tools_loaded:  # re-check after acquiring lock
+            return
+        try:
+            import pipeline.tools.agent_tools  # noqa: F401
+            import pipeline.tools.analysis_tools  # noqa: F401
+            import pipeline.tools.hippius_store  # noqa: F401
+            import pipeline.tools.market_data  # noqa: F401
+            import pipeline.tools.register_tools  # noqa: F401
+            import pipeline.tools.research_tools  # noqa: F401
+            _tools_loaded = True
+        except Exception:
+            logger.exception("Failed to load tool modules")
+            raise
 
 
 def _research_call(tool_name: str, **kwargs: Any) -> dict[str, Any]:
@@ -275,17 +260,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         logger.info(format, *args)
 
+    # ---- bot session context
+    def _init_bot_context(self) -> tuple[Any, contextvars.Token | None]:
+        """Extract X-Bot-Id, get/create session, set contextvar.
+
+        Returns ``(session, token)`` — caller must call
+        ``reset_current_session(token)`` when done.
+        """
+        from integrations.openclaw.bot_sessions import (
+            registry,
+            set_current_session,
+        )
+
+        bot_id = self.headers.get("X-Bot-Id", "default").strip() or "default"
+        if bot_id != "default" and not _BOT_ID_RE.match(bot_id):
+            self._send_json(
+                {"error": f"Invalid X-Bot-Id: {bot_id!r}. Use alphanumeric, hyphens, underscores."},
+                status=400,
+            )
+            return None, None
+
+        session = registry.get_or_create(bot_id)
+        token = set_current_session(session)
+        return session, token
+
     # ---- auth
     def _check_auth(self) -> bool:
-        """Validate the ``X-API-Key`` header if ``BRIDGE_API_KEY`` is set.
-
-        Returns ``True`` when the request is authorised (or auth is disabled).
-        Sends a 401 response and returns ``False`` otherwise.
-        """
+        """Validate the ``X-API-Key`` header if ``BRIDGE_API_KEY`` is set."""
         if not BRIDGE_API_KEY:
             return True
         provided = self.headers.get("X-API-Key", "")
-        if provided == BRIDGE_API_KEY:
+        if hmac.compare_digest(provided, BRIDGE_API_KEY):
             return True
         self._send_json({"error": "Invalid or missing API key"}, status=401)
         return False
@@ -304,11 +309,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _read_body(self) -> dict[str, Any] | None:
-        """Read and parse the JSON request body.
-
-        Returns ``None`` (and sends a 400 response) on parse errors or
-        oversized payloads.
-        """
+        """Read and parse the JSON request body."""
         raw_length = self.headers.get("Content-Length", "0")
         try:
             length = int(raw_length)
@@ -375,15 +376,60 @@ class BridgeHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         if not self._check_auth():
             return
+
+        from integrations.openclaw.bot_sessions import registry, reset_current_session
+
         path, qs = self._path_parts()
 
+        # Health check doesn't need a bot session
         if path == "/health":
-            self._send_json({"status": "ok", "service": "synth-city-bridge"})
+            self._send_json({
+                "status": "ok",
+                "service": "synth-city-bridge",
+                "active_bots": registry.active_count(),
+            })
             return
 
+        # Admin endpoints — no bot session needed
+        if path == "/bots/sessions":
+            self._send_json({
+                "sessions": registry.list_sessions(),
+                "total": registry.active_count(),
+            })
+            return
+
+        if path.startswith("/bots/session/"):
+            bot_id = path.split("/")[-1]
+            session = registry.get(bot_id)
+            if session is None:
+                self._send_json({"error": f"No session for bot: {bot_id!r}"}, status=404)
+            else:
+                self._send_json(session.to_dict())
+            return
+
+        # All other GET routes need a bot session context
+        session, token = self._init_bot_context()
+        if session is None:
+            return
+        try:
+            self._handle_get(path, qs, session)
+        finally:
+            if token is not None:
+                reset_current_session(token)
+
+    def _handle_get(
+        self,
+        path: str,
+        qs: dict[str, list[str]],
+        session: Any,
+    ) -> None:
+        """Route GET requests (called with bot session context active)."""
+
         if path == "/pipeline/status":
-            with _pipeline_lock:
-                self._send_json(_pipeline_state.to_dict())
+            with session.pipeline_lock:
+                data = session.pipeline_state.to_dict()
+            data["bot_id"] = session.bot_id
+            self._send_json(data)
             return
 
         if path == "/components/blocks":
@@ -401,6 +447,9 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/experiment/compare":
             if self._load_tools_or_fail():
                 self._send_json(_research_call("compare_results"))
+
+        elif path == "/experiment/compare/all":
+            self._handle_compare_all()
 
         elif path == "/session/summary":
             if self._load_tools_or_fail():
@@ -502,7 +551,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
             if self._load_tools_or_fail():
                 self._send_json(_research_call("load_hippius_history", limit=limit))
 
-        elif path == "/history/wandb":
+        elif path == "/history/trackio":
             raw_limit = qs.get("limit", ["20"])[0]
             limit, limit_err = _validate_positive_int(raw_limit, "limit")
             if limit_err:
@@ -517,7 +566,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 return
             if self._load_tools_or_fail():
                 self._send_json(
-                    _research_call("fetch_wandb_runs", limit=limit, order=order),
+                    _research_call("fetch_experiment_runs", limit=limit, order=order),
                 )
 
         # ---- agent design
@@ -575,40 +624,116 @@ class BridgeHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
 
+    def _handle_compare_all(self) -> None:
+        """Merge experiment rankings from all active bot sessions."""
+        from integrations.openclaw.bot_sessions import registry
+
+        if not self._load_tools_or_fail():
+            return
+
+        all_rankings: list[dict[str, Any]] = []
+        for info in registry.list_sessions():
+            bot_session = registry.get(info["bot_id"])
+            if bot_session is None:
+                continue
+            try:
+                rs = bot_session.get_research_session()
+                comparison = rs.compare()
+                if isinstance(comparison, dict):
+                    ranking = comparison.get("ranking", [])
+                    for entry in ranking:
+                        # Copy to avoid mutating session-internal data
+                        tagged = {**entry, "bot_id": info["bot_id"]}
+                        all_rankings.append(tagged)
+            except Exception:
+                continue
+
+        # Sort by CRPS (lower is better)
+        all_rankings.sort(
+            key=lambda e: float("inf") if e.get("crps") is None else e["crps"],
+        )
+        self._send_json({
+            "ranking": all_rankings,
+            "total": len(all_rankings),
+            "bots": registry.active_count(),
+        })
+
     # ---- POST routes
     def do_POST(self) -> None:
         if not self._check_auth():
             return
+
+        from integrations.openclaw.bot_sessions import reset_current_session
+
         path, _qs = self._path_parts()
         body = self._read_body()
         if body is None:
-            return  # _read_body already sent the error response
+            return
+
+        # Admin: DELETE via POST (for clients that don't support DELETE)
+        if path.startswith("/bots/session/") and body.get("_method") == "DELETE":
+            bot_id = path.split("/")[-1]
+            self._handle_delete_session(bot_id)
+            return
+
+        session, token = self._init_bot_context()
+        if session is None:
+            return
+        try:
+            self._handle_post(path, body, session)
+        finally:
+            if token is not None:
+                reset_current_session(token)
+
+    def _handle_post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        session: Any,
+    ) -> None:
+        """Route POST requests (called with bot session context active)."""
+        from integrations.openclaw.bot_sessions import registry
 
         if path == "/pipeline/run":
-            with _pipeline_lock:
-                if _pipeline_state.running:
+            with session.pipeline_lock:
+                if session.pipeline_state.running:
                     self._send_json(
                         {
-                            "error": "Pipeline is already running",
-                            "status": _pipeline_state.status,
+                            "error": "Pipeline is already running for this bot",
+                            "bot_id": session.bot_id,
+                            "status": session.pipeline_state.status,
                         },
                         status=409,
                     )
                     return
-                _pipeline_state.reset()
+
+                # Check global concurrency limit
+                if not registry.pipeline_semaphore.acquire(blocking=False):
+                    self._send_json(
+                        {
+                            "error": "Maximum concurrent pipelines reached",
+                            "max": MAX_CONCURRENT_PIPELINES,
+                        },
+                        status=429,
+                    )
+                    return
+
+                session.pipeline_state.reset()
 
             retries = body.get("retries", 5)
             temperature = body.get("temperature", 0.1)
             retries_v, retries_err = _validate_positive_int(retries, "retries")
             if retries_err:
-                with _pipeline_lock:
-                    _pipeline_state.mark_failed(ValueError(retries_err))
+                with session.pipeline_lock:
+                    session.pipeline_state.mark_failed(ValueError(retries_err))
+                registry.pipeline_semaphore.release()
                 self._send_json({"error": retries_err}, status=400)
                 return
             temp_v, temp_err = _validate_positive_float(temperature, "temperature")
             if temp_err:
-                with _pipeline_lock:
-                    _pipeline_state.mark_failed(ValueError(temp_err))
+                with session.pipeline_lock:
+                    session.pipeline_state.mark_failed(ValueError(temp_err))
+                registry.pipeline_semaphore.release()
                 self._send_json({"error": temp_err}, status=400)
                 return
 
@@ -618,16 +743,27 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 "temperature": temp_v,
                 "publish": bool(body.get("publish", False)),
             }
-            thread = threading.Thread(
-                target=_run_pipeline_async, args=(task,), daemon=True,
-            )
-            thread.start()
-            self._send_json(
-                {"status": "started", "message": "Pipeline running in background"},
-            )
+            try:
+                _pipeline_executor.submit(
+                    _run_pipeline_for_bot, task, session.bot_id,
+                )
+            except RuntimeError as exc:
+                # Executor shut down or cannot accept work
+                with session.pipeline_lock:
+                    session.pipeline_state.mark_failed(exc)
+                registry.pipeline_semaphore.release()
+                self._send_json(
+                    {"error": f"Failed to start pipeline: {exc}"},
+                    status=503,
+                )
+                return
+            self._send_json({
+                "status": "started",
+                "message": "Pipeline running in background",
+                "bot_id": session.bot_id,
+            })
 
         elif path == "/experiment/create":
-            # Validate before loading tools
             blocks = body.get("blocks", [])
             if not isinstance(blocks, list) or not blocks:
                 self._send_json(
@@ -755,6 +891,37 @@ class BridgeHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)
 
+    # ---- DELETE routes
+    def do_DELETE(self) -> None:
+        if not self._check_auth():
+            return
+        path, _qs = self._path_parts()
+
+        if path.startswith("/bots/session/"):
+            bot_id = path.split("/")[-1]
+            self._handle_delete_session(bot_id)
+        else:
+            self._send_json({"error": f"Not found: {path}"}, status=404)
+
+    def _handle_delete_session(self, bot_id: str) -> None:
+        from integrations.openclaw.bot_sessions import registry
+
+        session = registry.get(bot_id)
+        if session is None:
+            self._send_json({"error": f"No session for bot: {bot_id!r}"}, status=404)
+            return
+        # Hold pipeline_lock to prevent a concurrent /pipeline/run from
+        # starting between our check and the removal.
+        with session.pipeline_lock:
+            if session.pipeline_state.running:
+                self._send_json(
+                    {"error": f"Cannot remove bot {bot_id!r}: pipeline is running"},
+                    status=409,
+                )
+                return
+            registry.remove(bot_id)
+        self._send_json({"status": "removed", "bot_id": bot_id})
+
 
 # ---------------------------------------------------------------------------
 # Server entry point
@@ -764,12 +931,15 @@ def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
     """Start the bridge HTTP server."""
     from cli.display import console, print_banner
 
-    server = HTTPServer((host, port), BridgeHandler)
+    server = ThreadingHTTPServer((host, port), BridgeHandler)
     print_banner(subtitle="bridge server")
     logger.info("synth-city bridge listening on http://%s:%d", host, port)
     console.print(
         f"  [bold cyan]bridge listening on[/bold cyan] "
         f"[link=http://{host}:{port}]http://{host}:{port}[/link]"
+    )
+    console.print(
+        f"  [bold cyan]max concurrent pipelines:[/bold cyan] {MAX_CONCURRENT_PIPELINES}"
     )
     console.print("  [muted]Press Ctrl+C to stop.[/muted]\n")
     try:
@@ -777,4 +947,5 @@ def run_bridge(host: str = "127.0.0.1", port: int = 8377) -> None:
     except KeyboardInterrupt:
         console.print("\n[warning]Shutting down bridge server.[/warning]")
     finally:
+        _pipeline_executor.shutdown(wait=False)
         server.server_close()

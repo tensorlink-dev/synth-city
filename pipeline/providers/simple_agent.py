@@ -23,6 +23,7 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel
 
 from pipeline.monitor import get_monitor
+from pipeline.providers.chutes_client import chat_completion_with_backoff
 
 logger = logging.getLogger(__name__)
 _mon = get_monitor()
@@ -216,12 +217,22 @@ class SimpleAgent:
             logger.debug("turn %d  model=%s  msgs=%d", turn, self.model, len(messages))
             _mon.emit("agent", "agent_turn", turn=turn + 1)
 
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                tools=all_schemas if all_schemas else None,
-                temperature=self.temperature,
-            )
+            try:
+                response = chat_completion_with_backoff(
+                    self.client,
+                    model=self.model,
+                    messages=messages,
+                    tools=all_schemas if all_schemas else None,
+                    temperature=self.temperature,
+                )
+            except Exception as exc:
+                logger.error("LLM call failed on turn %d after retries: %s", turn, exc)
+                return AgentResult(
+                    success=False,
+                    raw_text=f"LLM call failed: {type(exc).__name__}: {exc}",
+                    messages=messages,
+                    turns_used=turn + 1,
+                )
             choice = response.choices[0]
             assistant_msg: dict[str, Any] = {"role": "assistant"}
 
@@ -295,6 +306,11 @@ class SimpleAgent:
                     structured["result"] = json.loads(structured["result"])
                 except json.JSONDecodeError:
                     pass
+            logger.info(
+                "Agent finishing: success=%s summary=%s",
+                structured.get("success"),
+                str(structured.get("summary", ""))[:200],
+            )
             return ToolResult(
                 tool_call_id=tc.id,
                 name="finish",
@@ -318,7 +334,7 @@ class SimpleAgent:
         if schema:
             raw_args = _coerce_args(raw_args, schema)
 
-        logger.debug("Tool %s called with args: %s", name, json.dumps(raw_args, default=str)[:500])
+        logger.info("Tool call: %s(%s)", name, json.dumps(raw_args, default=str)[:200])
         _mon.emit("tool", "tool_call", name=name)
         try:
             result = func(**raw_args)
@@ -329,7 +345,7 @@ class SimpleAgent:
                 content = json.dumps(result)
             else:
                 content = str(result)
-            logger.debug("Tool %s returned %d chars", name, len(content))
+            logger.info("Tool %s returned %d chars", name, len(content))
             _mon.emit("tool", "tool_result", name=name, size=len(content))
         except Exception as exc:
             logger.exception("Tool %s raised an exception", name)

@@ -24,6 +24,7 @@ import sys
 
 BRIDGE_URL = os.getenv("SYNTH_BRIDGE_URL", "http://127.0.0.1:8377")
 BRIDGE_API_KEY = os.getenv("BRIDGE_API_KEY", "")
+SYNTH_BOT_ID = os.getenv("SYNTH_BOT_ID", "")
 
 _GET_TIMEOUT = 120   # seconds
 _POST_TIMEOUT = 300  # seconds
@@ -39,10 +40,13 @@ def _check_curl() -> str | None:
 
 
 def _auth_headers() -> list[str]:
-    """Return curl ``-H`` flags for API key authentication, if configured."""
-    if not BRIDGE_API_KEY:
-        return []
-    return ["-H", f"X-API-Key: {BRIDGE_API_KEY}"]
+    """Return curl ``-H`` flags for authentication and bot identification."""
+    headers: list[str] = []
+    if BRIDGE_API_KEY:
+        headers.extend(["-H", f"X-API-Key: {BRIDGE_API_KEY}"])
+    if SYNTH_BOT_ID:
+        headers.extend(["-H", f"X-Bot-Id: {SYNTH_BOT_ID}"])
+    return headers
 
 
 def _curl_get(path: str) -> str:
@@ -313,13 +317,13 @@ def synth_load_tested_experiments(limit: int = 50) -> str:
     return _curl_get(f"/history/experiments?limit={limit}")
 
 
-def synth_fetch_wandb_runs(limit: int = 20, order: str = "best") -> str:
-    """Fetch experiment runs from Weights & Biases.
+def synth_fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
+    """Fetch experiment runs from Hippius decentralised storage.
 
-    Returns run names, configs, CRPS scores, and W&B URLs.
+    Returns run names, configs, and CRPS scores.
     order: 'best' (lowest CRPS first), 'recent' (newest first), or 'worst'.
     """
-    return _curl_get(f"/history/wandb?limit={limit}&order={order}")
+    return _curl_get(f"/history/trackio?limit={limit}&order={order}")
 
 
 # ---------------------------------------------------------------------------

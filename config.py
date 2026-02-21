@@ -38,8 +38,8 @@ def model_for(agent_name: str) -> str:
 # ---------------------------------------------------------------------------
 # Basilica GPU cloud (basilica-sdk)
 # ---------------------------------------------------------------------------
-BASILICA_API_TOKEN: str = os.getenv("BASILICA_API_TOKEN", "")
-BASILICA_API_URL: str = os.getenv("BASILICA_API_URL", "https://api.basilica.ai")
+BASILICA_API_TOKEN: str = os.getenv("BASILICA_API_TOKEN", "") or os.getenv("BASILICA_API_KEY", "")
+BASILICA_API_URL: str = os.getenv("BASILICA_API_URL", "") or os.getenv("BASILICA_ENDPOINT", "https://api.basilica.ai")
 # Budget cap — only rent GPUs at or below this hourly rate (USD)
 BASILICA_MAX_HOURLY_RATE: float = float(os.getenv("BASILICA_MAX_HOURLY_RATE", "0.44"))
 # Allowed GPU types (case-insensitive substring match against offering gpu_type)
@@ -100,10 +100,12 @@ RESEARCH_LR: float = float(os.getenv("RESEARCH_LR", "0.001"))
 RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "1"))
 
 # ---------------------------------------------------------------------------
-# Publishing (HF Hub + W&B)
+# Publishing (HF Hub + W&B + Trackio)
 # ---------------------------------------------------------------------------
+HF_TOKEN: str = os.getenv("HF_TOKEN", "")
 HF_REPO_ID: str = os.getenv("HF_REPO_ID", "")
 WANDB_PROJECT: str = os.getenv("WANDB_PROJECT", "synth-city")
+TRACKIO_PROJECT: str = os.getenv("TRACKIO_PROJECT", "synth-city")
 
 # ---------------------------------------------------------------------------
 # Hippius decentralised storage (S3-compatible)
@@ -126,3 +128,9 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "127.0.0.1")
 BRIDGE_PORT: int = int(os.getenv("BRIDGE_PORT", "8377"))
 BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
+
+# ---------------------------------------------------------------------------
+# Multi-bot concurrency
+# ---------------------------------------------------------------------------
+BOT_SESSION_TTL_SECONDS: int = int(os.getenv("BOT_SESSION_TTL_SECONDS", "3600"))
+MAX_CONCURRENT_PIPELINES: int = int(os.getenv("MAX_CONCURRENT_PIPELINES", "10"))

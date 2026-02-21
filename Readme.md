@@ -70,7 +70,7 @@ Planner:   list_blocks → list_heads → list_presets → session_summary → p
 Trainer:   create_experiment → run_experiment → compare_results → report best
 Checker:   validate_experiment → describe_experiment → pass/fail
 Debugger:  create_experiment (fixed) → validate_experiment → re-run
-Publisher: validate_experiment → publish_model → log_to_wandb
+Publisher: validate_experiment → publish_model → log_to_trackio
 Author:    list_component_files → read_component → write_component → reload_registry → verify
 Designer:  list_agents → read_agent → list_available_tools → write_agent_prompt → write_agent → verify
 ```

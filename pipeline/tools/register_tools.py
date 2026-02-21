@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import traceback
 from pathlib import Path
 
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 # open-synth-miner component directories (relative to repo root)
 _COMPONENTS_DIR = Path("src/models/components")
 _CONFIGS_DIR = Path("configs/model")
+
+# Reentrant lock for shared writes — components are shared across all bots
+_registry_lock = threading.RLock()
 
 
 def _ensure_dir(path: Path) -> None:
@@ -56,10 +60,13 @@ def write_component(filename: str, code: str) -> str:
     try:
         if not filename.endswith(".py"):
             filename += ".py"
+        if "/" in filename or "\\" in filename:
+            return json.dumps({"error": "Filename must not contain path separators"})
 
         target = _COMPONENTS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(code, encoding="utf-8")
+        with _registry_lock:
+            _ensure_dir(target.parent)
+            target.write_text(code, encoding="utf-8")
 
         return json.dumps({
             "status": "written",
@@ -89,7 +96,10 @@ def write_component(filename: str, code: str) -> str:
 def read_component(path: str) -> str:
     """Read a component source file for reference."""
     try:
-        target = Path(path)
+        target = Path(path).resolve()
+        components_root = _COMPONENTS_DIR.resolve()
+        if not str(target).startswith(str(components_root)):
+            return json.dumps({"error": f"Path must be within {_COMPONENTS_DIR}"})
         if not target.exists():
             return json.dumps({"error": f"File not found: {path}"})
         content = target.read_text(encoding="utf-8")
@@ -132,9 +142,14 @@ def reload_registry() -> str:
     try:
         from src.models.registry import discover_components, registry
 
-        discover_components(str(_COMPONENTS_DIR))
-        block_count = len(registry.list_blocks()) if hasattr(registry, "list_blocks") else "unknown"
-        head_count = len(registry.list_heads()) if hasattr(registry, "list_heads") else "unknown"
+        with _registry_lock:
+            discover_components(str(_COMPONENTS_DIR))
+            block_count = (
+                len(registry.list_blocks()) if hasattr(registry, "list_blocks") else "unknown"
+            )
+            head_count = (
+                len(registry.list_heads()) if hasattr(registry, "list_heads") else "unknown"
+            )
 
         return json.dumps({
             "status": "reloaded",
@@ -174,10 +189,13 @@ def write_config(filename: str, content: str) -> str:
     try:
         if not filename.endswith(".yaml") and not filename.endswith(".yml"):
             filename += ".yaml"
+        if "/" in filename or "\\" in filename:
+            return json.dumps({"error": "Filename must not contain path separators"})
 
         target = _CONFIGS_DIR / filename
-        _ensure_dir(target.parent)
-        target.write_text(content, encoding="utf-8")
+        with _registry_lock:
+            _ensure_dir(target.parent)
+            target.write_text(content, encoding="utf-8")
 
         return json.dumps({
             "status": "written",

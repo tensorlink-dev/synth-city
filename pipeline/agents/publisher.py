@@ -1,4 +1,4 @@
-"""Publisher agent — publishes best model to HF Hub with W&B tracking."""
+"""Publisher agent — publishes best model to HF Hub with Trackio + Hippius tracking."""
 
 from __future__ import annotations
 
@@ -24,11 +24,11 @@ class PublisherAgent(BaseAgentWrapper):
         tool_names = [
             "validate_experiment",
             "publish_model",
-            "log_to_wandb",
+            "log_to_trackio",
             # Hippius persistence
             "save_to_hippius",
             # Historical analysis (for comparing against past published models)
-            "fetch_wandb_runs",
+            "fetch_experiment_runs",
             "list_hf_models",
             "fetch_hf_model_card",
         ]
