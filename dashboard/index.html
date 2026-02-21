@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SYNTH CITY Dashboard</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --bg-card: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-dim: #8b949e;
+    --cyan: #58a6ff;
+    --magenta: #bc8cff;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --orange: #db6d28;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 20px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-card);
+  }
+  .header h1 {
+    font-size: 18px;
+    color: var(--cyan);
+    letter-spacing: 2px;
+  }
+  .header .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    margin-right: 6px;
+  }
+  .header .status-dot.ok { background: var(--green); }
+  .header .status-dot.err { background: var(--red); }
+  .header .conn-info {
+    display: flex;
+    align-items: center;
+    color: var(--text-dim);
+    font-size: 12px;
+  }
+
+  /* Main grid */
+  .main {
+    display: grid;
+    grid-template-columns: 260px 1fr 320px;
+    grid-template-rows: auto 1fr;
+    gap: 12px;
+    padding: 12px;
+    height: calc(100vh - 50px);
+    min-height: 500px;
+  }
+  @media (max-width: 900px) {
+    .main {
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto auto auto auto;
+      height: auto;
+    }
+  }
+
+  /* Cards */
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .card-title {
+    padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    border-bottom: 1px solid var(--border);
+  }
+  .card-body { padding: 10px 12px; }
+
+  /* Pipeline stepper */
+  .pipeline-card { grid-row: 1 / 2; }
+  .pipeline-card .card-title { color: var(--cyan); }
+  .stepper .step {
+    display: flex;
+    align-items: flex-start;
+    padding: 6px 0;
+  }
+  .stepper .step-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid var(--border);
+    margin-right: 10px;
+    margin-top: 2px;
+    flex-shrink: 0;
+  }
+  .stepper .step-dot.active {
+    border-color: var(--cyan);
+    background: var(--cyan);
+    box-shadow: 0 0 6px var(--cyan);
+  }
+  .stepper .step-dot.done {
+    border-color: var(--green);
+    background: var(--green);
+  }
+  .stepper .step-label { color: var(--text-dim); }
+  .stepper .step.active .step-label { color: var(--text); font-weight: 600; }
+  .stepper .step.done .step-label { color: var(--green); }
+  .stepper .step-line {
+    width: 2px;
+    height: 10px;
+    background: var(--border);
+    margin-left: 5px;
+    margin-bottom: 0;
+  }
+
+  /* Agent card */
+  .agent-card { grid-row: 2 / 3; }
+  .agent-card .card-title { color: var(--magenta); }
+  .kv-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .kv-row .label { color: var(--text-dim); }
+  .kv-row .value { color: var(--text); font-weight: 500; }
+
+  /* Stats bar */
+  .stats-bar {
+    display: flex;
+    gap: 16px;
+    padding: 8px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    grid-column: 2 / 3;
+  }
+  .stat { text-align: center; flex: 1; }
+  .stat .stat-value { font-size: 20px; font-weight: 700; color: var(--cyan); }
+  .stat .stat-label { font-size: 10px; color: var(--text-dim); text-transform: uppercase; }
+
+  /* CRPS chart */
+  .chart-card { grid-column: 2 / 3; min-height: 0; }
+  .chart-card .card-title { color: var(--green); }
+  .chart-card canvas { width: 100%; height: 100%; display: block; }
+  .chart-wrap { height: calc(100% - 34px); min-height: 120px; }
+
+  /* Experiment table */
+  .exp-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .exp-table th {
+    text-align: left;
+    padding: 4px 8px;
+    color: var(--cyan);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    font-size: 11px;
+  }
+  .exp-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid #21262d;
+  }
+  .exp-table .crps { color: var(--magenta); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .exp-table tr:first-child .crps { color: var(--green); }
+
+  /* Events feed */
+  .events-card { grid-column: 3 / 4; grid-row: 1 / 3; }
+  .events-card .card-title { color: var(--yellow); }
+  .events-feed {
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+    font-size: 11px;
+  }
+  .event-row { padding: 3px 0; border-bottom: 1px solid #21262d; }
+  .event-ts { color: var(--text-dim); }
+  .event-cat { font-weight: 600; margin: 0 4px; }
+  .event-cat.pipeline { color: var(--cyan); }
+  .event-cat.agent { color: var(--magenta); }
+  .event-cat.tool { color: var(--yellow); }
+  .event-cat.experiment { color: var(--green); }
+  .event-cat.system { color: var(--red); }
+  .event-detail { color: var(--text); }
+
+  /* Alerts */
+  .alerts-section {
+    margin-top: 12px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: #1c1210;
+    min-height: 40px;
+  }
+  .alerts-section.clear { background: var(--bg-card); }
+  .alert-item { color: var(--red); padding: 2px 0; }
+  .alert-none { color: var(--text-dim); font-style: italic; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <h1>SYNTH CITY</h1>
+    <div class="conn-info">
+      <span class="status-dot ok" id="connDot"></span>
+      <span id="connLabel">Connected</span>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Left sidebar: pipeline + agent -->
+    <div class="card pipeline-card">
+      <div class="card-title">Pipeline</div>
+      <div class="card-body">
+        <div class="stepper" id="stepper"></div>
+        <div style="margin-top:8px">
+          <div class="kv-row"><span class="label">Status</span><span class="value" id="pStatus">IDLE</span></div>
+          <div class="kv-row"><span class="label">Attempt</span><span class="value" id="pAttempt">--</span></div>
+          <div class="kv-row"><span class="label">Temperature</span><span class="value" id="pTemp">--</span></div>
+          <div class="kv-row"><span class="label">Elapsed</span><span class="value" id="pElapsed">--</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card agent-card">
+      <div class="card-title">Current Agent</div>
+      <div class="card-body">
+        <div class="kv-row"><span class="label">Name</span><span class="value" id="aName">--</span></div>
+        <div class="kv-row"><span class="label">Model</span><span class="value" id="aModel">--</span></div>
+        <div class="kv-row"><span class="label">Turn</span><span class="value" id="aTurn">--</span></div>
+        <div class="kv-row"><span class="label">Tools</span><span class="value" id="aTools">--</span></div>
+      </div>
+      <div class="card-title" style="color: var(--red)">Alerts</div>
+      <div class="card-body">
+        <div id="alertsSection" class="alerts-section clear">
+          <div class="alert-none">No alerts</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Center: stats + chart + experiments -->
+    <div class="stats-bar">
+      <div class="stat"><div class="stat-value" id="sExps">0</div><div class="stat-label">Experiments</div></div>
+      <div class="stat"><div class="stat-value" id="sBest">--</div><div class="stat-label">Best CRPS</div></div>
+      <div class="stat"><div class="stat-value" id="sStage">--</div><div class="stat-label">Stage</div></div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="card-title">CRPS History</div>
+      <div class="chart-wrap">
+        <canvas id="crpsChart"></canvas>
+      </div>
+      <div class="card-body" style="padding-top:0; max-height:200px; overflow-y:auto;">
+        <table class="exp-table">
+          <thead><tr><th>#</th><th>Name</th><th>CRPS</th></tr></thead>
+          <tbody id="expBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Right: events feed -->
+    <div class="card events-card">
+      <div class="card-title">Live Events</div>
+      <div class="card-body events-feed" id="eventsFeed"></div>
+    </div>
+  </div>
+
+<script>
+const STAGES = [
+  {key: 'planner', label: 'Planner', num: 1},
+  {key: 'trainer', label: 'Trainer', num: 2},
+  {key: 'check_debug', label: 'Check / Debug', num: 3},
+  {key: 'publisher', label: 'Publisher', num: 4},
+];
+
+let lastTs = 0;
+let allEvents = [];
+let connected = false;
+
+// -- Stepper init --
+function initStepper() {
+  const el = document.getElementById('stepper');
+  el.innerHTML = STAGES.map((s, i) => `
+    <div class="step" id="step-${s.key}">
+      <div class="step-dot" id="dot-${s.key}"></div>
+      <div class="step-label">${s.num}. ${s.label}</div>
+    </div>
+    ${i < STAGES.length - 1 ? '<div class="step-line"></div>' : ''}
+  `).join('');
+}
+
+function updateStepper(stageNum) {
+  STAGES.forEach(s => {
+    const step = document.getElementById('step-' + s.key);
+    const dot = document.getElementById('dot-' + s.key);
+    step.className = 'step';
+    dot.className = 'step-dot';
+    if (s.num < stageNum) { step.classList.add('done'); dot.classList.add('done'); }
+    else if (s.num === stageNum) { step.classList.add('active'); dot.classList.add('active'); }
+  });
+}
+
+// -- CRPS chart --
+function drawChart(history) {
+  const canvas = document.getElementById('crpsChart');
+  const wrap = canvas.parentElement;
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (!history || history.length < 2) {
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '12px monospace';
+    ctx.fillText('Waiting for experiment results...', 20, canvas.height / 2);
+    return;
+  }
+
+  const crps = history.map(h => h.crps).filter(c => c != null);
+  if (crps.length < 2) return;
+
+  const pad = {top: 10, right: 10, bottom: 20, left: 50};
+  const w = canvas.width - pad.left - pad.right;
+  const h = canvas.height - pad.top - pad.bottom;
+  const minC = Math.min(...crps);
+  const maxC = Math.max(...crps);
+  const range = maxC - minC || 1;
+
+  // Grid lines
+  ctx.strokeStyle = '#21262d';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (h * i / 4);
+    ctx.beginPath();
+    ctx.moveTo(pad.left, y);
+    ctx.lineTo(pad.left + w, y);
+    ctx.stroke();
+    ctx.fillStyle = '#8b949e';
+    ctx.font = '10px monospace';
+    const val = maxC - (range * i / 4);
+    ctx.fillText(val.toFixed(4), 2, y + 3);
+  }
+
+  // Line
+  ctx.strokeStyle = '#58a6ff';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  crps.forEach((c, i) => {
+    const x = pad.left + (w * i / (crps.length - 1));
+    const y = pad.top + h - (h * (c - minC) / range);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Best point
+  const bestIdx = crps.indexOf(minC);
+  const bx = pad.left + (w * bestIdx / (crps.length - 1));
+  const by = pad.top + h;
+  ctx.fillStyle = '#3fb950';
+  ctx.beginPath();
+  ctx.arc(bx, by, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  // X-axis label
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '10px monospace';
+  ctx.fillText('Experiment #', pad.left + w / 2 - 30, canvas.height - 2);
+}
+
+// -- HTML escaping --
+function esc(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// -- Event formatting --
+const STAGE_NAMES = {planner:'PLANNER', trainer:'TRAINER', check_debug:'CHECK/DEBUG', publisher:'PUBLISHER'};
+
+function fmtEvent(ev) {
+  const ts = new Date(ev.timestamp * 1000).toLocaleTimeString('en-US', {hour12:false});
+  const cat = ev.category;
+  const d = ev.data || {};
+  let detail = ev.event_type;
+
+  switch (ev.event_type) {
+    case 'stage_start':
+      detail = `STAGE ${esc(d.stage_num)}: ${esc(STAGE_NAMES[d.stage] || d.stage)}`; break;
+    case 'agent_turn':
+      detail = `turn ${esc(d.turn)}`; break;
+    case 'tool_call':
+      detail = `${esc(d.name)} called`; break;
+    case 'tool_result':
+      detail = `${esc(d.name)} -&gt; ${(d.size||0).toLocaleString()} chars`; break;
+    case 'experiment_result':
+      detail = `${esc(d.name || '?')} CRPS=${d.crps != null ? d.crps.toFixed(6) : 'N/A'}`; break;
+    case 'retry_attempt':
+      detail = `attempt ${esc(d.attempt)}/${esc(d.max_attempts)} temp=${(d.temperature||0).toFixed(2)}`; break;
+    case 'stall_detected':
+      detail = 'STALL DETECTED'; break;
+    case 'pipeline_start':
+      detail = 'pipeline started'; break;
+    case 'pipeline_complete':
+      detail = d.success ? 'pipeline completed' : 'pipeline FAILED'; break;
+    case 'agent_start': {
+      const n = esc((d.name||'').split('/').pop());
+      detail = `${n} started (${esc(d.max_turns)} turns)`; break;
+    }
+    case 'agent_finish':
+      detail = `agent finished (${d.success ? 'OK' : 'FAIL'}, ${esc(d.turns)} turns)`; break;
+  }
+
+  return `<div class="event-row">` +
+    `<span class="event-ts">${ts}</span>` +
+    `<span class="event-cat ${cat}">${cat}</span>` +
+    `<span class="event-detail">${detail}</span>` +
+    `</div>`;
+}
+
+// -- Elapsed formatting --
+function fmtElapsed(s) {
+  if (!s || s <= 0) return '--';
+  s = Math.round(s);
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  const h = Math.floor(m / 60);
+  const min = m % 60;
+  if (h) return `${h}h ${String(min).padStart(2,'0')}m`;
+  if (min) return `${min}m ${String(sec).padStart(2,'0')}s`;
+  return `${sec}s`;
+}
+
+// -- Main update --
+function update(snap, newEvents) {
+  // Connection
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  dot.className = 'status-dot ' + (connected ? 'ok' : 'err');
+  lbl.textContent = connected ? 'Connected' : 'Disconnected';
+
+  // Pipeline
+  const statusColors = {idle:'var(--text-dim)',running:'var(--green)',completed:'var(--cyan)',failed:'var(--red)'};
+  document.getElementById('pStatus').textContent = (snap.status || 'idle').toUpperCase();
+  document.getElementById('pStatus').style.color = statusColors[snap.status] || 'var(--text)';
+  document.getElementById('pAttempt').textContent = snap.current_attempt ? `${snap.current_attempt}/${snap.max_attempts}` : '--';
+  document.getElementById('pTemp').textContent = snap.temperature ? snap.temperature.toFixed(2) : '--';
+  document.getElementById('pElapsed').textContent = fmtElapsed(snap.elapsed_seconds);
+  updateStepper(snap.current_stage_num || 0);
+
+  // Agent
+  const a = snap.agent || {};
+  const name = (a.name || '--').split('/').pop();
+  document.getElementById('aName').textContent = name;
+  document.getElementById('aModel').textContent = (a.model || '--').split('/').pop();
+  document.getElementById('aTurn').textContent = a.max_turns ? `${a.turn}/${a.max_turns}` : '--';
+  document.getElementById('aTools').textContent = (a.tools || []).length || '--';
+
+  // Stats
+  document.getElementById('sExps').textContent = snap.experiments_run || 0;
+  document.getElementById('sBest').textContent = snap.best_crps != null ? snap.best_crps.toFixed(6) : '--';
+  document.getElementById('sStage').textContent = snap.current_stage_num ? `${snap.current_stage_num}/${snap.total_stages}` : '--';
+
+  // CRPS chart
+  drawChart(snap.crps_history || []);
+
+  // Experiments table
+  const sorted = [...(snap.crps_history || [])].filter(h => h.crps != null).sort((a,b) => a.crps - b.crps);
+  document.getElementById('expBody').innerHTML = sorted.slice(0, 15).map((e, i) =>
+    `<tr><td>${i+1}</td><td>${esc(e.name || '?')}</td><td class="crps">${e.crps.toFixed(6)}</td></tr>`
+  ).join('') || '<tr><td colspan="3" style="color:var(--text-dim)">No experiments yet</td></tr>';
+
+  // Events feed
+  if (newEvents.length > 0) {
+    const feed = document.getElementById('eventsFeed');
+    newEvents.forEach(ev => feed.innerHTML += fmtEvent(ev));
+    // Cap at 200 entries
+    while (feed.children.length > 200) feed.removeChild(feed.firstChild);
+    feed.scrollTop = feed.scrollHeight;
+  }
+
+  // Alerts
+  const alertsEl = document.getElementById('alertsSection');
+  const alerts = [];
+  if (snap.stall_detected) alerts.push('STALL DETECTED: experiment config unchanged');
+  (snap.errors || []).slice(-5).forEach(e => alerts.push(e));
+  if (alerts.length) {
+    alertsEl.className = 'alerts-section';
+    alertsEl.innerHTML = alerts.map(a => `<div class="alert-item">${esc(a)}</div>`).join('');
+  } else {
+    alertsEl.className = 'alerts-section clear';
+    alertsEl.innerHTML = '<div class="alert-none">No alerts</div>';
+  }
+}
+
+// -- Polling --
+async function poll() {
+  try {
+    const [snapRes, evRes] = await Promise.all([
+      fetch('/dash/snapshot'),
+      fetch('/dash/events?after=' + lastTs),
+    ]);
+    const snap = await snapRes.json();
+    const newEvents = await evRes.json();
+    connected = true;
+
+    if (Array.isArray(newEvents) && newEvents.length > 0) {
+      allEvents.push(...newEvents);
+      lastTs = newEvents[newEvents.length - 1].timestamp;
+    }
+    update(snap, newEvents || []);
+  } catch (e) {
+    connected = false;
+    update({status:'disconnected', agent:{}, errors:['Bridge unreachable']}, []);
+  }
+}
+
+// -- Init --
+initStepper();
+setInterval(poll, 2000);
+poll();
+</script>
+</body>
+</html>

@@ -29,9 +29,11 @@ from config import (
     RESEARCH_SEQ_LEN,
     TIMEFRAME_CONFIGS,
 )
+from pipeline.monitor import get_monitor
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+_mon = get_monitor()
 
 # Maximum results to keep in memory before auto-flushing
 SESSION_MAX_RESULTS: int = 100
@@ -77,6 +79,7 @@ def _maybe_auto_flush():
                 "Session has %d results (threshold %d) — auto-flushing to Hippius",
                 count, SESSION_MAX_RESULTS,
             )
+            _mon.emit("system", "auto_flush", count=count, threshold=SESSION_MAX_RESULTS)
             _do_flush(keep_top_n=SESSION_KEEP_TOP_N)
     except Exception as exc:
         logger.debug("Auto-flush check failed: %s", exc)
@@ -355,6 +358,7 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
     try:
         session = _get_session()
         exp = json.loads(experiment) if isinstance(experiment, str) else experiment
+        _mon.emit("experiment", "experiment_start", name=name)
 
         # If the experiment was tagged with a timeframe, attach the data loader
         run_kwargs: dict = {"epochs": epochs}
@@ -389,11 +393,21 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
         except Exception:
             pass  # Storage is best-effort, never block the pipeline
 
+        # Emit experiment result for dashboard monitoring
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        _mon.emit(
+            "experiment", "experiment_result",
+            name=name,
+            crps=metrics.get("crps"),
+            status=result.get("status", "unknown") if isinstance(result, dict) else "unknown",
+        )
+
         # Auto-flush if session has grown too large
         _maybe_auto_flush()
 
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
+        _mon.emit("system", "error", message=f"run_experiment failed: {exc}")
         return json.dumps({
             "error": f"{type(exc).__name__}: {exc}",
             "traceback": traceback.format_exc(),
