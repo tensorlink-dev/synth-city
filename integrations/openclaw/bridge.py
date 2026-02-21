@@ -68,6 +68,7 @@ import threading
 import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -88,6 +89,9 @@ VALID_ASSETS = frozenset({
 
 # Alphanumeric + underscore pattern for asset path segments
 _SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+# Path to the self-contained HTML dashboard
+_DASHBOARD_HTML = Path(__file__).resolve().parent.parent.parent / "dashboard" / "index.html"
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +347,19 @@ class BridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         return parsed.path.rstrip("/"), parse_qs(parsed.query)
 
+    def _serve_dashboard_html(self) -> None:
+        """Serve the self-contained HTML dashboard page."""
+        try:
+            html = _DASHBOARD_HTML.read_bytes()
+        except FileNotFoundError:
+            self._send_json({"error": "Dashboard HTML not found"}, status=404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html)))
+        self.end_headers()
+        self.wfile.write(html)
+
     def _load_tools_or_fail(self) -> bool:
         """Load tool modules. Returns ``True`` on success, sends 500 on failure."""
         try:
@@ -537,6 +554,23 @@ class BridgeHandler(BaseHTTPRequestHandler):
         elif path == "/agents/tools":
             if self._load_tools_or_fail():
                 self._send_json(_research_call("list_available_tools"))
+
+        # ---- dashboard monitoring
+        elif path == "/dashboard":
+            self._serve_dashboard_html()
+
+        elif path == "/dash/snapshot":
+            from pipeline.monitor import get_monitor
+            self._send_json(get_monitor().snapshot())
+
+        elif path == "/dash/events":
+            from pipeline.monitor import get_monitor
+            after_str = qs.get("after", ["0"])[0]
+            try:
+                after = float(after_str)
+            except ValueError:
+                after = 0.0
+            self._send_json(get_monitor().events_since(after))
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)

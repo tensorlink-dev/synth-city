@@ -248,6 +248,28 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_dashboard(args: argparse.Namespace) -> None:
+    """Run the pipeline with a live Rich dashboard, or monitor a remote bridge."""
+    if args.remote:
+        from cli.dashboard import run_dashboard_remote
+
+        print_banner(subtitle="remote dashboard")
+        run_dashboard_remote(args.remote)
+    else:
+        from cli.dashboard import run_dashboard
+
+        print_banner(subtitle="dashboard")
+        task: dict = {"channel": args.channel}
+        result = run_dashboard(
+            task,
+            max_retries=args.retries,
+            base_temperature=args.temperature,
+            publish=args.publish,
+        )
+        section_header("Pipeline Result")
+        print_json(result)
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.bootstrap import bootstrap_dirs
@@ -385,6 +407,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # dashboard
+    p_dash = subparsers.add_parser(
+        "dashboard", help="Run pipeline with live monitoring dashboard"
+    )
+    p_dash.add_argument("--channel", default="default", help="Prompt channel")
+    p_dash.add_argument("--retries", type=int, default=5, help="Max retries per stage")
+    p_dash.add_argument("--temperature", type=float, default=0.1, help="Base LLM temperature")
+    p_dash.add_argument("--publish", action="store_true", help="Publish best model to HF Hub")
+    p_dash.add_argument(
+        "--remote", default=None, metavar="URL",
+        help="Poll a remote bridge server instead of running locally (e.g. http://host:8377)",
+    )
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -406,6 +441,7 @@ _CMD_MAP = {
     "history": cmd_history,
     "bridge": cmd_bridge,
     "client": cmd_client,
+    "dashboard": cmd_dashboard,
     "agent": cmd_agent,
 }
 

@@ -17,9 +17,11 @@ from pipeline.agents.debugger import DebuggerAgent
 from pipeline.agents.planner import PlannerAgent
 from pipeline.agents.publisher import PublisherAgent
 from pipeline.agents.trainer import TrainerAgent
+from pipeline.monitor import get_monitor
 from pipeline.providers.simple_agent import AgentResult
 
 logger = logging.getLogger(__name__)
+_mon = get_monitor()
 
 
 class PipelineOrchestrator:
@@ -61,8 +63,13 @@ class PipelineOrchestrator:
         task.setdefault("channel", "default")
         results: dict[str, Any] = {"stages": [], "success": False}
 
+        total_stages = 4 if self.publish else 3
+        _mon.reset()
+        _mon.emit("pipeline", "pipeline_start", stages=total_stages)
+
         # Stage 1: Plan
         logger.info("=== STAGE 1: PLANNER ===")
+        _mon.emit("pipeline", "stage_start", stage="planner", stage_num=1)
         plan_result = self._run_planner(task)
         results["stages"].append({"agent": "planner", "success": plan_result.success})
 
@@ -80,6 +87,7 @@ class PipelineOrchestrator:
 
         # Stage 2: Train (execute experiments from the plan)
         logger.info("=== STAGE 2: TRAINER ===")
+        _mon.emit("pipeline", "stage_start", stage="trainer", stage_num=2)
         train_result = self._run_with_retry(
             TrainerAgent,
             task,
@@ -101,6 +109,7 @@ class PipelineOrchestrator:
 
         # Stage 3: Check → Debug loop on the best experiment
         logger.info("=== STAGE 3: CHECK/DEBUG LOOP ===")
+        _mon.emit("pipeline", "stage_start", stage="check_debug", stage_num=3)
         check_debug_result = self._check_debug_loop(task)
         results["stages"].append(check_debug_result)
         results["success"] = check_debug_result.get("passed", False)
@@ -108,6 +117,7 @@ class PipelineOrchestrator:
         # Stage 4: Publish (optional)
         if self.publish and results["success"]:
             logger.info("=== STAGE 4: PUBLISHER ===")
+            _mon.emit("pipeline", "stage_start", stage="publisher", stage_num=4)
             pub_result = self._run_publisher(task)
             results["stages"].append({"agent": "publisher", "success": pub_result.success})
             results["published"] = pub_result.success
@@ -125,6 +135,12 @@ class PipelineOrchestrator:
 
         # Persist pipeline summary to Hippius
         self._save_to_hippius(results)
+
+        _mon.emit(
+            "pipeline", "pipeline_complete",
+            success=results.get("success", False),
+            best_crps=results.get("best_crps"),
+        )
 
         return results
 
@@ -155,6 +171,11 @@ class PipelineOrchestrator:
                 attempt + 1,
                 self.max_retries,
                 temp,
+            )
+            _mon.emit(
+                "pipeline", "retry_attempt",
+                stage=stage_name, attempt=attempt + 1,
+                max_attempts=self.max_retries, temperature=temp,
             )
 
             agent = agent_cls(temperature=temp)
@@ -210,6 +231,7 @@ class PipelineOrchestrator:
             current_exp = task.get("best_experiment", "")
             if current_exp and current_exp == prev_experiment_json:
                 logger.warning("STALL DETECTED: experiment config unchanged")
+                _mon.emit("pipeline", "stall_detected", attempt=attempt + 1)
                 task["user_message"] = (
                     "CRITICAL WARNING: The experiment config has NOT changed since the last "
                     "attempt. You MUST take a DIFFERENT approach — change blocks, head, "
