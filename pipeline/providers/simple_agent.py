@@ -346,6 +346,16 @@ class SimpleAgent:
             else:
                 content = str(result)
             logger.info("Tool %s returned %d chars", name, len(content))
+            # Log full result at DEBUG level for post-mortem diagnostics.
+            # For error results, also log at WARNING so they appear in INFO logs.
+            is_error = (
+                '"error"' in content[:200]
+                or '"status": "error"' in content[:200]
+            )
+            if is_error:
+                logger.warning("Tool %s error result:\n%s", name, content[:5000])
+            else:
+                logger.debug("Tool %s result:\n%s", name, content[:10000])
             _mon.emit("tool", "tool_result", name=name, size=len(content))
         except Exception as exc:
             logger.exception("Tool %s raised an exception", name)

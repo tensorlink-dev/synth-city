@@ -21,6 +21,7 @@ This avoids running heavy training on the local controller machine.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -29,13 +30,15 @@ import sys
 import time
 
 from config import (
-    HF_TRAINING_DATA_REPO,
     HF_TOKEN,
+    HF_TRAINING_DATA_REPO,
     SN50_TO_HF_ASSET,
     TIMEFRAME_CONFIGS,
     WORKSPACE_DIR,
 )
 from pipeline.tools.registry import tool
+
+logger = logging.getLogger(__name__)
 
 # Default SSH key — can be overridden per call
 _DEFAULT_SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
@@ -71,8 +74,8 @@ def run_training_local(script_path: str, args: str = "") -> str:
         )
         output = {
             "returncode": proc.returncode,
-            "stdout": proc.stdout[-5000:] if len(proc.stdout) > 5000 else proc.stdout,
-            "stderr": proc.stderr[-2000:] if len(proc.stderr) > 2000 else proc.stderr,
+            "stdout": proc.stdout[-20000:] if len(proc.stdout) > 20000 else proc.stdout,
+            "stderr": proc.stderr[-15000:] if len(proc.stderr) > 15000 else proc.stderr,
         }
         return json.dumps(output)
     except subprocess.TimeoutExpired:
@@ -97,8 +100,8 @@ def run_python(code: str) -> str:
         )
         output = {
             "returncode": proc.returncode,
-            "stdout": proc.stdout[-5000:] if len(proc.stdout) > 5000 else proc.stdout,
-            "stderr": proc.stderr[-2000:] if len(proc.stderr) > 2000 else proc.stderr,
+            "stdout": proc.stdout[-20000:] if len(proc.stdout) > 20000 else proc.stdout,
+            "stderr": proc.stderr[-15000:] if len(proc.stderr) > 15000 else proc.stderr,
         }
         return json.dumps(output)
     except subprocess.TimeoutExpired:
@@ -396,7 +399,7 @@ def setup_basilica_pod(
         # Poll for SSH readiness (up to 5 minutes)
         creds = None
         deadline = time.time() + 300
-        last_err = ""
+        ssh_errors: list[str] = []
         while time.time() < deadline:
             try:
                 creds = _get_ssh_creds(rental_id)
@@ -406,13 +409,21 @@ def setup_basilica_pod(
                 )
                 if rc == 0:
                     break
-                last_err = err
+                ssh_errors.append(err.strip())
             except Exception as e:
-                last_err = str(e)
+                ssh_errors.append(str(e))
             time.sleep(10)
         else:
+            # Deduplicate consecutive identical errors for readability
+            deduped: list[str] = []
+            for e in ssh_errors:
+                if not deduped or e != deduped[-1]:
+                    deduped.append(e)
             return json.dumps({
-                "error": f"Pod did not become SSH-accessible within 5 minutes. Last error: {last_err}"
+                "error": "Pod did not become SSH-accessible within 5 minutes.",
+                "rental_id": rental_id,
+                "ssh_attempts": len(ssh_errors),
+                "ssh_errors": deduped[-10:],  # last 10 unique errors
             })
 
         host, port, user = creds["host"], creds["port"], creds["user"]
@@ -432,14 +443,19 @@ def setup_basilica_pod(
             )
 
         rc, stdout, stderr = _ssh_run(
-            host, port, user, f"bash -s", key_path=key,
+            host, port, user, "bash -s", key_path=key,
             timeout=_SETUP_TIMEOUT, stdin_data=setup_script,
         )
         if rc != 0:
+            logger.error(
+                "Pod setup failed for rental %s (exit %d). stderr:\n%s",
+                rental_id, rc, stderr[-5000:],
+            )
             return json.dumps({
                 "error": f"Pod setup failed (exit {rc})",
-                "stderr": stderr[-3000:],
-                "stdout": stdout[-1000:],
+                "rental_id": rental_id,
+                "stderr": stderr[-15000:],
+                "stdout": stdout[-10000:],
             })
 
         return json.dumps({
@@ -449,13 +465,19 @@ def setup_basilica_pod(
             "user": user,
             "hf_token_configured": bool(HF_TOKEN),
             "osm_installed": osm_install,
-            "stdout": stdout[-1000:],
+            "stdout": stdout[-5000:],
         }, indent=2)
 
     except subprocess.TimeoutExpired:
-        return json.dumps({"error": "SSH timed out during pod setup."})
+        return json.dumps({
+            "error": "SSH timed out during pod setup.",
+            "rental_id": rental_id,
+        })
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "rental_id": rental_id,
+        })
 
 
 @tool(
@@ -590,24 +612,72 @@ except Exception as exc:
         )
 
         if rc != 0:
+            # Capture GPU diagnostics to help debug OOM / hardware issues
+            gpu_info = ""
+            try:
+                _, gpu_out, _ = _ssh_run(
+                    host, port, user, "nvidia-smi", key_path=key, timeout=15,
+                )
+                gpu_info = gpu_out.strip()
+            except Exception:
+                gpu_info = "(nvidia-smi unavailable)"
+
+            logger.error(
+                "Remote training failed for rental %s (exit %d). stderr:\n%s",
+                rental_id, rc, stderr[-5000:],
+            )
             return json.dumps({
                 "status": "error",
+                "rental_id": rental_id,
                 "error": f"Remote training script exited with code {rc}",
-                "stderr": stderr[-3000:],
-                "stdout": stdout[-1000:],
+                "stderr": stderr[-15000:],
+                "stdout": stdout[-10000:],
+                "gpu_info": gpu_info[:3000],
             })
 
-        # Parse the JSON printed by the script
+        # The script prints a single JSON line to stdout on success.
+        # Extract the last non-empty line (ignore pip/import warnings).
         output = stdout.strip()
-        try:
-            return output  # Already valid JSON from the remote script
-        except Exception:
-            return json.dumps({"status": "error", "raw_output": output[:3000]})
-
-    except subprocess.TimeoutExpired:
+        last_line = ""
+        for line in reversed(output.splitlines()):
+            stripped = line.strip()
+            if stripped and stripped[0] == "{":
+                last_line = stripped
+                break
+        if last_line:
+            try:
+                json.loads(last_line)  # validate it's proper JSON
+                return last_line
+            except json.JSONDecodeError:
+                pass
+        # Couldn't parse JSON — return raw output for debugging
         return json.dumps({
             "status": "error",
+            "rental_id": rental_id,
+            "error": "Could not parse JSON from training script output",
+            "raw_output": output[-15000:],
+        })
+
+    except subprocess.TimeoutExpired:
+        # Try to capture partial output and GPU state even after timeout
+        gpu_info = ""
+        try:
+            creds2 = _get_ssh_creds(rental_id)
+            _, gpu_out, _ = _ssh_run(
+                creds2["host"], creds2["port"], creds2["user"],
+                "nvidia-smi", key_path=key, timeout=15,
+            )
+            gpu_info = gpu_out.strip()
+        except Exception:
+            pass
+        return json.dumps({
+            "status": "error",
+            "rental_id": rental_id,
             "error": f"Remote training timed out after {_TRAIN_TIMEOUT}s.",
+            "gpu_info": gpu_info[:3000] if gpu_info else "(unavailable)",
         })
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "rental_id": rental_id,
+        })

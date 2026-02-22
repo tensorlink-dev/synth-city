@@ -162,6 +162,13 @@ WORKSPACE_DIR: Path = Path(os.getenv("WORKSPACE_DIR", "./workspace"))
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+LOG_DIR: Path = Path(os.getenv("LOG_DIR", "./logs"))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+# ---------------------------------------------------------------------------
 # OpenClaw bridge
 # ---------------------------------------------------------------------------
 BRIDGE_HOST: str = os.getenv("BRIDGE_HOST", "127.0.0.1")

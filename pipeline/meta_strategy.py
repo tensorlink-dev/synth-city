@@ -157,7 +157,7 @@ def record_run_event(
     if crps is not None:
         event["crps"] = crps
     if error is not None:
-        event["error"] = error[:500]
+        event["error"] = error[:3000]
 
     with open(history_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(event) + "\n")
