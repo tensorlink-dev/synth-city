@@ -27,6 +27,12 @@ python main.py pipeline
 
 # Run a single agent
 python main.py agent --name planner
+
+# Pre-download training data (avoids downloading mid-pipeline)
+synth-city data download                        # all assets, 5m timeframe
+synth-city data download --assets BTC           # BTC only
+synth-city data download --assets BTC,ETH,SOL --timeframe all
+synth-city data info                            # show loader config and status
 ```
 
 ## Project structure

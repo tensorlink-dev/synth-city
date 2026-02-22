@@ -153,17 +153,27 @@ class BasilicaGPUClient:
         ]
 
     def get_rental_status(self, rental_id: str) -> dict[str, Any]:
-        """Get detailed status for a single rental (includes SSH info)."""
-        r = self._client.get_rental(rental_id)
+        """Get detailed status for a single secure-cloud GPU rental (includes SSH info).
+
+        Uses ``list_secure_cloud_rentals()`` to look up the rental, because the
+        SDK does not expose a ``get_secure_cloud_rental(id)`` endpoint.
+        The ``ssh_command`` field is a plain string like ``"ssh user@host -p port"``.
+        """
+        resp = self._client.list_secure_cloud_rentals()
+        rentals = resp.rentals if hasattr(resp, "rentals") else []
+        rental = next((r for r in rentals if r.rental_id == rental_id), None)
+        if rental is None:
+            raise RuntimeError(
+                f"Rental {rental_id!r} not found in list_secure_cloud_rentals(). "
+                "It may have already been stopped or the ID is wrong."
+            )
         return {
-            "rental_id": r.rental_id,
-            "status": getattr(r.status, "state", str(r.status)),
-            "ssh_credentials": {
-                "host": r.ssh_credentials.host,
-                "port": r.ssh_credentials.port,
-                "user": r.ssh_credentials.user,
-            } if r.ssh_credentials else None,
-            "created_at": str(r.created_at) if r.created_at else None,
+            "rental_id": rental.rental_id,
+            "status": getattr(rental, "status", None),
+            "ssh_command": getattr(rental, "ssh_command", None),
+            "ip_address": getattr(rental, "ip_address", None),
+            "hourly_cost": getattr(rental, "hourly_cost", None),
+            "created_at": getattr(rental, "created_at", None),
         }
 
     # ------------------------------------------------------------------

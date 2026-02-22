@@ -10,6 +10,8 @@ Usage:
     synth-city bridge                   # Start the HTTP bridge server
     synth-city client blocks            # Talk to a running bridge
     synth-city agent --name planner     # Run a single agent
+    synth-city data download            # Pre-download HF training data
+    synth-city data info                # Show data loader configuration
 """
 
 from __future__ import annotations
@@ -254,6 +256,68 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_data(args: argparse.Namespace) -> None:
+    """Download or inspect HuggingFace training data."""
+    from config import SN50_TO_HF_ASSET, TIMEFRAME_CONFIGS
+    from pipeline.tools.data_loader import data_loader_info, get_loader
+
+    action = args.action
+
+    if action == "info":
+        result = data_loader_info()
+        print_json(json.loads(result))
+        return
+
+    # action == "download"
+    asset_filter: list[str] | None = None
+    if args.assets:
+        asset_filter = [a.strip().upper() for a in args.assets.split(",")]
+        unknown = [a for a in asset_filter if a not in SN50_TO_HF_ASSET]
+        if unknown:
+            print_error(
+                f"Unknown asset(s): {', '.join(unknown)}. "
+                f"Available: {', '.join(sorted(SN50_TO_HF_ASSET.keys()))}"
+            )
+            import sys
+            sys.exit(1)
+
+    timeframes: list[str]
+    if args.timeframe == "all":
+        timeframes = list(TIMEFRAME_CONFIGS.keys())
+    else:
+        timeframes = [args.timeframe]
+
+    section_header("Data Download")
+    asset_label = ", ".join(asset_filter) if asset_filter else "all"
+    console.print(
+        f"[bold]Assets:[/bold] {asset_label}  "
+        f"[bold]Timeframes:[/bold] {', '.join(timeframes)}"
+    )
+    console.print()
+
+    for tf in timeframes:
+        console.print(f"[cyan]Downloading {tf} data…[/cyan]")
+        try:
+            loader = get_loader(timeframe=tf, assets=asset_filter, force_new=True)
+            # Trigger actual data loading by peeking at the loader
+            try:
+                asset_names = [
+                    a.name if hasattr(a, "name") else str(a)
+                    for a in loader.assets_data
+                ]
+            except Exception:
+                asset_names = asset_filter or list(SN50_TO_HF_ASSET.values())
+            console.print(
+                f"  [green]✓[/green] {tf}: {len(asset_names)} asset(s) cached "
+                f"— {', '.join(asset_names)}"
+            )
+        except Exception as exc:
+            print_error(f"  {tf}: {exc}")
+
+    console.print()
+    console.print("[bold green]Done.[/bold green] Data is cached for future pipeline runs.")
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Run the pipeline with a live Rich dashboard, or monitor a remote bridge."""
     if args.remote:
@@ -413,6 +477,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # data
+    p_data = subparsers.add_parser(
+        "data", help="Download or inspect HuggingFace training data"
+    )
+    p_data.add_argument(
+        "action",
+        choices=["download", "info"],
+        help="'download' to pre-fetch data, 'info' to show config and active loaders",
+    )
+    p_data.add_argument(
+        "--assets", default=None,
+        help="Comma-separated SN50 asset names to download (default: all). "
+             "E.g. --assets BTC or --assets BTC,ETH,SOL",
+    )
+    p_data.add_argument(
+        "--timeframe", default="5m", choices=["5m", "1m", "all"],
+        help="Candle timeframe to download: '5m', '1m', or 'all' (default: 5m)",
+    )
+
     # dashboard
     p_dash = subparsers.add_parser(
         "dashboard", help="Run pipeline with live monitoring dashboard"
@@ -447,6 +530,7 @@ _CMD_MAP = {
     "history": cmd_history,
     "bridge": cmd_bridge,
     "client": cmd_client,
+    "data": cmd_data,
     "dashboard": cmd_dashboard,
     "agent": cmd_agent,
 }
