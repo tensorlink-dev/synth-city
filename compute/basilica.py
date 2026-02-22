@@ -13,6 +13,8 @@ Verda, etc.).  This module adds:
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from typing import Any
 
 from basilica import BasilicaClient as _SdkClient
@@ -185,18 +187,72 @@ class BasilicaGPUClient:
         return self._client.get_balance()
 
     def ensure_ssh_key(self, name: str = "synth-city", public_key_path: str | None = None) -> str:
-        """Register an SSH key if one is not already registered.
+        """Ensure the Basilica-registered SSH key matches the local key.
 
-        Returns the SSH key ID.
+        If no local key exists, one is generated automatically
+        (``ssh-keygen -t ed25519``).  If the Basilica-registered key doesn't
+        match the local public key (stale key from a previous machine or
+        regenerated keypair), the old key is deleted and the current one is
+        registered.
+
+        Returns the SSH key ID that matches the local private key.
         """
+        pub_path = os.path.expanduser(public_key_path or "~/.ssh/id_ed25519.pub")
+        if not pub_path.endswith(".pub"):
+            raise ValueError(
+                f"public_key_path must end with '.pub', got {pub_path!r}. "
+                "Pass the public key path, not the private key path."
+            )
+        priv_path = pub_path[:-4]  # strip ".pub"
+
+        # Generate a keypair when neither file exists.
+        if not os.path.exists(pub_path):
+            if not os.path.exists(priv_path):
+                logger.info("No SSH key found at %s — generating ed25519 keypair", priv_path)
+                os.makedirs(os.path.dirname(priv_path), exist_ok=True)
+                subprocess.run(
+                    [
+                        "ssh-keygen", "-t", "ed25519",
+                        "-f", priv_path,
+                        "-N", "",           # empty passphrase
+                        "-C", "synth-city",
+                    ],
+                    check=True,
+                    capture_output=True,
+                )
+            else:
+                raise FileNotFoundError(
+                    f"Private key exists at {priv_path} but public key is missing at {pub_path}. "
+                    "Regenerate the public key with: ssh-keygen -y -f <private_key> > <public_key>"
+                )
+
+        with open(pub_path) as f:
+            local_pub_key = f.read().strip()
+
         existing = self._client.get_ssh_key()
         if existing:
-            logger.info("SSH key already registered: %s (id=%s)", existing.name, existing.id)
-            return existing.id
+            # Compare the key material (ignore trailing comment / whitespace
+            # differences by comparing just the type+data portion).
+            remote_parts = (existing.public_key or "").strip().split()[:2]
+            local_parts = local_pub_key.split()[:2]
+            if remote_parts == local_parts:
+                logger.info(
+                    "SSH key already registered and matches local key: %s (id=%s)",
+                    existing.name, existing.id,
+                )
+                return existing.id
+
+            # Key mismatch — delete the stale remote key and re-register.
+            logger.warning(
+                "Registered SSH key %r (id=%s) does NOT match local key at %s. "
+                "Deleting stale key and re-registering.",
+                existing.name, existing.id, pub_path,
+            )
+            self._client.delete_ssh_key()
 
         resp = self._client.register_ssh_key(
             name=name,
-            public_key_path=public_key_path or "~/.ssh/id_ed25519.pub",
+            public_key=local_pub_key,
         )
         logger.info("Registered SSH key: %s (id=%s)", resp.name, resp.id)
         return resp.id
