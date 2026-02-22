@@ -522,29 +522,32 @@ def setup_basilica_pod(
         # Build setup commands.
         # * ``python3 -m pip`` — ensures packages install for the same
         #   interpreter that ``run_experiment_on_basilica`` invokes.
-        # * ``--break-system-packages`` — required on Debian 12+ / Ubuntu
-        #   23.04+ which enforce PEP 668 (externally-managed-environment).
-        # * Final ``python3 -c …`` — smoke-tests the import so we fail
-        #   fast instead of reporting "ready" with a broken environment.
-        _pip = "python3 -m pip install --break-system-packages"
+        # * ``PIP_BREAK_SYSTEM_PACKAGES=1`` — required on Debian 12+ /
+        #   Ubuntu 23.04+ which enforce PEP 668.  Set as env-var rather
+        #   than CLI flag so older pip versions silently ignore it.
+        # * Final ``python3 <<'PYEOF'`` — smoke-tests the import so we
+        #   fail fast instead of reporting "ready" with a broken env.
+        _pip = "python3 -m pip install --quiet"
         hf_token_export = f'export HF_TOKEN="{HF_TOKEN}"' if HF_TOKEN else ""
         setup_script = (
             f"set -e\n"
-            f"{_pip} --quiet --upgrade pip\n"
-            f"{_pip} --quiet {shlex.quote(osm_install)}\n"
-            f"{_pip} --quiet huggingface_hub pyarrow pandas numpy torch\n"
-            f"python3 -c \""
-            f"tried = ['src.research.agent_api', 'research.agent_api']\\n"
-            f"for m in tried:\\n"
-            f"    try:\\n"
-            f"        __import__(m)\\n"
-            f"        break\\n"
-            f"    except ImportError:\\n"
-            f"        pass\\n"
-            f"else:\\n"
-            f"    raise ImportError("
-            f"'ResearchSession not importable after install; tried ' "
-            f"+ str(tried))\"\n"
+            f"export PIP_BREAK_SYSTEM_PACKAGES=1\n"
+            f"{_pip} --upgrade pip\n"
+            f"{_pip} {shlex.quote(osm_install)}\n"
+            f"{_pip} huggingface_hub pyarrow pandas numpy torch\n"
+            "python3 <<'PYEOF'\n"
+            "tried = ['src.research.agent_api', 'research.agent_api']\n"
+            "for m in tried:\n"
+            "    try:\n"
+            "        __import__(m)\n"
+            "        break\n"
+            "    except ImportError:\n"
+            "        pass\n"
+            "else:\n"
+            "    raise ImportError(\n"
+            "        'ResearchSession not importable after install; "
+            "tried ' + str(tried))\n"
+            "PYEOF\n"
         )
         if hf_token_export:
             setup_script += (
