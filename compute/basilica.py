@@ -107,7 +107,11 @@ class BasilicaGPUClient:
     ) -> SecureCloudRentalResponse:
         """Rent the cheapest currently-available GPU within the budget.
 
-        Raises ``RuntimeError`` if no offerings match.
+        Tries offerings from cheapest to most expensive.  Some provider
+        offerings may be incompatible (e.g. "Operating system is not valid
+        for this instance type") — those are skipped automatically.
+
+        Raises ``RuntimeError`` if no offerings match or all fail.
         """
         offerings = self.list_cheap_gpus()
         if not offerings:
@@ -115,15 +119,32 @@ class BasilicaGPUClient:
                 f"No GPU offerings available within ${self.max_hourly_rate}/hr "
                 f"for types {self.allowed_gpu_types}"
             )
-        cheapest = offerings[0]
-        logger.info(
-            "Auto-selecting cheapest offering: %s %s @ $%s/hr (id=%s)",
-            cheapest.gpu_type,
-            "(Spot)" if cheapest.is_spot else "",
-            cheapest.hourly_rate,
-            cheapest.id,
+
+        errors: list[tuple[str, str]] = []
+        for offering in offerings:
+            logger.info(
+                "Trying offering: %s %s @ $%s/hr (id=%s)",
+                offering.gpu_type,
+                "(Spot)" if offering.is_spot else "",
+                offering.hourly_rate,
+                offering.id,
+            )
+            try:
+                return self.rent_gpu(offering.id, ssh_public_key_id=ssh_public_key_id)
+            except Exception as exc:
+                msg = str(exc)
+                errors.append((offering.id, msg))
+                logger.warning(
+                    "Offering %s failed: %s — trying next offering",
+                    offering.id,
+                    msg,
+                )
+
+        # All offerings failed
+        details = "; ".join(f"{oid}: {err}" for oid, err in errors)
+        raise RuntimeError(
+            f"All {len(offerings)} GPU offerings failed. Errors: {details}"
         )
-        return self.rent_gpu(cheapest.id, ssh_public_key_id=ssh_public_key_id)
 
     def stop_rental(self, rental_id: str) -> dict[str, Any]:
         """Stop a secure-cloud rental and return cost summary."""
