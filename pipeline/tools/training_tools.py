@@ -159,7 +159,9 @@ def list_available_gpus() -> str:
 @tool(
     description=(
         "Register an SSH public key with Basilica for GPU pod access. "
-        "Idempotent — if a key is already registered it returns the existing key ID. "
+        "Verifies the registered key matches the local key — if they differ, "
+        "the stale remote key is replaced automatically. "
+        "Generates a new ed25519 keypair if no local key exists. "
         "Defaults to ~/.ssh/id_ed25519.pub when no path is provided. "
         "Must be called at least once before renting GPU pods."
     ),
@@ -179,7 +181,7 @@ def list_available_gpus() -> str:
     },
 )
 def register_ssh_key(name: str = "synth-city", public_key_path: str = "") -> str:
-    """Register an SSH public key with Basilica (idempotent)."""
+    """Register an SSH public key with Basilica (idempotent, verifies key match)."""
     try:
         client = _get_gpu_client()
         key_id = client.ensure_ssh_key(
@@ -303,12 +305,15 @@ def _ssh_run(
     ssh_cmd = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
         "-o", "BatchMode=yes",
         "-o", "ConnectTimeout=30",
         "-p", str(port),
     ]
     if key_path and os.path.exists(key_path):
         ssh_cmd += ["-i", key_path]
+    else:
+        logger.warning("SSH private key not found at %s — connection will likely fail", key_path)
     ssh_cmd += [f"{user}@{host}", command]
 
     proc = subprocess.run(
@@ -396,6 +401,18 @@ def setup_basilica_pod(
     """Install open-synth-miner + deps on a Basilica pod and configure HF token."""
     key = ssh_key_path or _DEFAULT_SSH_KEY
     try:
+        # Ensure the Basilica-registered key matches our local key *before*
+        # we start polling the pod.  This is the most common cause of
+        # "Permission denied (publickey)" failures — a stale key was
+        # registered from a previous run or a different machine.
+        try:
+            client = _get_gpu_client()
+            client.ensure_ssh_key(
+                public_key_path=key + ".pub" if not key.endswith(".pub") else key,
+            )
+        except Exception as e:
+            logger.warning("Could not verify SSH key registration: %s", e)
+
         # Poll for SSH readiness (up to 5 minutes)
         creds = None
         deadline = time.time() + 300
@@ -419,11 +436,28 @@ def setup_basilica_pod(
             for e in ssh_errors:
                 if not deduped or e != deduped[-1]:
                     deduped.append(e)
+
+            # Add diagnostic info about key mismatch
+            key_info = "unknown"
+            try:
+                key_info = f"local_key_exists={os.path.exists(key)}"
+                pub_path = key + ".pub" if not key.endswith(".pub") else key
+                key_info += f", local_pub_exists={os.path.exists(pub_path)}"
+            except Exception:
+                pass
+
             return json.dumps({
                 "error": "Pod did not become SSH-accessible within 5 minutes.",
                 "rental_id": rental_id,
                 "ssh_attempts": len(ssh_errors),
                 "ssh_errors": deduped[-10:],  # last 10 unique errors
+                "key_path": key,
+                "key_diagnostics": key_info,
+                "hint": (
+                    "If you see 'Permission denied (publickey)', the registered "
+                    "Basilica SSH key may not match your local key. Try calling "
+                    "register_ssh_key() to force re-registration."
+                ),
             })
 
         host, port, user = creds["host"], creds["port"], creds["user"]
