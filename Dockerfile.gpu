@@ -30,9 +30,11 @@ RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner
         -e /app/open-synth-miner 2>/dev/null || true
 ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
 
-# Install training dependencies
+# Install training dependencies (torch with CUDA 12.1 support matching base image)
 RUN pip install --break-system-packages --no-cache-dir \
-    torch huggingface_hub pyarrow pandas numpy flask
+    torch --index-url https://download.pytorch.org/whl/cu121
+RUN pip install --break-system-packages --no-cache-dir \
+    huggingface_hub pyarrow pandas numpy flask
 
 # Copy only the training server (small, changes often → last layer)
 COPY compute/training_server.py /app/training_server.py

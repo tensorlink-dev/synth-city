@@ -13,12 +13,13 @@ GET  /gpu             → ``nvidia-smi`` output for diagnostics
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import subprocess
 import traceback
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 logging.basicConfig(
     level=logging.INFO,
@@ -180,7 +181,11 @@ def train():
             logger.warning("session.run() rejected data_loader kwarg, retrying without")
             result = session.run(experiment, **run_kwargs)
 
-        return jsonify(result)
+        # Use default=str to handle numpy floats, datetime, torch tensors, etc.
+        return Response(
+            json.dumps(result, default=str),
+            content_type="application/json",
+        )
 
     except Exception as exc:
         logger.error("Training failed: %s", exc, exc_info=True)
