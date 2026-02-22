@@ -30,15 +30,18 @@ import sys
 import time
 
 from config import (
+    BASILICA_DEPLOY_IMAGE,
     HF_TOKEN,
     HF_TRAINING_DATA_REPO,
     SN50_TO_HF_ASSET,
     TIMEFRAME_CONFIGS,
     WORKSPACE_DIR,
 )
+from pipeline.monitor import get_monitor
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+_mon = get_monitor()
 
 # Default SSH key — can be overridden per call
 _DEFAULT_SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
@@ -533,18 +536,19 @@ def setup_basilica_pod(
             f"{_pip} --quiet --upgrade pip\n"
             f"{_pip} --quiet {shlex.quote(osm_install)}\n"
             f"{_pip} --quiet huggingface_hub pyarrow pandas numpy torch\n"
-            f"python3 -c \""
-            f"tried = ['src.research.agent_api', 'research.agent_api']\\n"
-            f"for m in tried:\\n"
-            f"    try:\\n"
-            f"        __import__(m)\\n"
-            f"        break\\n"
-            f"    except ImportError:\\n"
-            f"        pass\\n"
-            f"else:\\n"
-            f"    raise ImportError("
-            f"'ResearchSession not importable after install; tried ' "
-            f"+ str(tried))\"\n"
+            f"python3 << 'PYEOF'\n"
+            f"tried = ['src.research.agent_api', 'research.agent_api']\n"
+            f"for m in tried:\n"
+            f"    try:\n"
+            f"        __import__(m)\n"
+            f"        break\n"
+            f"    except ImportError:\n"
+            f"        pass\n"
+            f"else:\n"
+            f"    raise ImportError(\n"
+            f"        'ResearchSession not importable after install; tried ' "
+            f"+ str(tried))\n"
+            f"PYEOF\n"
         )
         if hf_token_export:
             setup_script += (
@@ -793,4 +797,356 @@ except Exception as exc:
         return json.dumps({
             "error": f"{type(exc).__name__}: {exc}",
             "rental_id": rental_id,
+        })
+
+
+# ---------------------------------------------------------------------------
+# Basilica deployment-based training (Docker image approach)
+# ---------------------------------------------------------------------------
+
+# HTTP timeout for training requests to a deployment (seconds)
+_DEPLOY_TRAIN_TIMEOUT = 7200
+
+_DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
+
+
+@tool(
+    description=(
+        "Create a Basilica GPU deployment running the synth-city training server "
+        "Docker image. The deployment starts a pre-built container with "
+        "open-synth-miner already installed — no SSH or pip install needed. "
+        "Returns the deployment URL for sending training requests. "
+        "name: deployment name (default: auto-generated). "
+        "image: Docker image (default: from config). "
+        "gpu_models: list of acceptable GPU models (e.g. ['A4000']). "
+        "env: extra environment variables as JSON dict."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Deployment name (default: synth-city-trainer)",
+            },
+            "image": {
+                "type": "string",
+                "description": "Docker image to deploy (default: from config)",
+            },
+            "gpu_models": {
+                "type": "string",
+                "description": "JSON list of GPU model names, e.g. '[\"A4000\"]'",
+            },
+            "env": {
+                "type": "string",
+                "description": "Extra env vars as JSON dict",
+            },
+        },
+        "required": [],
+    },
+)
+def create_training_deployment(
+    name: str = "",
+    image: str = "",
+    gpu_models: str = "",
+    env: str = "",
+) -> str:
+    """Create a Basilica deployment with the synth-city GPU training image."""
+    try:
+        client = _get_gpu_client()
+        deploy_name = name or _DEPLOYMENT_NAME_PREFIX
+        deploy_image = image or BASILICA_DEPLOY_IMAGE
+        gpu_list = json.loads(gpu_models) if gpu_models else None
+        env_dict = json.loads(env) if env else {}
+
+        # Inject HF_TOKEN so the pod can download training data
+        if HF_TOKEN and "HF_TOKEN" not in env_dict:
+            env_dict["HF_TOKEN"] = HF_TOKEN
+
+        resp = client.create_deployment(
+            name=deploy_name,
+            image=deploy_image,
+            gpu_models=gpu_list,
+            env=env_dict,
+        )
+        return json.dumps({
+            "status": "created",
+            "instance_name": resp.instance_name,
+            "url": resp.url,
+            "phase": resp.phase,
+            "share_url": getattr(resp, "share_url", None),
+            "share_token": getattr(resp, "share_token", None),
+            "image": deploy_image,
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
+        "Check the status of a Basilica training deployment. "
+        "Returns phase (Pending/Running/Failed), URL, and pod info."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Deployment instance name",
+            },
+        },
+        "required": ["name"],
+    },
+)
+def get_training_deployment(name: str) -> str:
+    """Get deployment status."""
+    try:
+        client = _get_gpu_client()
+        resp = client.get_deployment(name)
+        return json.dumps({
+            "instance_name": resp.instance_name,
+            "phase": resp.phase,
+            "url": resp.url,
+            "message": getattr(resp, "message", ""),
+            "replicas": getattr(resp, "replicas", None),
+            "created_at": str(getattr(resp, "created_at", "")),
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
+        "Get logs from a Basilica training deployment. "
+        "Useful for debugging startup or training failures."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Deployment instance name",
+            },
+            "tail": {
+                "type": "integer",
+                "description": "Number of log lines to return (default: 100)",
+            },
+        },
+        "required": ["name"],
+    },
+)
+def get_deployment_logs(name: str, tail: int = 100) -> str:
+    """Retrieve logs from a deployment."""
+    try:
+        client = _get_gpu_client()
+        logs = client.get_deployment_logs(name, tail=tail)
+        return json.dumps({"instance_name": name, "logs": logs})
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description="List all Basilica deployments for this account.",
+)
+def list_deployments() -> str:
+    """List all deployments."""
+    try:
+        client = _get_gpu_client()
+        deployments = client.list_deployments()
+        return json.dumps({
+            "deployments": deployments,
+            "count": len(deployments),
+        }, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
+        "Delete a Basilica training deployment and free GPU resources. "
+        "Always call this when training is complete."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Deployment instance name",
+            },
+        },
+        "required": ["name"],
+    },
+)
+def delete_training_deployment(name: str) -> str:
+    """Delete a deployment."""
+    try:
+        client = _get_gpu_client()
+        result = client.delete_deployment(name)
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
+        "Run an experiment on a Basilica training deployment via HTTP. "
+        "The deployment must be running (created with create_training_deployment). "
+        "Sends the experiment config to the training server and returns CRPS metrics. "
+        "deployment_url: the URL from create_training_deployment. "
+        "experiment: experiment config JSON from create_experiment. "
+        "epochs: training epochs. "
+        "timeframe: '5m' or '1m'."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "deployment_url": {
+                "type": "string",
+                "description": "Deployment URL (from create_training_deployment)",
+            },
+            "experiment": {
+                "type": "string",
+                "description": "Experiment config JSON",
+            },
+            "epochs": {
+                "type": "integer",
+                "description": "Training epochs (default: 1)",
+            },
+            "timeframe": {
+                "type": "string",
+                "enum": ["5m", "1m"],
+                "description": "Data timeframe: '5m' (288-step) or '1m' (60-step)",
+            },
+            "share_token": {
+                "type": "string",
+                "description": (
+                    "Share token for private deployments "
+                    "(from create_training_deployment)"
+                ),
+            },
+        },
+        "required": ["deployment_url", "experiment"],
+    },
+)
+def run_experiment_on_deployment(
+    deployment_url: str,
+    experiment: str,
+    epochs: int = 1,
+    timeframe: str = "5m",
+    share_token: str = "",
+) -> str:
+    """Run a training experiment on a Basilica deployment via HTTP."""
+    import urllib.error
+    import urllib.request
+
+    try:
+        exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
+        # Keep a copy with timeframe for provenance
+        timeframe_tag = exp_dict.pop("timeframe", None) or timeframe
+        _mon.emit("experiment", "experiment_start", name=f"deploy:{timeframe_tag}")
+
+        tf_cfg = TIMEFRAME_CONFIGS.get(timeframe, TIMEFRAME_CONFIGS["5m"])
+        asset_files = {
+            hf_name: f"data/{hf_name}/{tf_cfg['file_suffix']}"
+            for hf_name in SN50_TO_HF_ASSET.values()
+        }
+
+        payload = {
+            "experiment": exp_dict,
+            "epochs": epochs,
+            "timeframe": timeframe,
+            "hf_repo": HF_TRAINING_DATA_REPO,
+            "asset_files": asset_files,
+            "input_len": int(tf_cfg["input_len"]),
+            "pred_len": int(tf_cfg["pred_len"]),
+        }
+
+        # Build the /train URL
+        url = deployment_url.rstrip("/")
+        if share_token:
+            url += f"/train?token={share_token}"
+        else:
+            url += "/train"
+
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        with urllib.request.urlopen(req, timeout=_DEPLOY_TRAIN_TIMEOUT) as resp:
+            result_text = resp.read().decode()
+
+        # Parse the result
+        try:
+            result = json.loads(result_text)
+        except json.JSONDecodeError:
+            _mon.emit(
+                "system", "error",
+                message="Could not parse JSON from training server",
+            )
+            return json.dumps({
+                "status": "error",
+                "error": "Could not parse JSON from training server",
+                "raw_output": result_text[:15000],
+            })
+
+        # --- Result tracking (mirrors run_experiment in research_tools) ---
+
+        # Restore timeframe tag for provenance
+        exp_dict["timeframe"] = timeframe_tag
+
+        # Persist to Hippius (best-effort)
+        try:
+            from pipeline.tools.hippius_store import save_experiment_result
+            save_experiment_result(f"deploy-{timeframe_tag}", exp_dict, result)
+        except Exception:
+            pass
+
+        # Emit monitor event
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+        _mon.emit(
+            "experiment", "experiment_result",
+            name=f"deploy:{timeframe_tag}",
+            crps=metrics.get("crps"),
+            status=status,
+        )
+
+        return json.dumps(result, indent=2, default=str)
+
+    except urllib.error.HTTPError as exc:
+        error_body = ""
+        try:
+            error_body = exc.read().decode()[:5000]
+        except Exception:
+            pass
+        _mon.emit("system", "error", message=f"Deployment HTTP {exc.code}: {exc.reason}")
+        return json.dumps({
+            "status": "error",
+            "error": f"HTTP {exc.code}: {exc.reason}",
+            "response_body": error_body,
+        })
+    except urllib.error.URLError as exc:
+        _mon.emit("system", "error", message=f"Deployment connection failed: {exc.reason}")
+        return json.dumps({
+            "status": "error",
+            "error": f"Connection failed: {exc.reason}",
+            "hint": (
+                "The deployment may still be starting up. "
+                "Check get_training_deployment() for phase status."
+            ),
+        })
+    except TimeoutError:
+        _mon.emit("system", "error", message="Deployment training timed out")
+        return json.dumps({
+            "status": "error",
+            "error": f"Training request timed out after {_DEPLOY_TRAIN_TIMEOUT}s.",
+        })
+    except Exception as exc:
+        _mon.emit("system", "error", message=f"run_experiment_on_deployment: {exc}")
+        return json.dumps({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
         })

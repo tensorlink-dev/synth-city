@@ -48,6 +48,18 @@ BASILICA_ALLOWED_GPU_TYPES: list[str] = [
     for s in os.getenv("BASILICA_ALLOWED_GPU_TYPES", "TESLA V100,RTX-A4000,RTX-A6000").split(",")
     if s.strip()
 ]
+# Deployment-based training — Docker image with open-synth-miner pre-installed
+BASILICA_DEPLOY_IMAGE: str = os.getenv(
+    "BASILICA_DEPLOY_IMAGE", "ghcr.io/tensorlink-dev/synth-city-gpu:latest"
+)
+BASILICA_DEPLOY_GPU_MODELS: list[str] = [
+    s.strip()
+    for s in os.getenv("BASILICA_DEPLOY_GPU_MODELS", "").split(",")
+    if s.strip()
+]
+BASILICA_DEPLOY_MIN_GPU_MEMORY_GB: int = int(
+    os.getenv("BASILICA_DEPLOY_MIN_GPU_MEMORY_GB", "12")
+)
 
 # ---------------------------------------------------------------------------
 # Bittensor

@@ -14,11 +14,64 @@ identify the best architecture.
 **Do NOT call `run_experiment` or `run_preset` to train models on the local machine.**
 The controller has no GPU. Running training locally will exhaust RAM and get killed.
 
-**Always use the Basilica remote training flow below.**
+**Always use one of the Basilica remote training flows below.**
 
 ---
 
-## Basilica Training Flow (required for all model training)
+## Deployment Training Flow (RECOMMENDED)
+
+Deployments use a pre-built Docker image with open-synth-miner already installed.
+No SSH, no pip install, no setup step — just create and send requests.
+
+### Step 0: Create the deployment
+```
+create_training_deployment()
+# → returns instance_name, url, share_token, phase
+```
+
+### Step 1: Wait for deployment to be ready
+```
+get_training_deployment(name="<instance_name>")
+# Poll until phase is "Running". Usually takes 1-3 minutes.
+```
+
+### Step 2: Create experiment config (locally — lightweight, no training)
+```
+create_experiment(
+    blocks='["RevIN", "TransformerBlock", "LSTMBlock"]',
+    head="SDEHead",
+    timeframe="5m",
+    d_model=64,
+    n_paths=100,
+    lr=0.001
+)
+```
+`create_experiment` only builds a config dict — it does NOT train.
+
+### Step 3: Run training on the deployment
+```
+run_experiment_on_deployment(
+    deployment_url="<url from step 0>",
+    experiment='<config JSON from create_experiment>',
+    epochs=1,
+    timeframe="5m",
+    share_token="<token from step 0>"
+)
+```
+The pod downloads HF data itself and returns metrics including `crps`.
+Train BOTH timeframes (5m then 1m) on the same deployment.
+
+### Step 4: Delete the deployment when done
+```
+delete_training_deployment(name="<instance_name>")
+```
+Always delete the deployment after all experiments finish.
+
+If deployment creation fails or is unavailable, fall back to the SSH rental flow below.
+
+---
+
+## SSH Rental Training Flow (fallback)
 
 ### Step 0: Rent a GPU
 ```

@@ -49,6 +49,13 @@ class TrainerAgent(BaseAgentWrapper):
             "check_gpu_balance",
             "setup_basilica_pod",
             "run_experiment_on_basilica",
+            # Basilica deployments — Docker-image-based GPU pods (recommended)
+            "create_training_deployment",
+            "get_training_deployment",
+            "get_deployment_logs",
+            "list_deployments",
+            "delete_training_deployment",
+            "run_experiment_on_deployment",
         ]
         return build_toolset(*tool_names)
 
