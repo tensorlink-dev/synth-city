@@ -47,13 +47,18 @@ def publish(skill_dir: Path, version: str | None) -> int:
 
     for attempt in range(1, _MAX_RETRIES + 1):
         print(f"Publishing (attempt {attempt}/{_MAX_RETRIES}): {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=False, text=True)  # noqa: S603
+        result = subprocess.run(cmd, capture_output=True, text=True)  # noqa: S603
+
+        # Always forward output so the user can see it
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="", file=sys.stderr)
 
         if result.returncode == 0:
             return 0
 
-        # Collect any output that may have been captured
-        combined = (result.stdout or "") + (result.stderr or "")
+        combined = result.stdout + result.stderr
 
         if not _is_rate_limit_error(combined) or attempt == _MAX_RETRIES:
             # Non-rate-limit failure, or we've exhausted all retries
