@@ -48,6 +48,23 @@ _SETUP_TIMEOUT = 600
 # Timeout for a single training run on the pod (seconds) — 2 h
 _TRAIN_TIMEOUT = 7200
 
+# Regex for benign nvidia-smi warnings that do not indicate GPU problems.
+# infoROM corruption is a metadata-only issue and does not affect compute.
+_BENIGN_GPU_WARNING_RE = re.compile(
+    r"^WARNING:\s*infoROM is corrupted at gpu \S+\s*$", re.MULTILINE,
+)
+
+
+def _clean_gpu_info(raw: str) -> str:
+    """Strip benign nvidia-smi warnings that mislead the agent into thinking
+    the GPU is broken. The infoROM corruption warning, for example, only means
+    the small EEPROM storing card metadata has a bad checksum — compute is
+    unaffected."""
+    cleaned = _BENIGN_GPU_WARNING_RE.sub("", raw)
+    # Collapse runs of blank lines left behind by the removal.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 # ---------------------------------------------------------------------------
 # Local execution
 # ---------------------------------------------------------------------------
@@ -654,7 +671,7 @@ except Exception as exc:
                 _, gpu_out, _ = _ssh_run(
                     host, port, user, "nvidia-smi", key_path=key, timeout=15,
                 )
-                gpu_info = gpu_out.strip()
+                gpu_info = _clean_gpu_info(gpu_out)
             except Exception:
                 gpu_info = "(nvidia-smi unavailable)"
 
@@ -703,7 +720,7 @@ except Exception as exc:
                 creds2["host"], creds2["port"], creds2["user"],
                 "nvidia-smi", key_path=key, timeout=15,
             )
-            gpu_info = gpu_out.strip()
+            gpu_info = _clean_gpu_info(gpu_out)
         except Exception:
             pass
         return json.dumps({
