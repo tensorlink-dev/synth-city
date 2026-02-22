@@ -20,20 +20,22 @@ RUN apt-get update && \
 # Alias python3 → python for convenience
 RUN ln -sf /usr/bin/python3 /usr/bin/python
 
+# Upgrade pip so all subsequent installs work reliably
+RUN pip install --no-cache-dir --upgrade pip
+
 WORKDIR /app
 
 # Install open-synth-miner (changes less often → cached layer)
 ARG OSM_REPO=https://github.com/tensorlink-dev/open-synth-miner.git
 ARG OSM_BRANCH=main
 RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner && \
-    pip install --break-system-packages --no-cache-dir \
-        -e /app/open-synth-miner 2>/dev/null || true
+    pip install --no-cache-dir -e /app/open-synth-miner 2>/dev/null || true
 ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
 
 # Install training dependencies (torch with CUDA 12.1 support matching base image)
-RUN pip install --break-system-packages --no-cache-dir \
+RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cu121
-RUN pip install --break-system-packages --no-cache-dir \
+RUN pip install --no-cache-dir \
     huggingface_hub pyarrow pandas numpy flask
 
 # Copy only the training server (small, changes often → last layer)
