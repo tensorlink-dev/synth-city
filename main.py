@@ -34,12 +34,30 @@ import argparse
 import json
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
 
+from config import LOG_DIR, LOG_LEVEL
+
+_LOG_FORMAT = "%(asctime)s [%(name)s] %(levelname)s: %(message)s"
+
+# Console handler — same as before
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    level=getattr(logging, LOG_LEVEL.upper(), logging.INFO),
+    format=_LOG_FORMAT,
     datefmt="%H:%M:%S",
 )
+
+# File handler — persists full logs to disk with rotation
+_file_handler = RotatingFileHandler(
+    LOG_DIR / "synth-city.log",
+    maxBytes=20 * 1024 * 1024,  # 20 MB per file
+    backupCount=5,
+    encoding="utf-8",
+)
+_file_handler.setLevel(logging.DEBUG)
+_file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
+logging.getLogger().addHandler(_file_handler)
+
 logger = logging.getLogger("synth-city")
 
 

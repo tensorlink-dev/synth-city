@@ -211,7 +211,7 @@ class PipelineOrchestrator:
                 logger.error(
                     "%s failed — aborting pipeline. Last failure: %s",
                     stage.name,
-                    result.raw_text[:1000],
+                    result.raw_text[:5000],
                 )
                 _mon.emit("pipeline", "pipeline_complete", success=False)
                 return results
@@ -293,7 +293,7 @@ class PipelineOrchestrator:
             attempt=1,
             temperature=temp,
             success=result.success,
-            error=result.raw_text[:500] if not result.success else None,
+            error=result.raw_text[:3000] if not result.success else None,
         )
 
         return result
@@ -355,7 +355,7 @@ class PipelineOrchestrator:
             # Inject failure context from previous attempt, or use default
             if last_result and not last_result.success:
                 task["user_message"] = (
-                    f"Previous attempt failed. Error: {last_result.raw_text[:1000]}\n\n"
+                    f"Previous attempt failed. Error: {last_result.raw_text[:5000]}\n\n"
                     f"Please try a different approach. Attempt {attempt + 1}/{max_retries}."
                 )
 
@@ -378,7 +378,7 @@ class PipelineOrchestrator:
                 attempt=attempt + 1,
                 temperature=temp,
                 success=result.success,
-                error=result.raw_text[:500] if not result.success else None,
+                error=result.raw_text[:3000] if not result.success else None,
             )
 
             if result.success:
@@ -389,7 +389,7 @@ class PipelineOrchestrator:
                 "%s attempt %d failed: %s",
                 stage_name,
                 attempt + 1,
-                result.raw_text[:500],
+                result.raw_text[:3000],
             )
 
             # Stop retrying if the error is non-recoverable (e.g. missing dependency)
@@ -456,7 +456,7 @@ class PipelineOrchestrator:
             # Debug
             temp = base_temp + (attempt * temp_step)
             logger.info("CodeChecker failed — running Debugger (attempt %d)", attempt + 1)
-            task["error_report"] = check_result.raw_text[:3000]
+            task["error_report"] = check_result.raw_text[:10000]
 
             # Stall detection: compare experiment JSON across attempts
             current_exp = task.get("best_experiment", "")
