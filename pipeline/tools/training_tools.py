@@ -55,6 +55,33 @@ _BENIGN_GPU_WARNING_RE = re.compile(
 )
 
 
+def _fix_pip_install_spec(spec: str) -> str:
+    """Fix a common LLM mistake: ``git+URL[extras]`` is invalid pip syntax.
+
+    pip reads ``[extras]`` as part of the URL, so git tries to clone a
+    repository that doesn't exist.  The correct PEP 508 form is::
+
+        package[extras] @ git+URL
+
+    This helper detects the broken pattern and rewrites it.
+    """
+    m = re.match(r"^(git\+.+?)(\[[^\]]+\])$", spec.strip())
+    if not m:
+        return spec
+    url, extras = m.group(1), m.group(2)
+    # Derive the package name from the last path component of the URL,
+    # stripping .git suffix and any @ref / #fragment.
+    # e.g. git+https://github.com/org/open-synth-miner.git@v1 → open-synth-miner
+    #      git+ssh://git@github.com/org/repo.git             → repo
+    last_segment = url.rstrip("/").rsplit("/", 1)[-1]
+    pkg_name = re.sub(r"(?:\.git)?(?:[@#].*)?$", "", last_segment)
+    if not pkg_name:
+        return spec
+    fixed = f"{pkg_name}{extras} @ {url}"
+    logger.info("Rewrote malformed pip spec %r → %r", spec, fixed)
+    return fixed
+
+
 def _clean_gpu_info(raw: str) -> str:
     """Strip benign nvidia-smi warnings that mislead the agent into thinking
     the GPU is broken. The infoROM corruption warning, for example, only means
@@ -406,7 +433,14 @@ def _get_ssh_creds(rental_id: str) -> dict:
             },
             "osm_install": {
                 "type": "string",
-                "description": "pip install spec for open-synth-miner",
+                "description": (
+                    "pip install spec for open-synth-miner. "
+                    "Use 'open-synth-miner' for PyPI, or "
+                    "'git+https://github.com/tensorlink-dev/"
+                    "open-synth-miner.git' for GitHub. "
+                    "Do NOT append [extras] to git URLs — it "
+                    "will be auto-corrected if you do."
+                ),
             },
         },
         "required": ["rental_id"],
@@ -418,6 +452,7 @@ def setup_basilica_pod(
     osm_install: str = "open-synth-miner",
 ) -> str:
     """Install open-synth-miner + deps on a Basilica pod and configure HF token."""
+    osm_install = _fix_pip_install_spec(osm_install)
     key = ssh_key_path or _DEFAULT_SSH_KEY
     try:
         # Ensure the Basilica-registered key matches our local key *before*
