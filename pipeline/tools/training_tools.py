@@ -48,6 +48,50 @@ _SETUP_TIMEOUT = 600
 # Timeout for a single training run on the pod (seconds) — 2 h
 _TRAIN_TIMEOUT = 7200
 
+# Regex for benign nvidia-smi warnings that do not indicate GPU problems.
+# infoROM corruption is a metadata-only issue and does not affect compute.
+_BENIGN_GPU_WARNING_RE = re.compile(
+    r"^WARNING:\s*infoROM is corrupted at gpu \S+\s*$", re.MULTILINE,
+)
+
+
+def _fix_pip_install_spec(spec: str) -> str:
+    """Fix a common LLM mistake: ``git+URL[extras]`` is invalid pip syntax.
+
+    pip reads ``[extras]`` as part of the URL, so git tries to clone a
+    repository that doesn't exist.  The correct PEP 508 form is::
+
+        package[extras] @ git+URL
+
+    This helper detects the broken pattern and rewrites it.
+    """
+    m = re.match(r"^(git\+.+?)(\[[^\]]+\])$", spec.strip())
+    if not m:
+        return spec
+    url, extras = m.group(1), m.group(2)
+    # Derive the package name from the last path component of the URL,
+    # stripping .git suffix and any @ref / #fragment.
+    # e.g. git+https://github.com/org/open-synth-miner.git@v1 → open-synth-miner
+    #      git+ssh://git@github.com/org/repo.git             → repo
+    last_segment = url.rstrip("/").rsplit("/", 1)[-1]
+    pkg_name = re.sub(r"(?:\.git)?(?:[@#].*)?$", "", last_segment)
+    if not pkg_name:
+        return spec
+    fixed = f"{pkg_name}{extras} @ {url}"
+    logger.info("Rewrote malformed pip spec %r → %r", spec, fixed)
+    return fixed
+
+
+def _clean_gpu_info(raw: str) -> str:
+    """Strip benign nvidia-smi warnings that mislead the agent into thinking
+    the GPU is broken. The infoROM corruption warning, for example, only means
+    the small EEPROM storing card metadata has a bad checksum — compute is
+    unaffected."""
+    cleaned = _BENIGN_GPU_WARNING_RE.sub("", raw)
+    # Collapse runs of blank lines left behind by the removal.
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
 # ---------------------------------------------------------------------------
 # Local execution
 # ---------------------------------------------------------------------------
@@ -389,7 +433,14 @@ def _get_ssh_creds(rental_id: str) -> dict:
             },
             "osm_install": {
                 "type": "string",
-                "description": "pip install spec for open-synth-miner",
+                "description": (
+                    "pip install spec for open-synth-miner. "
+                    "Use 'open-synth-miner' for PyPI, or "
+                    "'git+https://github.com/tensorlink-dev/"
+                    "open-synth-miner.git' for GitHub. "
+                    "Do NOT append [extras] to git URLs — it "
+                    "will be auto-corrected if you do."
+                ),
             },
         },
         "required": ["rental_id"],
@@ -401,6 +452,7 @@ def setup_basilica_pod(
     osm_install: str = "open-synth-miner",
 ) -> str:
     """Install open-synth-miner + deps on a Basilica pod and configure HF token."""
+    osm_install = _fix_pip_install_spec(osm_install)
     key = ssh_key_path or _DEFAULT_SSH_KEY
     try:
         # Ensure the Basilica-registered key matches our local key *before*
@@ -654,7 +706,7 @@ except Exception as exc:
                 _, gpu_out, _ = _ssh_run(
                     host, port, user, "nvidia-smi", key_path=key, timeout=15,
                 )
-                gpu_info = gpu_out.strip()
+                gpu_info = _clean_gpu_info(gpu_out)
             except Exception:
                 gpu_info = "(nvidia-smi unavailable)"
 
@@ -703,7 +755,7 @@ except Exception as exc:
                 creds2["host"], creds2["port"], creds2["user"],
                 "nvidia-smi", key_path=key, timeout=15,
             )
-            gpu_info = gpu_out.strip()
+            gpu_info = _clean_gpu_info(gpu_out)
         except Exception:
             pass
         return json.dumps({
