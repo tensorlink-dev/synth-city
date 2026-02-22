@@ -516,13 +516,16 @@ def setup_basilica_pod(
 
         host, port, user = creds["host"], creds["port"], creds["user"]
 
-        # Build setup commands
+        # Build setup commands — use ``python3 -m pip`` so packages install
+        # to the same interpreter that ``run_experiment_on_basilica`` invokes
+        # via ``python3 -c ...``.  A bare ``pip`` may resolve to a different
+        # Python on provider images that ship multiple interpreters.
         hf_token_export = f'export HF_TOKEN="{HF_TOKEN}"' if HF_TOKEN else ""
         setup_script = (
             f"set -e\n"
-            f"pip install --quiet --upgrade pip\n"
-            f"pip install --quiet {shlex.quote(osm_install)}\n"
-            f"pip install --quiet huggingface_hub pyarrow pandas numpy torch\n"
+            f"python3 -m pip install --quiet --upgrade pip\n"
+            f"python3 -m pip install --quiet {shlex.quote(osm_install)}\n"
+            f"python3 -m pip install --quiet huggingface_hub pyarrow pandas numpy torch\n"
         )
         if hf_token_export:
             setup_script += (
