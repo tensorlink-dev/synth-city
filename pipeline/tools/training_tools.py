@@ -312,8 +312,10 @@ def _ssh_run(
     ]
     if key_path and os.path.exists(key_path):
         ssh_cmd += ["-i", key_path]
-    else:
+    elif key_path:
         logger.warning("SSH private key not found at %s — connection will likely fail", key_path)
+    else:
+        logger.warning("No SSH private key path specified — connection will likely fail")
     ssh_cmd += [f"{user}@{host}", command]
 
     proc = subprocess.run(

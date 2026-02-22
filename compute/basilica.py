@@ -198,7 +198,12 @@ class BasilicaGPUClient:
         Returns the SSH key ID that matches the local private key.
         """
         pub_path = os.path.expanduser(public_key_path or "~/.ssh/id_ed25519.pub")
-        priv_path = pub_path.rsplit(".pub", 1)[0]
+        if not pub_path.endswith(".pub"):
+            raise ValueError(
+                f"public_key_path must end with '.pub', got {pub_path!r}. "
+                "Pass the public key path, not the private key path."
+            )
+        priv_path = pub_path[:-4]  # strip ".pub"
 
         # Generate a keypair when neither file exists.
         if not os.path.exists(pub_path):
