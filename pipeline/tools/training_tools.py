@@ -155,16 +155,53 @@ def list_available_gpus() -> str:
 
 @tool(
     description=(
+        "Register an SSH public key with Basilica for GPU pod access. "
+        "Idempotent — if a key is already registered it returns the existing key ID. "
+        "Defaults to ~/.ssh/id_ed25519.pub when no path is provided. "
+        "Must be called at least once before renting GPU pods."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Label for the key in Basilica (default: synth-city)",
+            },
+            "public_key_path": {
+                "type": "string",
+                "description": "Path to SSH public key file (default: ~/.ssh/id_ed25519.pub)",
+            },
+        },
+        "required": [],
+    },
+)
+def register_ssh_key(name: str = "synth-city", public_key_path: str = "") -> str:
+    """Register an SSH public key with Basilica (idempotent)."""
+    try:
+        client = _get_gpu_client()
+        key_id = client.ensure_ssh_key(
+            name=name,
+            public_key_path=public_key_path or None,
+        )
+        return json.dumps({"status": "ok", "key_id": key_id})
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
         "Rent a specific GPU offering by its offering ID. "
         "Returns rental ID, SSH command, IP address, and hourly cost. "
-        "Use list_available_gpus first to find offering IDs."
+        "Use list_available_gpus first to find offering IDs. "
+        "SSH key registration is handled automatically."
     ),
 )
 def rent_gpu(offering_id: str) -> str:
     """Start a secure-cloud GPU rental for the given offering."""
     try:
         client = _get_gpu_client()
-        resp = client.rent_gpu(offering_id)
+        ssh_key_id = client.ensure_ssh_key()
+        resp = client.rent_gpu(offering_id, ssh_public_key_id=ssh_key_id)
         return json.dumps({
             "rental_id": resp.rental_id,
             "status": resp.status,
@@ -182,14 +219,16 @@ def rent_gpu(offering_id: str) -> str:
     description=(
         "Rent the cheapest available GPU within the budget cap. "
         "Automatically picks the lowest-priced offering. "
-        "Returns rental ID, SSH command, IP address, and hourly cost."
+        "Returns rental ID, SSH command, IP address, and hourly cost. "
+        "SSH key registration is handled automatically."
     ),
 )
 def rent_cheapest_gpu() -> str:
     """One-click: rent the cheapest GPU currently available."""
     try:
         client = _get_gpu_client()
-        resp = client.rent_cheapest()
+        ssh_key_id = client.ensure_ssh_key()
+        resp = client.rent_cheapest(ssh_public_key_id=ssh_key_id)
         return json.dumps({
             "rental_id": resp.rental_id,
             "status": resp.status,
@@ -488,7 +527,22 @@ input_len  = {int(tf_cfg["input_len"])}
 pred_len   = {int(tf_cfg["pred_len"])}
 
 try:
-    from src.research.agent_api import ResearchSession
+    import importlib as _il
+    _session_cls = None
+    for _mod_path in ("src.research.agent_api", "research.agent_api"):
+        try:
+            _mod = _il.import_module(_mod_path)
+            _session_cls = getattr(_mod, "ResearchSession", None)
+            if _session_cls is not None:
+                break
+        except ImportError:
+            pass
+    if _session_cls is None:
+        raise ImportError(
+            "Cannot import ResearchSession. "
+            "Install open-synth-miner: pip install open-synth-miner"
+        )
+    ResearchSession = _session_cls
     session = ResearchSession()
 
     try:
