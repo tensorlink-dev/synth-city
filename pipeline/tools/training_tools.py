@@ -37,9 +37,11 @@ from config import (
     TIMEFRAME_CONFIGS,
     WORKSPACE_DIR,
 )
+from pipeline.monitor import get_monitor
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+_mon = get_monitor()
 
 # Default SSH key — can be overridden per call
 _DEFAULT_SSH_KEY = os.path.expanduser("~/.ssh/id_ed25519")
@@ -1038,7 +1040,9 @@ def run_experiment_on_deployment(
 
     try:
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
-        exp_dict.pop("timeframe", None)
+        # Keep a copy with timeframe for provenance
+        timeframe_tag = exp_dict.pop("timeframe", None) or timeframe
+        _mon.emit("experiment", "experiment_start", name=f"deploy:{timeframe_tag}")
 
         tf_cfg = TIMEFRAME_CONFIGS.get(timeframe, TIMEFRAME_CONFIGS["5m"])
         asset_files = {
@@ -1074,16 +1078,43 @@ def run_experiment_on_deployment(
         with urllib.request.urlopen(req, timeout=_DEPLOY_TRAIN_TIMEOUT) as resp:
             result_text = resp.read().decode()
 
-        # Parse and return the result
+        # Parse the result
         try:
             result = json.loads(result_text)
-            return json.dumps(result, indent=2, default=str)
         except json.JSONDecodeError:
+            _mon.emit(
+                "system", "error",
+                message="Could not parse JSON from training server",
+            )
             return json.dumps({
                 "status": "error",
                 "error": "Could not parse JSON from training server",
                 "raw_output": result_text[:15000],
             })
+
+        # --- Result tracking (mirrors run_experiment in research_tools) ---
+
+        # Restore timeframe tag for provenance
+        exp_dict["timeframe"] = timeframe_tag
+
+        # Persist to Hippius (best-effort)
+        try:
+            from pipeline.tools.hippius_store import save_experiment_result
+            save_experiment_result(f"deploy-{timeframe_tag}", exp_dict, result)
+        except Exception:
+            pass
+
+        # Emit monitor event
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        status = result.get("status", "unknown") if isinstance(result, dict) else "unknown"
+        _mon.emit(
+            "experiment", "experiment_result",
+            name=f"deploy:{timeframe_tag}",
+            crps=metrics.get("crps"),
+            status=status,
+        )
+
+        return json.dumps(result, indent=2, default=str)
 
     except urllib.error.HTTPError as exc:
         error_body = ""
@@ -1091,12 +1122,14 @@ def run_experiment_on_deployment(
             error_body = exc.read().decode()[:5000]
         except Exception:
             pass
+        _mon.emit("system", "error", message=f"Deployment HTTP {exc.code}: {exc.reason}")
         return json.dumps({
             "status": "error",
             "error": f"HTTP {exc.code}: {exc.reason}",
             "response_body": error_body,
         })
     except urllib.error.URLError as exc:
+        _mon.emit("system", "error", message=f"Deployment connection failed: {exc.reason}")
         return json.dumps({
             "status": "error",
             "error": f"Connection failed: {exc.reason}",
@@ -1106,11 +1139,13 @@ def run_experiment_on_deployment(
             ),
         })
     except TimeoutError:
+        _mon.emit("system", "error", message="Deployment training timed out")
         return json.dumps({
             "status": "error",
             "error": f"Training request timed out after {_DEPLOY_TRAIN_TIMEOUT}s.",
         })
     except Exception as exc:
+        _mon.emit("system", "error", message=f"run_experiment_on_deployment: {exc}")
         return json.dumps({
             "status": "error",
             "error": f"{type(exc).__name__}: {exc}",
