@@ -41,6 +41,7 @@ class TrainerAgent(BaseAgentWrapper):
             "fetch_experiment_runs",
             # Basilica GPU cloud — rent, setup, train remotely, stop
             "list_available_gpus",
+            "register_ssh_key",
             "rent_gpu",
             "rent_cheapest_gpu",
             "list_active_rentals",
