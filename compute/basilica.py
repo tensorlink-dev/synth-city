@@ -1,6 +1,7 @@
 """
 Basilica GPU client — thin wrapper around the ``basilica-sdk`` package that
-restricts rentals to a configurable set of cheap GPU offerings.
+restricts rentals to a configurable set of cheap GPU offerings, and manages
+Docker-based GPU deployments for training.
 
 The official SDK talks to the Basilica secure-cloud marketplace (Hyperstack,
 Verda, etc.).  This module adds:
@@ -8,6 +9,7 @@ Verda, etc.).  This module adds:
 * **Price filtering** — only offerings ≤ ``BASILICA_MAX_HOURLY_RATE`` are shown.
 * **GPU-type allowlist** — only GPU types in ``BASILICA_ALLOWED_GPU_TYPES``.
 * **Convenience helpers** — ``rent_cheapest()`` picks the cheapest available GPU.
+* **Deployments** — Docker-image-based GPU pods via ``create_deployment()``.
 """
 
 from __future__ import annotations
@@ -18,12 +20,15 @@ import subprocess
 from typing import Any
 
 from basilica import BasilicaClient as _SdkClient
-from basilica import GpuOffering, SecureCloudRentalResponse
+from basilica import DeploymentResponse, GpuOffering, SecureCloudRentalResponse
 
 from config import (
     BASILICA_ALLOWED_GPU_TYPES,
     BASILICA_API_TOKEN,
     BASILICA_API_URL,
+    BASILICA_DEPLOY_GPU_MODELS,
+    BASILICA_DEPLOY_IMAGE,
+    BASILICA_DEPLOY_MIN_GPU_MEMORY_GB,
     BASILICA_MAX_HOURLY_RATE,
 )
 
@@ -206,6 +211,91 @@ class BasilicaGPUClient:
     def get_balance(self) -> dict[str, Any]:
         """Return account balance information."""
         return self._client.get_balance()
+
+    # ------------------------------------------------------------------
+    # Docker-based deployments
+    # ------------------------------------------------------------------
+
+    def create_deployment(
+        self,
+        name: str,
+        image: str | None = None,
+        gpu_count: int = 1,
+        gpu_models: list[str] | None = None,
+        min_gpu_memory_gb: int | None = None,
+        env: dict[str, str] | None = None,
+        port: int = 8378,
+        cpu: str = "2000m",
+        memory: str = "8Gi",
+        storage: str | None = "10Gi",
+    ) -> DeploymentResponse:
+        """Create a GPU deployment running a Docker image.
+
+        Uses the Basilica deployments API to spin up a container with GPU
+        access.  The container should expose an HTTP server on *port*.
+
+        Returns a ``DeploymentResponse`` with ``url``, ``instance_name``,
+        ``phase``, etc.
+        """
+        image = image or BASILICA_DEPLOY_IMAGE
+        gpu_models = gpu_models or BASILICA_DEPLOY_GPU_MODELS or None
+        if min_gpu_memory_gb is None:
+            min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
+
+        resp = self._client.create_deployment(
+            instance_name=name,
+            image=image,
+            port=port,
+            gpu_count=gpu_count,
+            gpu_models=gpu_models,
+            min_gpu_memory_gb=min_gpu_memory_gb,
+            env=env or {},
+            cpu=cpu,
+            memory=memory,
+            storage=storage,
+            public=False,
+        )
+        logger.info(
+            "Created deployment %s (image=%s, phase=%s, url=%s)",
+            resp.instance_name, image, resp.phase, resp.url,
+        )
+        return resp
+
+    def get_deployment(self, name: str) -> DeploymentResponse:
+        """Get the current status of a deployment."""
+        return self._client.get_deployment(name)
+
+    def get_deployment_logs(self, name: str, tail: int | None = 100) -> str:
+        """Retrieve logs from a deployment."""
+        return self._client.get_deployment_logs(name, tail=tail)
+
+    def delete_deployment(self, name: str) -> dict[str, Any]:
+        """Delete a deployment and free its resources."""
+        resp = self._client.delete_deployment(name)
+        logger.info("Deleted deployment %s", name)
+        return {
+            "instance_name": getattr(resp, "instance_name", name),
+            "status": "deleted",
+            "message": getattr(resp, "message", ""),
+        }
+
+    def list_deployments(self) -> list[dict[str, Any]]:
+        """List all deployments for this account."""
+        resp = self._client.list_deployments()
+        items = resp.deployments if hasattr(resp, "deployments") else []
+        return [
+            {
+                "instance_name": getattr(d, "instance_name", None),
+                "phase": getattr(d, "phase", None),
+                "url": getattr(d, "url", None),
+                "created_at": getattr(d, "created_at", None),
+            }
+            for d in items
+        ]
+
+    # ------------------------------------------------------------------
+    # SSH key management
+    # ------------------------------------------------------------------
 
     def ensure_ssh_key(self, name: str = "synth-city", public_key_path: str | None = None) -> str:
         """Ensure the Basilica-registered SSH key matches the local key.
