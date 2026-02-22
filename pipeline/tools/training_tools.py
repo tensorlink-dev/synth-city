@@ -412,16 +412,22 @@ def _get_ssh_creds(rental_id: str) -> dict:
     return _parse_ssh_command(ssh_cmd)
 
 
+_DEFAULT_OSM_INSTALL = (
+    "open-synth-miner @ "
+    "git+https://github.com/tensorlink-dev/open-synth-miner.git"
+)
+
+
 @tool(
     description=(
         "Wait for a Basilica rental to become SSH-accessible, then install "
         "open-synth-miner and all training dependencies on the pod. "
         "Must be called before run_experiment_on_basilica. "
         "rental_id: the rental returned by rent_gpu / rent_cheapest_gpu. "
-        "ssh_key_path: path to your SSH private key (default: ~/.ssh/id_ed25519). "
+        "ssh_key_path: path to your SSH private key "
+        "(default: ~/.ssh/id_ed25519). "
         "osm_install: pip install spec for open-synth-miner "
-        "(default: 'open-synth-miner'; use 'git+https://github.com/tensorlink-dev/open-synth-miner' "
-        "to install directly from GitHub)."
+        "(default: install from GitHub)."
     ),
     parameters_schema={
         "type": "object",
@@ -435,11 +441,8 @@ def _get_ssh_creds(rental_id: str) -> dict:
                 "type": "string",
                 "description": (
                     "pip install spec for open-synth-miner. "
-                    "Use 'open-synth-miner' for PyPI, or "
-                    "'git+https://github.com/tensorlink-dev/"
-                    "open-synth-miner.git' for GitHub. "
-                    "Do NOT append [extras] to git URLs — it "
-                    "will be auto-corrected if you do."
+                    "Default installs from GitHub. Override "
+                    "only if you need a specific branch/fork."
                 ),
             },
         },
@@ -449,10 +452,10 @@ def _get_ssh_creds(rental_id: str) -> dict:
 def setup_basilica_pod(
     rental_id: str,
     ssh_key_path: str = "",
-    osm_install: str = "open-synth-miner",
+    osm_install: str = "",
 ) -> str:
     """Install open-synth-miner + deps on a Basilica pod and configure HF token."""
-    osm_install = _fix_pip_install_spec(osm_install)
+    osm_install = _fix_pip_install_spec(osm_install or _DEFAULT_OSM_INSTALL)
     key = ssh_key_path or _DEFAULT_SSH_KEY
     try:
         # Ensure the Basilica-registered key matches our local key *before*
@@ -516,16 +519,32 @@ def setup_basilica_pod(
 
         host, port, user = creds["host"], creds["port"], creds["user"]
 
-        # Build setup commands — use ``python3 -m pip`` so packages install
-        # to the same interpreter that ``run_experiment_on_basilica`` invokes
-        # via ``python3 -c ...``.  A bare ``pip`` may resolve to a different
-        # Python on provider images that ship multiple interpreters.
+        # Build setup commands.
+        # * ``python3 -m pip`` — ensures packages install for the same
+        #   interpreter that ``run_experiment_on_basilica`` invokes.
+        # * ``--break-system-packages`` — required on Debian 12+ / Ubuntu
+        #   23.04+ which enforce PEP 668 (externally-managed-environment).
+        # * Final ``python3 -c …`` — smoke-tests the import so we fail
+        #   fast instead of reporting "ready" with a broken environment.
+        _pip = "python3 -m pip install --break-system-packages"
         hf_token_export = f'export HF_TOKEN="{HF_TOKEN}"' if HF_TOKEN else ""
         setup_script = (
             f"set -e\n"
-            f"python3 -m pip install --quiet --upgrade pip\n"
-            f"python3 -m pip install --quiet {shlex.quote(osm_install)}\n"
-            f"python3 -m pip install --quiet huggingface_hub pyarrow pandas numpy torch\n"
+            f"{_pip} --quiet --upgrade pip\n"
+            f"{_pip} --quiet {shlex.quote(osm_install)}\n"
+            f"{_pip} --quiet huggingface_hub pyarrow pandas numpy torch\n"
+            f"python3 -c \""
+            f"tried = ['src.research.agent_api', 'research.agent_api']\\n"
+            f"for m in tried:\\n"
+            f"    try:\\n"
+            f"        __import__(m)\\n"
+            f"        break\\n"
+            f"    except ImportError:\\n"
+            f"        pass\\n"
+            f"else:\\n"
+            f"    raise ImportError("
+            f"'ResearchSession not importable after install; tried ' "
+            f"+ str(tried))\"\n"
         )
         if hf_token_export:
             setup_script += (
@@ -549,7 +568,7 @@ def setup_basilica_pod(
                 "stdout": stdout[-10000:],
             })
 
-        return json.dumps({
+        result: dict[str, object] = {
             "status": "ready",
             "rental_id": rental_id,
             "host": host,
@@ -557,7 +576,10 @@ def setup_basilica_pod(
             "hf_token_configured": bool(HF_TOKEN),
             "osm_installed": osm_install,
             "stdout": stdout[-5000:],
-        }, indent=2)
+        }
+        if stderr.strip():
+            result["stderr"] = stderr[-5000:]
+        return json.dumps(result, indent=2)
 
     except subprocess.TimeoutExpired:
         return json.dumps({
