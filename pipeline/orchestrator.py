@@ -307,11 +307,17 @@ class PipelineOrchestrator:
         cannot be fixed by retrying with higher temperature.  Tools signal this
         via ``"error_type": "environment"`` and ``"recoverable": false`` in their
         structured output.
+
+        Infrastructure errors (``"error_type": "infrastructure"``) are explicitly
+        **recoverable** — the agent should retry with a fresh deployment.
         """
         # Check structured result dict
         if isinstance(result.structured, dict):
             nested = result.structured.get("result", result.structured)
             if isinstance(nested, dict):
+                # Explicitly recoverable errors (infrastructure, etc.)
+                if nested.get("recoverable") is True:
+                    return False
                 if nested.get("error_type") == "environment":
                     return True
 

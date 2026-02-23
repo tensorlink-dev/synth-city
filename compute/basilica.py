@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 from typing import Any
 
 from basilica import BasilicaClient as _SdkClient
@@ -216,6 +217,11 @@ class BasilicaGPUClient:
     # Docker-based deployments
     # ------------------------------------------------------------------
 
+    # Retry parameters for transient API errors
+    _API_MAX_RETRIES = 3
+    _API_INITIAL_BACKOFF = 5  # seconds
+    _API_BACKOFF_FACTOR = 2
+
     def create_deployment(
         self,
         name: str,
@@ -234,6 +240,9 @@ class BasilicaGPUClient:
         Uses the Basilica deployments API to spin up a container with GPU
         access.  The container should expose an HTTP server on *port*.
 
+        Retries up to 3 times with exponential backoff on transient API
+        errors (HTTP 5xx, connection failures).
+
         Returns a ``DeploymentResponse`` with ``url``, ``instance_name``,
         ``phase``, etc.
         """
@@ -242,24 +251,62 @@ class BasilicaGPUClient:
         if min_gpu_memory_gb is None:
             min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
 
-        resp = self._client.create_deployment(
-            instance_name=name,
-            image=image,
-            port=port,
-            gpu_count=gpu_count,
-            gpu_models=gpu_models,
-            min_gpu_memory_gb=min_gpu_memory_gb,
-            env=env or {},
-            cpu=cpu,
-            memory=memory,
-            storage=storage,
-            public=True,
-        )
-        logger.info(
-            "Created deployment %s (image=%s, phase=%s, url=%s)",
-            resp.instance_name, image, resp.phase, resp.url,
-        )
-        return resp
+        last_exc: Exception | None = None
+        for attempt in range(self._API_MAX_RETRIES):
+            try:
+                resp = self._client.create_deployment(
+                    instance_name=name,
+                    image=image,
+                    port=port,
+                    gpu_count=gpu_count,
+                    gpu_models=gpu_models,
+                    min_gpu_memory_gb=min_gpu_memory_gb,
+                    env=env or {},
+                    cpu=cpu,
+                    memory=memory,
+                    storage=storage,
+                    public=True,
+                )
+                logger.info(
+                    "Created deployment %s (image=%s, phase=%s, url=%s)",
+                    resp.instance_name, image, resp.phase, resp.url,
+                )
+                return resp
+            except Exception as exc:
+                last_exc = exc
+                err_str = str(exc).lower()
+                # Only retry on transient/server errors, not client errors
+                is_transient = (
+                    "500" in err_str
+                    or "502" in err_str
+                    or "503" in err_str
+                    or "504" in err_str
+                    or "connection" in err_str
+                    or "timeout" in err_str
+                    or "internal server error" in err_str
+                )
+                if not is_transient:
+                    raise
+
+                backoff = self._API_INITIAL_BACKOFF * (
+                    self._API_BACKOFF_FACTOR ** attempt
+                )
+                logger.warning(
+                    "create_deployment attempt %d/%d failed (%s) — "
+                    "retrying in %ds",
+                    attempt + 1,
+                    self._API_MAX_RETRIES,
+                    exc,
+                    backoff,
+                )
+                if attempt < self._API_MAX_RETRIES - 1:
+                    time.sleep(backoff)
+
+        # All retries exhausted
+        raise RuntimeError(
+            f"create_deployment failed after {self._API_MAX_RETRIES} attempts: "
+            f"{last_exc}"
+        ) from last_exc
 
     def get_deployment(self, name: str) -> DeploymentResponse:
         """Get the current status of a deployment."""

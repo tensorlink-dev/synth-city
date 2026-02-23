@@ -46,6 +46,7 @@ class TrainerAgent(BaseAgentWrapper):
             "get_deployment_logs",
             "list_deployments",
             "delete_training_deployment",
+            "wait_for_deployment_ready",
             "run_experiment_on_deployment",
         ]
         return build_toolset(*tool_names)

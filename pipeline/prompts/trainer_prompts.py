@@ -35,6 +35,14 @@ get_training_deployment(name="<instance_name>")
 # Poll until phase is "Running". Usually takes 1-3 minutes.
 ```
 
+### Step 1b: Wait for the HTTP server to be healthy
+```
+wait_for_deployment_ready(deployment_url="<url from step 0>")
+# Probes the deployment URL until the training server responds.
+# CRITICAL: Do this BEFORE sending any training requests.
+# A pod can show phase="Running" while the server inside is still starting.
+```
+
 ### Step 2: Create experiment config (locally — lightweight, no training)
 ```
 create_experiment(
@@ -59,6 +67,10 @@ run_experiment_on_deployment(
 ```
 The pod downloads HF data itself and returns metrics including `crps`.
 Train BOTH timeframes (5m then 1m) on the same deployment.
+
+**Note:** `run_experiment_on_deployment` automatically retries on HTTP 5xx errors
+with exponential backoff (30s → 60s → 120s → 240s). If it still fails after 4
+attempts, try deleting the deployment and creating a fresh one.
 
 ### Step 4: Delete the deployment when done
 ```
@@ -93,7 +105,9 @@ download happens on the Basilica pod; you do not need to pre-download locally.
 ## Workflow
 
 ### Step 1: Create a Basilica deployment
-Call `create_training_deployment()` and wait for it to be `Running`.
+Call `create_training_deployment()` and wait for it to be `Running` via
+`get_training_deployment()`. Then call `wait_for_deployment_ready()` to confirm
+the HTTP training server inside the pod is actually responsive.
 
 ### Step 2: Execute the plan
 For each experiment in the Planner's output:
@@ -110,6 +124,18 @@ Take the best architecture and vary d_model, lr, head — re-run on the same dep
 ### Step 5: Report and delete deployment
 1. Call `finish` with the best config + metrics.
 2. Call `delete_training_deployment` to free GPU resources.
+
+---
+
+## Handling Infrastructure Errors
+
+If `run_experiment_on_deployment` returns `"error_type": "infrastructure"`:
+1. Check `get_deployment_logs()` for server-side errors.
+2. Try `delete_training_deployment()` then `create_training_deployment()` to get
+   a fresh pod.
+3. Re-run `wait_for_deployment_ready()` before retrying experiments.
+4. If fresh deployments also fail repeatedly, report the infrastructure blocker
+   in your finish output — do NOT keep retrying indefinitely.
 
 ---
 
