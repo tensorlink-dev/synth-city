@@ -28,6 +28,7 @@ import shlex
 import subprocess
 import sys
 import time
+from typing import Any
 
 from config import (
     BASILICA_DEPLOY_IMAGE,
@@ -245,7 +246,10 @@ def register_ssh_key(name: str = "synth-city", public_key_path: str = "") -> str
         "Rent a specific GPU offering by its offering ID. "
         "Returns rental ID, SSH command, IP address, and hourly cost. "
         "Use list_available_gpus first to find offering IDs. "
-        "SSH key registration is handled automatically."
+        "SSH key registration is handled automatically. "
+        "NOTE: Some offerings (especially Verda) may fail with 'Operating "
+        "system is not valid'. If you hit this, use rent_cheapest_gpu instead — "
+        "it automatically skips incompatible offerings."
     ),
 )
 def rent_gpu(offering_id: str) -> str:
@@ -264,7 +268,20 @@ def rent_gpu(offering_id: str) -> str:
             "is_spot": resp.is_spot,
         }, indent=2)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        error_msg = str(exc)
+        result: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"}
+        if "Operating system is not valid" in error_msg:
+            logger.warning(
+                "Offering %s rejected: OS not valid for instance type. "
+                "Use rent_cheapest_gpu() to auto-skip incompatible offerings.",
+                offering_id,
+            )
+            result["hint"] = (
+                "This offering is incompatible (OS not valid for this instance type). "
+                "Use rent_cheapest_gpu instead — it automatically tries multiple "
+                "offerings and skips ones that fail."
+            )
+        return json.dumps(result)
 
 
 @tool(
@@ -1144,11 +1161,26 @@ def run_experiment_on_deployment(
         except Exception:
             pass
         _mon.emit("system", "error", message=f"Deployment HTTP {exc.code}: {exc.reason}")
-        return json.dumps({
+        result_dict: dict[str, Any] = {
             "status": "error",
             "error": f"HTTP {exc.code}: {exc.reason}",
             "response_body": error_body,
-        })
+        }
+        if exc.code == 401:
+            logger.warning(
+                "Deployment returned 401 Unauthorized for URL %s. "
+                "share_token provided: %s",
+                deployment_url,
+                bool(share_token),
+            )
+            result_dict["hint"] = (
+                "The deployment returned 401 Unauthorized. "
+                "If the deployment was created with public=False, you must pass "
+                "the share_token from create_training_deployment. "
+                "Alternatively, delete and recreate the deployment (it will now "
+                "be created as public by default)."
+            )
+        return json.dumps(result_dict)
     except urllib.error.URLError as exc:
         _mon.emit("system", "error", message=f"Deployment connection failed: {exc.reason}")
         return json.dumps({
