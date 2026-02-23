@@ -43,13 +43,18 @@ RUN pip install --no-cache-dir \
 ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
 
 # Verify ResearchSession is importable (fail-fast at build time, not runtime)
-RUN python -c "\
-import sys; \
-tried = ['src.research.agent_api', 'research.agent_api']; \
-for m in tried: \
-    try: __import__(m); print(f'OK: {m}'); sys.exit(0) \
-    except ImportError: pass \
-else: print(f'ERROR: ResearchSession not importable from {tried}', file=sys.stderr); sys.exit(1)"
+RUN python <<'PYEOF'
+import sys
+for mod in ("src.research.agent_api", "research.agent_api"):
+    try:
+        __import__(mod)
+        print(f"OK: {mod}")
+        sys.exit(0)
+    except ImportError:
+        pass
+print("ERROR: ResearchSession not importable", file=sys.stderr)
+sys.exit(1)
+PYEOF
 
 # Copy only the training server (small, changes often → last layer)
 COPY compute/training_server.py /app/training_server.py
