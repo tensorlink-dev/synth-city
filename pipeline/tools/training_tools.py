@@ -855,8 +855,16 @@ def create_training_deployment(
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
         deploy_image = image or BASILICA_DEPLOY_IMAGE
-        gpu_list = json.loads(gpu_models) if gpu_models else None
-        env_dict = json.loads(env) if env else {}
+        # gpu_models may arrive as a JSON string or a native list from the LLM
+        if isinstance(gpu_models, list):
+            gpu_list = gpu_models
+        else:
+            gpu_list = json.loads(gpu_models) if gpu_models else None
+        # env may arrive as a JSON string or a native dict from the LLM
+        if isinstance(env, dict):
+            env_dict = env
+        else:
+            env_dict = json.loads(env) if env else {}
 
         # Inject HF_TOKEN so the pod can download training data
         if HF_TOKEN and "HF_TOKEN" not in env_dict:

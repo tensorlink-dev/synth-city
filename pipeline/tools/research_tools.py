@@ -320,8 +320,12 @@ def create_experiment(
     try:
         session = _get_session()
         block_list = json.loads(blocks) if isinstance(blocks, str) else blocks
-        hk = json.loads(head_kwargs) if head_kwargs else None
-        bk = json.loads(block_kwargs) if block_kwargs else None
+        hk = json.loads(head_kwargs) if isinstance(head_kwargs, str) and head_kwargs else (
+            head_kwargs if isinstance(head_kwargs, (dict, list)) else None
+        )
+        bk = json.loads(block_kwargs) if isinstance(block_kwargs, str) and block_kwargs else (
+            block_kwargs if isinstance(block_kwargs, (dict, list)) else None
+        )
 
         # Apply timeframe defaults if specified
         if timeframe and timeframe in TIMEFRAME_CONFIGS:
@@ -525,7 +529,9 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
         return _env_error_response("run_preset")
     try:
         session = _get_session()
-        ov = json.loads(overrides) if overrides else None
+        ov = json.loads(overrides) if isinstance(overrides, str) and overrides else (
+            overrides if isinstance(overrides, (dict, list)) else None
+        )
         result = session.run_preset(preset_name, epochs=epochs, overrides=ov)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
@@ -559,7 +565,10 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
         return _env_error_response("sweep_presets")
     try:
         session = _get_session()
-        names = json.loads(preset_names) if preset_names else None
+        if isinstance(preset_names, list):
+            names = preset_names
+        else:
+            names = json.loads(preset_names) if preset_names else None
         result = session.sweep(preset_names=names, epochs=epochs)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
