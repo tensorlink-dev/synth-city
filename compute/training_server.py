@@ -40,6 +40,7 @@ def _get_session_class():
     global _session_cls
     if _session_cls is not None:
         return _session_cls
+    errors: list[tuple[str, Exception]] = []
     for mod_path in ("src.research.agent_api", "research.agent_api"):
         try:
             mod = importlib.import_module(mod_path)
@@ -48,11 +49,17 @@ def _get_session_class():
                 _session_cls = cls
                 logger.info("Loaded ResearchSession from %s", mod_path)
                 return cls
-        except ImportError:
-            pass
+        except Exception as exc:
+            # Catch ALL exceptions (not just ImportError) so that runtime
+            # failures in transitive imports (torch CUDA init, missing .so
+            # files, etc.) don't prevent trying the fallback module path.
+            logger.warning("Failed to import %s: %s: %s", mod_path, type(exc).__name__, exc)
+            errors.append((mod_path, exc))
+    # Build a detailed error message listing what failed for each path
+    details = "; ".join(f"{path}: {type(exc).__name__}: {exc}" for path, exc in errors)
     raise ImportError(
-        "Cannot import ResearchSession. "
-        "Ensure open-synth-miner is installed in the container image."
+        f"Cannot import ResearchSession from any known module path. "
+        f"Errors: {details}"
     )
 
 
@@ -210,4 +217,18 @@ def train():
 if __name__ == "__main__":
     port = int(os.environ.get("TRAINING_SERVER_PORT", "8378"))
     logger.info("Starting training server on port %d", port)
+
+    # Eagerly try to import ResearchSession at startup so any errors
+    # appear in the pod logs immediately instead of only on first request.
+    try:
+        _get_session_class()
+        logger.info("Startup self-test passed: ResearchSession is importable")
+    except Exception as exc:
+        logger.error(
+            "Startup self-test FAILED: ResearchSession is NOT importable. "
+            "/health will return 503. Error: %s",
+            exc,
+            exc_info=True,
+        )
+
     app.run(host="0.0.0.0", port=port, threaded=False)
