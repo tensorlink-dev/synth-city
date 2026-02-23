@@ -30,9 +30,8 @@ ARG OSM_BRANCH=main
 
 RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner
 
-# open-synth-miner is git-install-only (no setup.py/pyproject.toml).
-# Make it importable via PYTHONPATH.
-ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
+# Install open-synth-miner as a package (exposes the 'osa' namespace)
+RUN uv pip install -e /app/open-synth-miner
 
 # ---- install synth-city deps (cached layer) ---------------------------------
 COPY pyproject.toml requirements.txt ./

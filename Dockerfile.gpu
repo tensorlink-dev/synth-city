@@ -38,23 +38,11 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     huggingface_hub pyarrow pandas numpy flask
 
-# open-synth-miner is git-install-only (no setup.py/pyproject.toml).
-# Make it importable via PYTHONPATH.
-ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
+# Install open-synth-miner as a package (exposes the 'osa' namespace)
+RUN pip install --no-cache-dir -e /app/open-synth-miner
 
 # Verify ResearchSession is importable (fail-fast at build time, not runtime)
-RUN python <<'PYEOF'
-import sys
-for mod in ("src.research.agent_api", "research.agent_api"):
-    try:
-        __import__(mod)
-        print(f"OK: {mod}")
-        sys.exit(0)
-    except ImportError:
-        pass
-print("ERROR: ResearchSession not importable", file=sys.stderr)
-sys.exit(1)
-PYEOF
+RUN python -c "from osa.research.agent_api import ResearchSession; print('OK: osa.research.agent_api')"
 
 # Copy only the training server (small, changes often → last layer)
 COPY compute/training_server.py /app/training_server.py
