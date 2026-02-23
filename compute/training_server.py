@@ -106,6 +106,13 @@ def health():
         return jsonify({"status": "ok"})
     except ImportError as exc:
         return jsonify({"status": "error", "error": str(exc)}), 503
+    except Exception as exc:
+        logger.error("Health check failed: %s", exc, exc_info=True)
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+            "traceback": traceback.format_exc(),
+        }), 500
 
 
 @app.route("/gpu", methods=["GET"])

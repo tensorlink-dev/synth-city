@@ -835,6 +835,11 @@ _DEPLOY_BACKOFF_FACTOR = 2    # exponential multiplier
 # Timeout for deployment health/readiness probes (seconds)
 _DEPLOY_HEALTH_TIMEOUT = 300
 _DEPLOY_HEALTH_INTERVAL = 15
+# Abort early if the server returns this many consecutive HTTP 5xx responses
+# (meaning the server process is running but broken — waiting longer won't help)
+_DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
+# How often (in probes) to check the pod phase via the Basilica API
+_DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
 
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
 
@@ -863,18 +868,21 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         with urllib.request.urlopen(req, timeout=15) as resp:
             return True, f"HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode()[:500]
+        except Exception:
+            pass
         if exc.code == 503:
             # Server is up but ResearchSession is broken — not healthy
-            body = ""
-            try:
-                body = exc.read().decode()[:500]
-            except Exception:
-                pass
             return False, f"HTTP 503: server up but unhealthy ({body})"
+        if exc.code == 500:
+            # Server is up but /health crashed — not healthy
+            return False, f"HTTP 500: Internal Server Error ({body})"
         # Other 4xx — server is responsive, /health just isn't mapped (older image?)
         if 400 <= exc.code < 500:
             return True, f"HTTP {exc.code} (server responsive)"
-        return False, f"HTTP {exc.code}: {exc.reason}"
+        return False, f"HTTP {exc.code}: {exc.reason} ({body})"
     except urllib.error.URLError as exc:
         return False, f"Connection failed: {exc.reason}"
     except Exception as exc:
@@ -913,10 +921,22 @@ def wait_for_deployment_ready(
     share_token: str = "",
     timeout: int = _DEPLOY_HEALTH_TIMEOUT,
 ) -> str:
-    """Probe a deployment URL until the HTTP server is responsive."""
+    """Probe a deployment URL until the HTTP server is responsive.
+
+    Includes two early-abort mechanisms so the agent doesn't waste the full
+    timeout on obviously-broken deployments:
+
+    1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
+       ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
+       is up but the health check is crashing.  Waiting longer won't fix it;
+       the deployment needs to be recreated.
+    2. **Pod phase checking** — every few probes, queries the Basilica API to
+       see if the pod has entered a terminal ``Failed`` phase.
+    """
     deadline = time.time() + timeout
     attempts = 0
     last_detail = ""
+    consecutive_server_errors = 0
 
     while time.time() < deadline:
         attempts += 1
@@ -933,6 +953,71 @@ def wait_for_deployment_ready(
                 "probes": attempts,
                 "detail": detail,
             })
+
+        # Track consecutive HTTP 5xx errors (server is up but broken)
+        is_server_error = detail.startswith("HTTP 5")
+        if is_server_error:
+            consecutive_server_errors += 1
+        else:
+            consecutive_server_errors = 0
+
+        # Early abort: server is running but /health keeps crashing
+        if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
+            logger.warning(
+                "Deployment %s returned %d consecutive server errors — "
+                "aborting health wait (last: %s)",
+                deployment_url, consecutive_server_errors, detail,
+            )
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    f"Training server returned {consecutive_server_errors} "
+                    f"consecutive HTTP 5xx errors"
+                ),
+                "url": deployment_url,
+                "last_probe": detail,
+                "probes": attempts,
+                "hint": (
+                    "The training server process is running but the /health "
+                    "endpoint is failing. This usually means the server "
+                    "crashed during startup or ResearchSession is broken. "
+                    "Check get_deployment_logs() for the traceback, then "
+                    "delete and recreate the deployment."
+                ),
+            })
+
+        # Periodically check pod phase to detect Failed deployments early
+        if attempts % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
+            try:
+                client = _get_gpu_client()
+                # Extract instance name from URL (UUID prefix of *.deployments.basilica.ai)
+                from urllib.parse import urlparse
+                host = urlparse(deployment_url).hostname or ""
+                instance_name = host.split(".")[0] if "." in host else ""
+                if instance_name:
+                    resp = client.get_deployment(instance_name)
+                    phase = getattr(resp, "phase", "")
+                    if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
+                        logger.warning(
+                            "Deployment %s pod phase is %r — aborting health wait",
+                            deployment_url, phase,
+                        )
+                        return json.dumps({
+                            "status": "error",
+                            "error": f"Deployment pod phase is '{phase}'",
+                            "url": deployment_url,
+                            "phase": phase,
+                            "last_probe": detail,
+                            "probes": attempts,
+                            "hint": (
+                                "The deployment pod has entered a terminal failure "
+                                "state. Check get_deployment_logs() for the error, "
+                                "then delete and recreate the deployment."
+                            ),
+                        })
+            except Exception as phase_exc:
+                logger.debug("Phase check failed (non-fatal): %s", phase_exc)
+
         logger.debug(
             "Deployment %s not ready (probe %d): %s",
             deployment_url, attempts, detail,
@@ -1120,7 +1205,15 @@ def get_deployment_logs(name: str, tail: int = 100) -> str:
     try:
         client = _get_gpu_client()
         logs = client.get_deployment_logs(name, tail=tail)
-        return json.dumps({"instance_name": name, "logs": logs})
+        result: dict[str, Any] = {"instance_name": name, "logs": logs}
+        if not logs or not logs.strip():
+            result["hint"] = (
+                "Logs are empty. The pod may still be starting (container "
+                "pull / init in progress), or the training server crashed "
+                "before producing any output. Try again in 30-60 seconds, "
+                "or check the deployment phase with get_training_deployment()."
+            )
+        return json.dumps(result)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
@@ -1217,11 +1310,36 @@ def run_experiment_on_deployment(
 ) -> str:
     """Run a training experiment on a Basilica deployment via HTTP.
 
+    Performs a lightweight health probe before sending the training request
+    so that obviously-broken deployments fail fast instead of waiting through
+    the full retry cycle.
+
     Retries automatically on HTTP 5xx errors with exponential backoff
     (30s, 60s, 120s, 240s) to ride out transient infrastructure issues.
     """
     import urllib.error
     import urllib.request
+
+    # --- Pre-flight health check ---
+    healthy, detail = _probe_deployment_health(deployment_url, share_token)
+    if not healthy:
+        logger.warning(
+            "Pre-flight health check failed for %s: %s — skipping training",
+            deployment_url, detail,
+        )
+        return json.dumps({
+            "status": "error",
+            "error": f"Pre-flight health check failed: {detail}",
+            "error_type": "infrastructure",
+            "recoverable": True,
+            "url": deployment_url,
+            "hint": (
+                "The deployment failed the health check before training was "
+                "attempted. The training server may not be running or may have "
+                "crashed. Check get_deployment_logs() and consider deleting "
+                "and recreating the deployment."
+            ),
+        })
 
     try:
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
