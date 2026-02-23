@@ -28,15 +28,32 @@ WORKDIR /app
 # Install open-synth-miner (changes less often → cached layer)
 ARG OSM_REPO=https://github.com/tensorlink-dev/open-synth-miner.git
 ARG OSM_BRANCH=main
-RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner && \
-    pip install --no-cache-dir -e /app/open-synth-miner 2>/dev/null || true
-ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
+RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner
 
-# Install training dependencies (torch with CUDA 12.1 support matching base image)
+# Install training dependencies first (torch + friends) so open-synth-miner
+# finds them during its own install.  Use CUDA 12.1 wheels which are
+# forward-compatible with the CUDA 12.2 runtime in the base image.
 RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir \
     huggingface_hub pyarrow pandas numpy flask
+
+# Install open-synth-miner *after* its dependencies are available.
+# Try a standard (non-editable) install first.  If the repo lacks a
+# pyproject.toml/setup.py the pip install will fail — fall back to
+# PYTHONPATH so the src layout is still importable.
+RUN pip install --no-cache-dir /app/open-synth-miner 2>&1 \
+    || echo "WARNING: pip install failed — falling back to PYTHONPATH"
+ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
+
+# Verify ResearchSession is importable (fail-fast at build time, not runtime)
+RUN python -c "\
+import sys; \
+tried = ['src.research.agent_api', 'research.agent_api']; \
+for m in tried: \
+    try: __import__(m); print(f'OK: {m}'); sys.exit(0) \
+    except ImportError: pass \
+else: print(f'ERROR: ResearchSession not importable from {tried}', file=sys.stderr); sys.exit(1)"
 
 # Copy only the training server (small, changes often → last layer)
 COPY compute/training_server.py /app/training_server.py

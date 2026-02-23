@@ -840,16 +840,22 @@ _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
 
 
 def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str]:
-    """Send a lightweight GET probe to a deployment URL.
+    """Send a lightweight GET probe to a deployment's ``/health`` endpoint.
 
-    Returns ``(healthy, detail)`` where *healthy* is True if the server
-    responded with a 2xx status.  The probe hits the root path ``/`` — most
-    HTTP servers return *something* even without an explicit health endpoint.
+    Returns ``(healthy, detail)`` where *healthy* is True if the training
+    server responded with HTTP 200.  The ``/health`` endpoint in
+    ``training_server.py`` validates that ``ResearchSession`` is importable,
+    so a 200 means the server can actually run experiments (not just that the
+    HTTP process is alive).
+
+    A 503 from ``/health`` means the server is up but ResearchSession is
+    broken (e.g. open-synth-miner failed to install) — this is treated as
+    **unhealthy** because training requests would also fail.
     """
     import urllib.error
     import urllib.request
 
-    probe_url = url.rstrip("/") + "/"
+    probe_url = url.rstrip("/") + "/health"
     if share_token:
         probe_url += f"?token={share_token}"
     try:
@@ -857,7 +863,15 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         with urllib.request.urlopen(req, timeout=15) as resp:
             return True, f"HTTP {resp.status}"
     except urllib.error.HTTPError as exc:
-        # 4xx means the server is up but the path is wrong — still healthy
+        if exc.code == 503:
+            # Server is up but ResearchSession is broken — not healthy
+            body = ""
+            try:
+                body = exc.read().decode()[:500]
+            except Exception:
+                pass
+            return False, f"HTTP 503: server up but unhealthy ({body})"
+        # Other 4xx — server is responsive, /health just isn't mapped (older image?)
         if 400 <= exc.code < 500:
             return True, f"HTTP {exc.code} (server responsive)"
         return False, f"HTTP {exc.code}: {exc.reason}"
