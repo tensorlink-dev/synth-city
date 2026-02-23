@@ -902,12 +902,25 @@ def get_training_deployment(name: str) -> str:
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
+        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+        raw_replicas = getattr(resp, "replicas", None)
+        replicas = None
+        if raw_replicas is not None:
+            replicas = [
+                {
+                    "phase": getattr(r, "phase", None),
+                    "ready": getattr(r, "ready", None),
+                    "started": getattr(r, "started", None),
+                    "name": getattr(r, "name", None),
+                }
+                for r in raw_replicas
+            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
         return json.dumps({
             "instance_name": resp.instance_name,
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
-            "replicas": getattr(resp, "replicas", None),
+            "replicas": replicas,
             "created_at": str(getattr(resp, "created_at", "")),
         }, indent=2)
     except Exception as exc:

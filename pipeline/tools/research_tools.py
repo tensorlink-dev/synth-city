@@ -14,6 +14,7 @@ Memory management:
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import traceback
@@ -50,6 +51,28 @@ _env_error: str | None = None
 _env_checked: bool = False
 
 
+def _import_research_session():
+    """Import ResearchSession, trying both possible module paths.
+
+    The open-synth-miner package may expose the class as either
+    ``src.research.agent_api.ResearchSession`` or ``research.agent_api.ResearchSession``
+    depending on how it was installed.
+    """
+    for mod_path in ("src.research.agent_api", "research.agent_api"):
+        try:
+            mod = importlib.import_module(mod_path)
+            cls = getattr(mod, "ResearchSession", None)
+            if cls is not None:
+                logger.info("Loaded ResearchSession from %s", mod_path)
+                return cls
+        except ImportError:
+            pass
+    raise ImportError(
+        "Cannot import ResearchSession from src.research.agent_api or research.agent_api. "
+        "Ensure open-synth-miner is installed: pip install open-synth-miner"
+    )
+
+
 def _check_env() -> str | None:
     """Validate that the ResearchSession can be imported.
 
@@ -66,7 +89,7 @@ def _check_env() -> str | None:
             # Bot session available — assume environment is OK
             _env_checked = True
             return None
-        from src.research.agent_api import ResearchSession  # noqa: F401
+        _import_research_session()
         _env_checked = True
         return None
     except Exception as exc:
@@ -101,7 +124,7 @@ def _get_session():
     # CLI / standalone fallback
     global _session
     if _session is None:
-        from src.research.agent_api import ResearchSession  # type: ignore[import-untyped]
+        ResearchSession = _import_research_session()
         _session = ResearchSession()
     return _session
 

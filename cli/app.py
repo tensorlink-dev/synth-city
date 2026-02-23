@@ -69,12 +69,12 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 
 def cmd_sweep(args: argparse.Namespace) -> None:
     """Run a quick preset sweep via ResearchSession."""
-    from src.research.agent_api import ResearchSession
-
     from pipeline.bootstrap import bootstrap_dirs
+    from pipeline.tools.research_tools import _import_research_session
 
     bootstrap_dirs()
     section_header("Sweep")
+    ResearchSession = _import_research_session()
     session = ResearchSession()
     presets = [p.strip() for p in args.presets.split(",")] if args.presets else None
     result = session.sweep(preset_names=presets, epochs=args.epochs)
@@ -90,12 +90,12 @@ def cmd_sweep(args: argparse.Namespace) -> None:
 
 def cmd_experiment(args: argparse.Namespace) -> None:
     """Run a single experiment."""
-    from src.research.agent_api import ResearchSession
-
     from pipeline.bootstrap import bootstrap_dirs
+    from pipeline.tools.research_tools import _import_research_session
 
     bootstrap_dirs()
     section_header("Experiment")
+    ResearchSession = _import_research_session()
     session = ResearchSession()
     blocks = [b.strip() for b in args.blocks.split(",")]
 
@@ -124,12 +124,25 @@ def cmd_experiment(args: argparse.Namespace) -> None:
 
 def cmd_quick(args: argparse.Namespace) -> None:
     """One-liner convenience experiment."""
-    from src.research.agent_api import quick_experiment
+    import importlib
 
     from pipeline.bootstrap import bootstrap_dirs
 
     bootstrap_dirs()
     section_header("Quick Experiment")
+    for _mod_path in ("src.research.agent_api", "research.agent_api"):
+        try:
+            _mod = importlib.import_module(_mod_path)
+            quick_experiment = getattr(_mod, "quick_experiment", None)
+            if quick_experiment is not None:
+                break
+        except ImportError:
+            pass
+    else:
+        raise ImportError(
+            "Cannot import quick_experiment from src.research.agent_api or research.agent_api. "
+            "Ensure open-synth-miner is installed: pip install open-synth-miner"
+        )
     blocks = [b.strip() for b in args.blocks.split(",")] if args.blocks else None
     result = quick_experiment(
         blocks=blocks,
