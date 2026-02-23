@@ -26,7 +26,7 @@ No SSH, no pip install, no setup step — just create and send requests.
 ### Step 0: Create the deployment
 ```
 create_training_deployment()
-# → returns instance_name, url, share_token, phase
+# → returns instance_name, url, phase
 ```
 
 ### Step 1: Wait for deployment to be ready
@@ -54,8 +54,7 @@ run_experiment_on_deployment(
     deployment_url="<url from step 0>",
     experiment='<config JSON from create_experiment>',
     epochs=1,
-    timeframe="5m",
-    share_token="<token from step 0>"
+    timeframe="5m"
 )
 ```
 The pod downloads HF data itself and returns metrics including `crps`.
