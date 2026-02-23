@@ -843,6 +843,15 @@ _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
 
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
 
+# ---------------------------------------------------------------------------
+# Cross-deployment failure tracking
+# ---------------------------------------------------------------------------
+# Tracks consecutive deployment health-check failures across create/delete
+# cycles so the agent gets a clear signal to stop recreating deployments
+# when the Docker image itself is broken.
+_MAX_CONSECUTIVE_DEPLOY_FAILURES = 3
+_deployment_failure_count = 0
+
 
 def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str]:
     """Send a lightweight GET probe to a deployment's ``/health`` endpoint.
@@ -923,16 +932,21 @@ def wait_for_deployment_ready(
 ) -> str:
     """Probe a deployment URL until the HTTP server is responsive.
 
-    Includes two early-abort mechanisms so the agent doesn't waste the full
+    Includes three early-abort mechanisms so the agent doesn't waste the full
     timeout on obviously-broken deployments:
 
     1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
        ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
-       is up but the health check is crashing.  Waiting longer won't fix it;
-       the deployment needs to be recreated.
+       is up but the health check is crashing.  Waiting longer won't fix it.
     2. **Pod phase checking** — every few probes, queries the Basilica API to
        see if the pod has entered a terminal ``Failed`` phase.
+    3. **Cross-deployment failure tracking** — if multiple consecutive
+       deployments have all failed health checks, the Docker image is likely
+       broken.  The error message escalates to tell the agent to stop
+       recreating deployments.
     """
+    global _deployment_failure_count
+
     deadline = time.time() + timeout
     attempts = 0
     last_detail = ""
@@ -947,6 +961,7 @@ def wait_for_deployment_ready(
                 "Deployment %s healthy after %d probes: %s",
                 deployment_url, attempts, detail,
             )
+            _deployment_failure_count = 0  # reset on success
             return json.dumps({
                 "status": "ready",
                 "url": deployment_url,
@@ -963,12 +978,14 @@ def wait_for_deployment_ready(
 
         # Early abort: server is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
+            _deployment_failure_count += 1
             logger.warning(
                 "Deployment %s returned %d consecutive server errors — "
-                "aborting health wait (last: %s)",
+                "aborting health wait (last: %s) [%d consecutive deploy failures]",
                 deployment_url, consecutive_server_errors, detail,
+                _deployment_failure_count,
             )
-            return json.dumps({
+            error_result: dict[str, Any] = {
                 "status": "error",
                 "error": (
                     f"Training server returned {consecutive_server_errors} "
@@ -977,14 +994,28 @@ def wait_for_deployment_ready(
                 "url": deployment_url,
                 "last_probe": detail,
                 "probes": attempts,
-                "hint": (
+                "consecutive_deploy_failures": _deployment_failure_count,
+            }
+            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+                error_result["hint"] = (
+                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+                    f"have all failed health checks with the same error. "
+                    f"The Docker image (ghcr.io/tensorlink-dev/synth-city-gpu:latest) "
+                    f"is likely broken — creating more deployments will not help. "
+                    f"Report this as an infrastructure blocker in your finish output "
+                    f"and do NOT create any more deployments."
+                )
+                error_result["error_type"] = "environment"
+                error_result["recoverable"] = False
+            else:
+                error_result["hint"] = (
                     "The training server process is running but the /health "
                     "endpoint is failing. This usually means the server "
                     "crashed during startup or ResearchSession is broken. "
                     "Check get_deployment_logs() for the traceback, then "
                     "delete and recreate the deployment."
-                ),
-            })
+                )
+            return json.dumps(error_result)
 
         # Periodically check pod phase to detect Failed deployments early
         if attempts % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
@@ -998,6 +1029,7 @@ def wait_for_deployment_ready(
                     resp = client.get_deployment(instance_name)
                     phase = getattr(resp, "phase", "")
                     if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
+                        _deployment_failure_count += 1
                         logger.warning(
                             "Deployment %s pod phase is %r — aborting health wait",
                             deployment_url, phase,
@@ -1009,6 +1041,7 @@ def wait_for_deployment_ready(
                             "phase": phase,
                             "last_probe": detail,
                             "probes": attempts,
+                            "consecutive_deploy_failures": _deployment_failure_count,
                             "hint": (
                                 "The deployment pod has entered a terminal failure "
                                 "state. Check get_deployment_logs() for the error, "
@@ -1024,16 +1057,30 @@ def wait_for_deployment_ready(
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
 
-    return json.dumps({
+    # Full timeout expired
+    _deployment_failure_count += 1
+    error_result = {
         "status": "error",
         "error": f"Deployment not ready after {timeout}s ({attempts} probes)",
         "url": deployment_url,
         "last_probe": last_detail,
-        "hint": (
+        "consecutive_deploy_failures": _deployment_failure_count,
+    }
+    if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+        error_result["hint"] = (
+            f"CRITICAL: {_deployment_failure_count} consecutive deployments have all "
+            f"failed health checks. The Docker image is likely broken — creating "
+            f"more deployments will not help. Report this as an infrastructure "
+            f"blocker in your finish output and do NOT create more deployments."
+        )
+        error_result["error_type"] = "environment"
+        error_result["recoverable"] = False
+    else:
+        error_result["hint"] = (
             "The deployment pod may be running but the training server inside "
             "has not started. Check get_deployment_logs() for startup errors."
-        ),
-    })
+        )
+    return json.dumps(error_result)
 
 
 @tool(
