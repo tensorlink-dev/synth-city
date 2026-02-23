@@ -4,6 +4,9 @@ Agent design tools — create, read, and list pipeline agents and their prompts.
 These tools give the AgentDesigner (or any agent with access) the ability to
 create brand-new pipeline agents by writing agent classes and prompt modules
 that follow the BaseAgentWrapper pattern.
+
+All writes are automatically mirrored to the change-tracking sandbox repo
+so clawbot-authored agents and prompts are versioned independently.
 """
 
 from __future__ import annotations
@@ -17,6 +20,31 @@ from pathlib import Path
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+
+
+def _current_bot_id() -> str:
+    """Return the active bot ID, or ``"unknown"`` in CLI mode."""
+    try:
+        from integrations.openclaw.bot_sessions import get_current_session
+        session = get_current_session()
+        return session.bot_id if session else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _track(rel_path: str, content: str, tool_name: str) -> None:
+    """Mirror a write into the change-tracking repo (fire-and-forget)."""
+    try:
+        from pipeline.change_tracker import get_tracker
+        get_tracker().track_write(
+            repo="synth-city",
+            rel_path=rel_path,
+            content=content,
+            bot_id=_current_bot_id(),
+            tool_name=tool_name,
+        )
+    except Exception as exc:
+        logger.debug("Change tracking skipped: %s", exc)
 
 _AGENTS_DIR = Path("pipeline/agents")
 _PROMPTS_DIR = Path("pipeline/prompts")
@@ -91,6 +119,7 @@ def write_agent(filename: str, code: str) -> str:
             _ensure_dir(target.parent)
             target.write_text(code, encoding="utf-8")
 
+        _track(str(_AGENTS_DIR / filename), code, "write_agent")
         return json.dumps({
             "status": "written",
             "path": str(target),
@@ -190,6 +219,7 @@ def write_agent_prompt(filename: str, code: str) -> str:
             _ensure_dir(target.parent)
             target.write_text(code, encoding="utf-8")
 
+        _track(str(_PROMPTS_DIR / filename), code, "write_agent_prompt")
         return json.dumps({
             "status": "written",
             "path": str(target),

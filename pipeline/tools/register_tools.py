@@ -4,6 +4,9 @@ and trigger re-discovery so they appear in the registry immediately.
 
 These tools give the ComponentAuthor agent the ability to create custom
 PyTorch components that plug into the open-synth-miner framework.
+
+All writes are automatically mirrored to the change-tracking sandbox repo
+so clawbot-authored components are versioned independently of mainline.
 """
 
 from __future__ import annotations
@@ -17,6 +20,31 @@ from pathlib import Path
 from pipeline.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+
+
+def _current_bot_id() -> str:
+    """Return the active bot ID, or ``"unknown"`` in CLI mode."""
+    try:
+        from integrations.openclaw.bot_sessions import get_current_session
+        session = get_current_session()
+        return session.bot_id if session else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _track(rel_path: str, content: str, tool_name: str) -> None:
+    """Mirror a write into the change-tracking repo (fire-and-forget)."""
+    try:
+        from pipeline.change_tracker import get_tracker
+        get_tracker().track_write(
+            repo="open-synth-miner",
+            rel_path=rel_path,
+            content=content,
+            bot_id=_current_bot_id(),
+            tool_name=tool_name,
+        )
+    except Exception as exc:
+        logger.debug("Change tracking skipped: %s", exc)
 
 # open-synth-miner component directories (relative to repo root)
 _COMPONENTS_DIR = Path("src/models/components")
@@ -68,6 +96,7 @@ def write_component(filename: str, code: str) -> str:
             _ensure_dir(target.parent)
             target.write_text(code, encoding="utf-8")
 
+        _track(str(_COMPONENTS_DIR / filename), code, "write_component")
         return json.dumps({
             "status": "written",
             "path": str(target),
@@ -197,6 +226,7 @@ def write_config(filename: str, content: str) -> str:
             _ensure_dir(target.parent)
             target.write_text(content, encoding="utf-8")
 
+        _track(str(_CONFIGS_DIR / filename), content, "write_config")
         return json.dumps({
             "status": "written",
             "path": str(target),

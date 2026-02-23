@@ -395,6 +395,50 @@ def synth_list_available_tools() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Change tracking
+# ---------------------------------------------------------------------------
+
+
+def synth_list_tracked_changes(limit: str = "50", bot_id: str = "", repo: str = "") -> str:
+    """List recent clawbot-authored code changes from the audit log.
+
+    Optional filters: limit (default 50), bot_id, repo (synth-city or open-synth-miner).
+    """
+    params = f"?limit={limit}"
+    if bot_id:
+        params += f"&bot_id={bot_id}"
+    if repo:
+        params += f"&repo={repo}"
+    return _curl_get(f"/changes/log{params}")
+
+
+def synth_change_stats() -> str:
+    """Get summary statistics about all clawbot-authored code changes."""
+    return _curl_get("/changes/stats")
+
+
+def synth_change_git_log(limit: str = "50") -> str:
+    """Get git commit history from the change tracking repo."""
+    return _curl_get(f"/changes/git-log?limit={limit}")
+
+
+def synth_change_diff(commit_hash: str) -> str:
+    """Get the full diff for a specific tracked change by commit hash."""
+    return _curl_get(f"/changes/diff/{commit_hash}")
+
+
+def synth_file_change_history(repo: str, path: str, limit: str = "20") -> str:
+    """Get version history for a specific tracked file.
+
+    Args:
+        repo: 'synth-city' or 'open-synth-miner'
+        path: relative to repo root (e.g. 'src/models/components/wavelet_block.py')
+        limit: max commits to return
+    """
+    return _curl_get(f"/changes/file-history?repo={repo}&path={path}&limit={limit}")
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point for manual testing
 # ---------------------------------------------------------------------------
 

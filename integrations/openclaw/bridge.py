@@ -60,6 +60,11 @@ GET  /agents/tools            → list all registered tool names
 GET  /bots/sessions           → list all active bot sessions
 GET  /bots/session/:id        → get a single bot session
 DELETE /bots/session/:id      → force-remove a bot session
+GET  /changes/log             → audit log of clawbot-authored code changes
+GET  /changes/stats           → summary statistics for tracked changes
+GET  /changes/git-log         → git commit history from the tracking repo
+GET  /changes/diff/:commit    → full diff for a tracked change
+GET  /changes/file-history    → git history for a specific tracked file
 """
 
 from __future__ import annotations
@@ -620,6 +625,63 @@ class BridgeHandler(BaseHTTPRequestHandler):
             except ValueError:
                 after = 0.0
             self._send_json(get_monitor().events_since(after))
+
+        # ---- change tracking
+        elif path == "/changes/log":
+            from pipeline.change_tracker import get_tracker
+            raw_limit = qs.get("limit", ["50"])[0]
+            limit, limit_err = _validate_positive_int(raw_limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            bot_filter = qs.get("bot_id", [""])[0] or None
+            repo_filter = qs.get("repo", [""])[0] or None
+            entries = get_tracker().get_audit_log(
+                limit=limit, bot_id=bot_filter, repo=repo_filter,
+            )
+            self._send_json({"count": len(entries), "changes": entries})
+
+        elif path == "/changes/stats":
+            from pipeline.change_tracker import get_tracker
+            self._send_json(get_tracker().get_stats())
+
+        elif path == "/changes/git-log":
+            from pipeline.change_tracker import get_tracker
+            raw_limit = qs.get("limit", ["50"])[0]
+            limit, limit_err = _validate_positive_int(raw_limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            commits = get_tracker().get_log(limit=limit)
+            self._send_json({"count": len(commits), "commits": commits})
+
+        elif path.startswith("/changes/diff/"):
+            from pipeline.change_tracker import get_tracker
+            commit_hash = path.split("/")[-1]
+            if not commit_hash or not _SAFE_PATH_RE.match(commit_hash):
+                self._send_json(
+                    {"error": f"Invalid commit hash: {commit_hash!r}"}, status=400,
+                )
+                return
+            self._send_json(get_tracker().get_change_diff(commit_hash))
+
+        elif path == "/changes/file-history":
+            from pipeline.change_tracker import get_tracker
+            repo = qs.get("repo", [""])[0]
+            rel_path = qs.get("path", [""])[0]
+            if not repo or not rel_path:
+                self._send_json(
+                    {"error": "Missing required query params: 'repo' and 'path'"},
+                    status=400,
+                )
+                return
+            raw_limit = qs.get("limit", ["20"])[0]
+            limit, limit_err = _validate_positive_int(raw_limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            commits = get_tracker().get_file_history(repo, rel_path, limit=limit)
+            self._send_json({"file": f"{repo}/{rel_path}", "commits": commits})
 
         else:
             self._send_json({"error": f"Not found: {path}"}, status=404)

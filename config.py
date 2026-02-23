@@ -192,3 +192,12 @@ BRIDGE_API_KEY: str = os.getenv("BRIDGE_API_KEY", "")
 # ---------------------------------------------------------------------------
 BOT_SESSION_TTL_SECONDS: int = int(os.getenv("BOT_SESSION_TTL_SECONDS", "3600"))
 MAX_CONCURRENT_PIPELINES: int = int(os.getenv("MAX_CONCURRENT_PIPELINES", "10"))
+
+# ---------------------------------------------------------------------------
+# Clawbot change tracking
+# ---------------------------------------------------------------------------
+CHANGE_TRACKING_ENABLED: bool = os.getenv("CHANGE_TRACKING_ENABLED", "true").lower() in (
+    "true", "1", "yes",
+)
+CHANGE_TRACKING_DIR: Path = Path(os.getenv("CHANGE_TRACKING_DIR", "./workspace/change-tracking"))
+CHANGE_TRACKING_DIR.mkdir(parents=True, exist_ok=True)

@@ -254,6 +254,30 @@ The agent design endpoints let you create entirely new pipeline agents — agent
 5. Write agent class: `POST /agents/write`
 6. Verify by reading both files back
 
+### Change tracking (audit clawbot-authored code)
+
+All code writes (components, configs, agents, prompts) are automatically mirrored to an isolated git repository for version control and auditing. This tracking repo is separate from the main synth-city and open-synth-miner repos to prevent accidental pollution of mainline history.
+
+- **"what changes have been made"** / **"show change log"**
+  `GET http://127.0.0.1:8377/changes/log?limit=50`
+  Returns the JSONL audit log of all tracked writes. Each entry includes bot_id, repo, file path, operation type, timestamp, and commit hash. Optional filters: `bot_id=alpha`, `repo=open-synth-miner`.
+
+- **"change tracking stats"** / **"how many changes"**
+  `GET http://127.0.0.1:8377/changes/stats`
+  Summary statistics: total changes, active bots, per-repo counts, and time range.
+
+- **"show git history of changes"** / **"tracked commits"**
+  `GET http://127.0.0.1:8377/changes/git-log?limit=50`
+  Git commit history from the tracking repo. Each entry includes commit hash, date, and message (with bot_id and tool name).
+
+- **"show diff for a change"** / **"what did commit X change"**
+  `GET http://127.0.0.1:8377/changes/diff/{commit_hash}`
+  Full git diff for a specific tracked commit. Use commit hashes from `/changes/log` or `/changes/git-log`.
+
+- **"history of a specific file"** / **"what happened to wavelet_block.py"**
+  `GET http://127.0.0.1:8377/changes/file-history?repo=open-synth-miner&path=src/models/components/wavelet_block.py&limit=20`
+  Git log for a specific tracked file showing all versions over time.
+
 ## Component quick reference
 
 Use this to help the user pick architectures.
