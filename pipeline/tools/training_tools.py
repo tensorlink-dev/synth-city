@@ -827,7 +827,128 @@ except Exception as exc:
 # HTTP timeout for training requests to a deployment (seconds)
 _DEPLOY_TRAIN_TIMEOUT = 7200
 
+# Retry parameters for transient HTTP errors (5xx) from deployments
+_DEPLOY_MAX_RETRIES = 4
+_DEPLOY_INITIAL_BACKOFF = 30  # seconds
+_DEPLOY_BACKOFF_FACTOR = 2    # exponential multiplier
+
+# Timeout for deployment health/readiness probes (seconds)
+_DEPLOY_HEALTH_TIMEOUT = 300
+_DEPLOY_HEALTH_INTERVAL = 15
+
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
+
+
+def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str]:
+    """Send a lightweight GET probe to a deployment's ``/health`` endpoint.
+
+    Returns ``(healthy, detail)`` where *healthy* is True if the training
+    server responded with HTTP 200.  The ``/health`` endpoint in
+    ``training_server.py`` validates that ``ResearchSession`` is importable,
+    so a 200 means the server can actually run experiments (not just that the
+    HTTP process is alive).
+
+    A 503 from ``/health`` means the server is up but ResearchSession is
+    broken (e.g. open-synth-miner failed to install) — this is treated as
+    **unhealthy** because training requests would also fail.
+    """
+    import urllib.error
+    import urllib.request
+
+    probe_url = url.rstrip("/") + "/health"
+    if share_token:
+        probe_url += f"?token={share_token}"
+    try:
+        req = urllib.request.Request(probe_url, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return True, f"HTTP {resp.status}"
+    except urllib.error.HTTPError as exc:
+        if exc.code == 503:
+            # Server is up but ResearchSession is broken — not healthy
+            body = ""
+            try:
+                body = exc.read().decode()[:500]
+            except Exception:
+                pass
+            return False, f"HTTP 503: server up but unhealthy ({body})"
+        # Other 4xx — server is responsive, /health just isn't mapped (older image?)
+        if 400 <= exc.code < 500:
+            return True, f"HTTP {exc.code} (server responsive)"
+        return False, f"HTTP {exc.code}: {exc.reason}"
+    except urllib.error.URLError as exc:
+        return False, f"Connection failed: {exc.reason}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+@tool(
+    description=(
+        "Wait for a Basilica deployment to become healthy and ready to accept "
+        "training requests. Probes the deployment URL until the HTTP server "
+        "responds. Call this AFTER get_training_deployment shows phase='Running' "
+        "and BEFORE sending run_experiment_on_deployment requests. "
+        "Returns when the deployment is ready, or an error after timeout."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "deployment_url": {
+                "type": "string",
+                "description": "Deployment URL (from create_training_deployment)",
+            },
+            "share_token": {
+                "type": "string",
+                "description": "Share token for private deployments",
+            },
+            "timeout": {
+                "type": "integer",
+                "description": "Max seconds to wait (default: 300)",
+            },
+        },
+        "required": ["deployment_url"],
+    },
+)
+def wait_for_deployment_ready(
+    deployment_url: str,
+    share_token: str = "",
+    timeout: int = _DEPLOY_HEALTH_TIMEOUT,
+) -> str:
+    """Probe a deployment URL until the HTTP server is responsive."""
+    deadline = time.time() + timeout
+    attempts = 0
+    last_detail = ""
+
+    while time.time() < deadline:
+        attempts += 1
+        healthy, detail = _probe_deployment_health(deployment_url, share_token)
+        last_detail = detail
+        if healthy:
+            logger.info(
+                "Deployment %s healthy after %d probes: %s",
+                deployment_url, attempts, detail,
+            )
+            return json.dumps({
+                "status": "ready",
+                "url": deployment_url,
+                "probes": attempts,
+                "detail": detail,
+            })
+        logger.debug(
+            "Deployment %s not ready (probe %d): %s",
+            deployment_url, attempts, detail,
+        )
+        time.sleep(_DEPLOY_HEALTH_INTERVAL)
+
+    return json.dumps({
+        "status": "error",
+        "error": f"Deployment not ready after {timeout}s ({attempts} probes)",
+        "url": deployment_url,
+        "last_probe": last_detail,
+        "hint": (
+            "The deployment pod may be running but the training server inside "
+            "has not started. Check get_deployment_logs() for startup errors."
+        ),
+    })
 
 
 @tool(
@@ -906,7 +1027,26 @@ def create_training_deployment(
             "image": deploy_image,
         }, indent=2)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        err_str = str(exc).lower()
+        is_infra = (
+            "500" in err_str
+            or "502" in err_str
+            or "503" in err_str
+            or "internal server error" in err_str
+            or "connection" in err_str
+        )
+        result: dict[str, Any] = {
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        if is_infra:
+            result["error_type"] = "infrastructure"
+            result["recoverable"] = True
+            result["hint"] = (
+                "Deployment creation failed due to a server-side error. "
+                "This is likely a transient Basilica infrastructure issue. "
+                "Wait a moment and try again."
+            )
+        return json.dumps(result)
 
 
 @tool(
@@ -1075,7 +1215,11 @@ def run_experiment_on_deployment(
     timeframe: str = "5m",
     share_token: str = "",
 ) -> str:
-    """Run a training experiment on a Basilica deployment via HTTP."""
+    """Run a training experiment on a Basilica deployment via HTTP.
+
+    Retries automatically on HTTP 5xx errors with exponential backoff
+    (30s, 60s, 120s, 240s) to ride out transient infrastructure issues.
+    """
     import urllib.error
     import urllib.request
 
@@ -1109,15 +1253,105 @@ def run_experiment_on_deployment(
             url += "/train"
 
         body = json.dumps(payload).encode()
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
 
-        with urllib.request.urlopen(req, timeout=_DEPLOY_TRAIN_TIMEOUT) as resp:
-            result_text = resp.read().decode()
+        # --- Retry loop for transient HTTP 5xx errors ---
+        last_http_error: urllib.error.HTTPError | None = None
+        for attempt in range(_DEPLOY_MAX_RETRIES):
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=body,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=_DEPLOY_TRAIN_TIMEOUT) as resp:
+                    result_text = resp.read().decode()
+
+                # Success — break out of retry loop
+                last_http_error = None
+                break
+
+            except urllib.error.HTTPError as exc:
+                if exc.code < 500:
+                    # Client error (4xx) — not retryable
+                    raise
+                # Server error (5xx) — retryable
+                last_http_error = exc
+                backoff = _DEPLOY_INITIAL_BACKOFF * (_DEPLOY_BACKOFF_FACTOR ** attempt)
+                logger.warning(
+                    "Deployment returned HTTP %d on attempt %d/%d — "
+                    "retrying in %ds",
+                    exc.code, attempt + 1, _DEPLOY_MAX_RETRIES, backoff,
+                )
+                _mon.emit(
+                    "system", "deployment_retry",
+                    attempt=attempt + 1,
+                    http_code=exc.code,
+                    backoff=backoff,
+                )
+                if attempt < _DEPLOY_MAX_RETRIES - 1:
+                    time.sleep(backoff)
+
+            except urllib.error.URLError as exc:
+                # Connection-level failures (refused, reset, DNS) — also retryable
+                backoff = _DEPLOY_INITIAL_BACKOFF * (_DEPLOY_BACKOFF_FACTOR ** attempt)
+                logger.warning(
+                    "Deployment connection failed on attempt %d/%d (%s) — "
+                    "retrying in %ds",
+                    attempt + 1, _DEPLOY_MAX_RETRIES, exc.reason, backoff,
+                )
+                if attempt < _DEPLOY_MAX_RETRIES - 1:
+                    time.sleep(backoff)
+                else:
+                    _mon.emit(
+                        "system", "error",
+                        message=f"Deployment connection failed after "
+                        f"{_DEPLOY_MAX_RETRIES} attempts: {exc.reason}",
+                    )
+                    return json.dumps({
+                        "status": "error",
+                        "error": f"Connection failed after {_DEPLOY_MAX_RETRIES} "
+                        f"attempts: {exc.reason}",
+                        "error_type": "infrastructure",
+                        "recoverable": True,
+                        "attempts": _DEPLOY_MAX_RETRIES,
+                        "hint": (
+                            "The deployment may not be ready or may have crashed. "
+                            "Check get_training_deployment() for phase status and "
+                            "get_deployment_logs() for errors. Consider deleting "
+                            "and recreating the deployment."
+                        ),
+                    })
+
+        # If we exhausted retries on 5xx errors
+        if last_http_error is not None:
+            error_body = ""
+            try:
+                error_body = last_http_error.read().decode()[:5000]
+            except Exception:
+                pass
+            _mon.emit(
+                "system", "error",
+                message=f"Deployment HTTP {last_http_error.code} after "
+                f"{_DEPLOY_MAX_RETRIES} retries",
+            )
+            return json.dumps({
+                "status": "error",
+                "error": f"HTTP {last_http_error.code}: {last_http_error.reason} "
+                f"(after {_DEPLOY_MAX_RETRIES} retries with backoff)",
+                "error_type": "infrastructure",
+                "recoverable": True,
+                "response_body": error_body,
+                "attempts": _DEPLOY_MAX_RETRIES,
+                "hint": (
+                    "The deployment returned HTTP 5xx on all attempts. "
+                    "The training server may be crashed or overloaded. "
+                    "Try: 1) check get_deployment_logs() for errors, "
+                    "2) delete and recreate the deployment, "
+                    "3) if the problem persists, Basilica infrastructure "
+                    "may be experiencing an outage."
+                ),
+            })
 
         # Parse the result
         try:
@@ -1184,16 +1418,6 @@ def run_experiment_on_deployment(
                 "be created as public by default)."
             )
         return json.dumps(result_dict)
-    except urllib.error.URLError as exc:
-        _mon.emit("system", "error", message=f"Deployment connection failed: {exc.reason}")
-        return json.dumps({
-            "status": "error",
-            "error": f"Connection failed: {exc.reason}",
-            "hint": (
-                "The deployment may still be starting up. "
-                "Check get_training_deployment() for phase status."
-            ),
-        })
     except TimeoutError:
         _mon.emit("system", "error", message="Deployment training timed out")
         return json.dumps({
