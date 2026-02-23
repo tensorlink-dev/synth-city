@@ -14,6 +14,7 @@ Memory management:
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import traceback
@@ -50,6 +51,28 @@ _env_error: str | None = None
 _env_checked: bool = False
 
 
+def _import_research_session():
+    """Import ResearchSession, trying both possible module paths.
+
+    The open-synth-miner package may expose the class as either
+    ``src.research.agent_api.ResearchSession`` or ``research.agent_api.ResearchSession``
+    depending on how it was installed.
+    """
+    for mod_path in ("src.research.agent_api", "research.agent_api"):
+        try:
+            mod = importlib.import_module(mod_path)
+            cls = getattr(mod, "ResearchSession", None)
+            if cls is not None:
+                logger.info("Loaded ResearchSession from %s", mod_path)
+                return cls
+        except ImportError:
+            pass
+    raise ImportError(
+        "Cannot import ResearchSession from src.research.agent_api or research.agent_api. "
+        "Ensure open-synth-miner is installed: pip install open-synth-miner"
+    )
+
+
 def _check_env() -> str | None:
     """Validate that the ResearchSession can be imported.
 
@@ -66,7 +89,7 @@ def _check_env() -> str | None:
             # Bot session available — assume environment is OK
             _env_checked = True
             return None
-        from src.research.agent_api import ResearchSession  # noqa: F401
+        _import_research_session()
         _env_checked = True
         return None
     except Exception as exc:
@@ -101,7 +124,7 @@ def _get_session():
     # CLI / standalone fallback
     global _session
     if _session is None:
-        from src.research.agent_api import ResearchSession  # type: ignore[import-untyped]
+        ResearchSession = _import_research_session()
         _session = ResearchSession()
     return _session
 
@@ -297,8 +320,12 @@ def create_experiment(
     try:
         session = _get_session()
         block_list = json.loads(blocks) if isinstance(blocks, str) else blocks
-        hk = json.loads(head_kwargs) if head_kwargs else None
-        bk = json.loads(block_kwargs) if block_kwargs else None
+        hk = json.loads(head_kwargs) if isinstance(head_kwargs, str) and head_kwargs else (
+            head_kwargs if isinstance(head_kwargs, (dict, list)) else None
+        )
+        bk = json.loads(block_kwargs) if isinstance(block_kwargs, str) and block_kwargs else (
+            block_kwargs if isinstance(block_kwargs, (dict, list)) else None
+        )
 
         # Apply timeframe defaults if specified
         if timeframe and timeframe in TIMEFRAME_CONFIGS:
@@ -502,7 +529,9 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
         return _env_error_response("run_preset")
     try:
         session = _get_session()
-        ov = json.loads(overrides) if overrides else None
+        ov = json.loads(overrides) if isinstance(overrides, str) and overrides else (
+            overrides if isinstance(overrides, (dict, list)) else None
+        )
         result = session.run_preset(preset_name, epochs=epochs, overrides=ov)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
@@ -536,7 +565,10 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
         return _env_error_response("sweep_presets")
     try:
         session = _get_session()
-        names = json.loads(preset_names) if preset_names else None
+        if isinstance(preset_names, list):
+            names = preset_names
+        else:
+            names = json.loads(preset_names) if preset_names else None
         result = session.sweep(preset_names=names, epochs=epochs)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:

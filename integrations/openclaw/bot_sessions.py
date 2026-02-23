@@ -185,7 +185,8 @@ class BotSession:
         with self._research_lock:
             # Double-check after acquiring lock
             if self._research_session is None:
-                from src.research.agent_api import ResearchSession
+                from pipeline.tools.research_tools import _import_research_session
+                ResearchSession = _import_research_session()
                 self._research_session = ResearchSession()
             return self._research_session
 

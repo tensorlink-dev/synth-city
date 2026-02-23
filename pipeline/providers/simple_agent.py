@@ -63,7 +63,8 @@ class AgentResult:
 def _coerce_args(params: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
     """Robustly coerce sloppy LLM outputs to the expected types.
 
-    Handles: empty-string → empty-list, JSON-in-string, string booleans.
+    Handles: empty-string → empty-list, JSON-in-string, string booleans,
+    and list/dict → JSON string when a string type is expected.
     """
     properties = schema.get("properties", {})
     coerced: dict[str, Any] = {}
@@ -95,6 +96,10 @@ def _coerce_args(params: dict[str, Any], schema: dict[str, Any]) -> dict[str, An
                 value = float(value)
             except ValueError:
                 pass
+
+        elif expected_type == "string" and isinstance(value, (list, dict)):
+            # LLM sent a native JSON structure where a JSON-encoded string was expected
+            value = json.dumps(value)
 
         elif isinstance(value, str):
             # Try to parse JSON objects/arrays hiding in strings

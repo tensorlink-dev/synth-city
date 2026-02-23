@@ -855,8 +855,16 @@ def create_training_deployment(
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
         deploy_image = image or BASILICA_DEPLOY_IMAGE
-        gpu_list = json.loads(gpu_models) if gpu_models else None
-        env_dict = json.loads(env) if env else {}
+        # gpu_models may arrive as a JSON string or a native list from the LLM
+        if isinstance(gpu_models, list):
+            gpu_list = gpu_models
+        else:
+            gpu_list = json.loads(gpu_models) if gpu_models else None
+        # env may arrive as a JSON string or a native dict from the LLM
+        if isinstance(env, dict):
+            env_dict = env
+        else:
+            env_dict = json.loads(env) if env else {}
 
         # Inject HF_TOKEN so the pod can download training data
         if HF_TOKEN and "HF_TOKEN" not in env_dict:
@@ -902,12 +910,25 @@ def get_training_deployment(name: str) -> str:
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
+        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+        raw_replicas = getattr(resp, "replicas", None)
+        replicas = None
+        if raw_replicas is not None:
+            replicas = [
+                {
+                    "phase": getattr(r, "phase", None),
+                    "ready": getattr(r, "ready", None),
+                    "started": getattr(r, "started", None),
+                    "name": getattr(r, "name", None),
+                }
+                for r in raw_replicas
+            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
         return json.dumps({
             "instance_name": resp.instance_name,
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
-            "replicas": getattr(resp, "replicas", None),
+            "replicas": replicas,
             "created_at": str(getattr(resp, "created_at", "")),
         }, indent=2)
     except Exception as exc:
