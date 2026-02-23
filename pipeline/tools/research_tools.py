@@ -42,6 +42,94 @@ SESSION_MAX_RESULTS: int = 100
 SESSION_KEEP_TOP_N: int = 10
 
 # ---------------------------------------------------------------------------
+# Static fallback data — used when open-synth-miner is not installed.
+# This lets discovery tools (list_blocks, list_heads, list_presets) return
+# useful data so the Planner can still produce experiment plans without the
+# research environment.  The data mirrors the open-synth-miner component
+# registry as of 2025-02.
+# ---------------------------------------------------------------------------
+_FALLBACK_BLOCKS: list[dict] = [
+    {"name": "RevIN", "cost": "very low",
+     "best_for": "Input normalization - must be first block"},
+    {"name": "LayerNormBlock", "cost": "very low",
+     "best_for": "Inter-block normalization"},
+    {"name": "DLinearBlock", "cost": "very low",
+     "best_for": "Decomposition baseline"},
+    {"name": "RNNBlock", "cost": "low",
+     "best_for": "Minimal recurrence"},
+    {"name": "ResConvBlock", "cost": "low",
+     "best_for": "Local features"},
+    {"name": "BiTCNBlock", "cost": "low",
+     "best_for": "Dilated local patterns"},
+    {"name": "SDEEvolutionBlock", "cost": "low",
+     "best_for": "Stochastic residual"},
+    {"name": "GRUBlock", "cost": "low-med",
+     "best_for": "Lighter LSTM alternative"},
+    {"name": "LSTMBlock", "cost": "medium",
+     "best_for": "Sequential/momentum patterns"},
+    {"name": "FourierBlock", "cost": "medium",
+     "best_for": "Periodic patterns"},
+    {"name": "TransformerBlock", "cost": "medium",
+     "best_for": "Long-range attention"},
+    {"name": "TimeMixerBlock", "cost": "medium",
+     "best_for": "Multi-scale mixing"},
+    {"name": "Unet1DBlock", "cost": "medium",
+     "best_for": "Multi-resolution"},
+    {"name": "TransformerEncoder", "cost": "high",
+     "best_for": "Deep attention"},
+    {"name": "TimesNetBlock", "cost": "high",
+     "best_for": "Period-aware 2D convolution"},
+]
+
+_FALLBACK_HEADS: list[dict] = [
+    {"name": "GBMHead", "expressiveness": "low",
+     "description": "Constant mu, sigma - simplest baseline"},
+    {"name": "SDEHead", "expressiveness": "medium",
+     "description": "Deeper mu, sigma network"},
+    {"name": "SimpleHorizonHead", "expressiveness": "medium",
+     "description": "Per-step via pooling"},
+    {"name": "HorizonHead", "expressiveness": "high",
+     "description": "Per-step via cross-attention"},
+    {"name": "NeuralBridgeHead", "expressiveness": "high",
+     "description": "Macro+micro hierarchy"},
+    {"name": "NeuralSDEHead", "expressiveness": "very high",
+     "description": "Full neural SDE"},
+]
+
+_FALLBACK_PRESETS: list[dict] = [
+    {"name": "transformer_lstm", "head": "GBMHead",
+     "blocks": ["RevIN", "TransformerBlock", "LSTMBlock"],
+     "tags": ["hybrid", "attention+recurrent"]},
+    {"name": "pure_transformer", "head": "GBMHead",
+     "blocks": ["RevIN", "TransformerBlock"],
+     "tags": ["attention"]},
+    {"name": "conv_gru", "head": "GBMHead",
+     "blocks": ["RevIN", "ResConvBlock", "GRUBlock"],
+     "tags": ["hybrid", "conv+recurrent"]},
+    {"name": "dlinear_baseline", "head": "GBMHead",
+     "blocks": ["RevIN", "DLinearBlock"],
+     "tags": ["baseline", "decomposition"]},
+    {"name": "fourier_lstm", "head": "GBMHead",
+     "blocks": ["RevIN", "FourierBlock", "LSTMBlock"],
+     "tags": ["hybrid", "frequency+recurrent"]},
+    {"name": "timemixer", "head": "GBMHead",
+     "blocks": ["RevIN", "TimeMixerBlock"],
+     "tags": ["multi-scale"]},
+    {"name": "bitcn_lstm", "head": "GBMHead",
+     "blocks": ["RevIN", "BiTCNBlock", "LSTMBlock"],
+     "tags": ["hybrid", "dilated+recurrent"]},
+    {"name": "sde_evolution", "head": "SDEHead",
+     "blocks": ["RevIN", "SDEEvolutionBlock"],
+     "tags": ["stochastic"]},
+    {"name": "unet_transformer", "head": "GBMHead",
+     "blocks": ["RevIN", "Unet1DBlock", "TransformerBlock"],
+     "tags": ["hybrid", "multi-resolution"]},
+    {"name": "timesnet", "head": "GBMHead",
+     "blocks": ["RevIN", "TimesNetBlock"],
+     "tags": ["period-aware"]},
+]
+
+# ---------------------------------------------------------------------------
 # Lazy-loaded ResearchSession — per-bot when running via bridge, global for CLI
 # ---------------------------------------------------------------------------
 _session = None
@@ -52,14 +140,18 @@ _env_checked: bool = False
 
 
 def _import_research_session():
-    """Import ResearchSession, trying both possible module paths.
+    """Import ResearchSession, trying known module paths.
 
-    The open-synth-miner package may expose the class as either
-    ``src.research.agent_api.ResearchSession`` or ``research.agent_api.ResearchSession``
-    depending on how it was installed.
+    The open-synth-miner package exposes the class as
+    ``osa.research.agent_api.ResearchSession``.  Legacy installs may still
+    use ``src.research.agent_api`` or ``research.agent_api``.
     """
     errors: list[tuple[str, Exception]] = []
-    for mod_path in ("src.research.agent_api", "research.agent_api"):
+    for mod_path in (
+        "osa.research.agent_api",
+        "src.research.agent_api",
+        "research.agent_api",
+    ):
         try:
             mod = importlib.import_module(mod_path)
             cls = getattr(mod, "ResearchSession", None)
@@ -224,7 +316,8 @@ def list_blocks() -> str:
     """Discover registered blocks in open-synth-miner."""
     env_err = _check_env()
     if env_err:
-        return _env_error_response("list_blocks")
+        logger.info("Returning static block list (open-synth-miner not available)")
+        return json.dumps({"blocks": _FALLBACK_BLOCKS, "source": "static"}, indent=2)
     try:
         session = _get_session()
         blocks = session.list_blocks()
@@ -238,7 +331,8 @@ def list_heads() -> str:
     """Discover registered heads in open-synth-miner."""
     env_err = _check_env()
     if env_err:
-        return _env_error_response("list_heads")
+        logger.info("Returning static head list (open-synth-miner not available)")
+        return json.dumps({"heads": _FALLBACK_HEADS, "source": "static"}, indent=2)
     try:
         session = _get_session()
         heads = session.list_heads()
@@ -252,7 +346,8 @@ def list_presets() -> str:
     """Discover built-in experiment presets."""
     env_err = _check_env()
     if env_err:
-        return _env_error_response("list_presets")
+        logger.info("Returning static preset list (open-synth-miner not available)")
+        return json.dumps({"presets": _FALLBACK_PRESETS, "source": "static"}, indent=2)
     try:
         session = _get_session()
         presets = session.list_presets()
@@ -290,7 +385,10 @@ def list_presets() -> str:
             "horizon": {"type": "integer", "description": "Prediction steps (auto from timeframe)"},
             "n_paths": {"type": "integer", "description": "Monte Carlo paths (default: 100)"},
             "lr": {"type": "number", "description": "Learning rate (default: 0.001)"},
-            "seq_len": {"type": "integer", "description": "Input sequence length (auto from timeframe)"},
+            "seq_len": {
+                "type": "integer",
+                "description": "Input sequence length (auto from timeframe)",
+            },
             "batch_size": {"type": "integer", "description": "Batch size (default: 4)"},
             "feature_dim": {"type": "integer", "description": "Input features (default: 4)"},
             "head_kwargs": {"type": "string", "description": "Extra head params as JSON dict"},
@@ -633,7 +731,10 @@ def compare_results() -> str:
     """Compare all results from this session."""
     env_err = _check_env()
     if env_err:
-        return _env_error_response("compare_results")
+        return json.dumps({
+            "ranking": [],
+            "note": "No session (open-synth-miner not installed)",
+        })
     try:
         session = _get_session()
         result = session.compare()
@@ -647,7 +748,11 @@ def session_summary() -> str:
     """Get session summary: num experiments, comparison, all results."""
     env_err = _check_env()
     if env_err:
-        return _env_error_response("session_summary")
+        return json.dumps({
+            "num_experiments": 0,
+            "results": [],
+            "note": "No session available (open-synth-miner not installed)",
+        })
     try:
         session = _get_session()
         result = session.summary()

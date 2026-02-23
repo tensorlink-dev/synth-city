@@ -52,7 +52,10 @@ def _build_asset_files(timeframe: str, assets: list[str] | None = None) -> dict[
 
 def _resolve_engineer(name: str) -> Any:
     """Instantiate a FeatureEngineer by short name."""
-    from src.data.market_data_loader import ZScoreEngineer, WaveletEngineer  # type: ignore[import-untyped]
+    from osa.data.market_data_loader import (  # type: ignore[import-untyped]
+        WaveletEngineer,
+        ZScoreEngineer,
+    )
 
     engineers = {
         "zscore": ZScoreEngineer,
@@ -86,7 +89,10 @@ def get_loader(
     stride : override ``DATA_STRIDE``
     force_new : discard any cached loader and rebuild
     """
-    from src.data.market_data_loader import HFOHLCVSource, MarketDataLoader  # type: ignore[import-untyped]
+    from osa.data.market_data_loader import (  # type: ignore[import-untyped]
+        HFOHLCVSource,
+        MarketDataLoader,
+    )
 
     if timeframe not in TIMEFRAME_CONFIGS:
         raise ValueError(

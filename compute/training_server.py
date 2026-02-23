@@ -41,7 +41,7 @@ def _get_session_class():
     if _session_cls is not None:
         return _session_cls
     errors: list[tuple[str, Exception]] = []
-    for mod_path in ("src.research.agent_api", "research.agent_api"):
+    for mod_path in ("osa.research.agent_api", "src.research.agent_api", "research.agent_api"):
         try:
             mod = importlib.import_module(mod_path)
             cls = getattr(mod, "ResearchSession", None)
@@ -75,7 +75,7 @@ def _build_data_loader(
 ):
     """Build a MarketDataLoader that fetches data from HuggingFace."""
     try:
-        from src.data.market_data_loader import (
+        from osa.data.market_data_loader import (
             HFOHLCVSource,
             MarketDataLoader,
             ZScoreEngineer,

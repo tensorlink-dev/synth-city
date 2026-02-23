@@ -41,9 +41,9 @@ def publish_model(experiment: str, crps_score: float, repo_id: str = "") -> str:
     try:
         import wandb
         from omegaconf import OmegaConf
-        from src.models.factory import create_model
-        from src.models.registry import discover_components, registry
-        from src.tracking.hub_manager import HubManager
+        from osa.models.factory import create_model
+        from osa.models.registry import discover_components, registry
+        from osa.tracking.hub_manager import HubManager
 
         if HF_TOKEN:
             from huggingface_hub import login

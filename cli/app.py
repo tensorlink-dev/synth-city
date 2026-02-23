@@ -131,7 +131,7 @@ def cmd_quick(args: argparse.Namespace) -> None:
     bootstrap_dirs()
     section_header("Quick Experiment")
     errors: list[tuple[str, Exception]] = []
-    for _mod_path in ("src.research.agent_api", "research.agent_api"):
+    for _mod_path in ("osa.research.agent_api", "src.research.agent_api", "research.agent_api"):
         try:
             _mod = importlib.import_module(_mod_path)
             quick_experiment = getattr(_mod, "quick_experiment", None)
