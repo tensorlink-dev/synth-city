@@ -314,11 +314,7 @@ def create_experiment(
     block_kwargs: str = "",
 ) -> str:
     """Create an experiment configuration dict."""
-    env_err = _check_env()
-    if env_err:
-        return _env_error_response("create_experiment")
     try:
-        session = _get_session()
         block_list = json.loads(blocks) if isinstance(blocks, str) else blocks
         hk = json.loads(head_kwargs) if isinstance(head_kwargs, str) and head_kwargs else (
             head_kwargs if isinstance(head_kwargs, (dict, list)) else None
@@ -336,19 +332,60 @@ def create_experiment(
             if seq_len == RESEARCH_SEQ_LEN:
                 seq_len = int(tf_cfg["input_len"])
 
-        experiment = session.create_experiment(
-            blocks=block_list,
-            head=head,
-            d_model=d_model,
-            feature_dim=feature_dim,
-            seq_len=seq_len,
-            horizon=horizon,
-            n_paths=n_paths,
-            batch_size=batch_size,
-            lr=lr,
-            head_kwargs=hk,
-            block_kwargs=bk,
+        # Try using ResearchSession if available (validates blocks/heads exist)
+        env_err = _check_env()
+        if not env_err:
+            try:
+                session = _get_session()
+                experiment = session.create_experiment(
+                    blocks=block_list,
+                    head=head,
+                    d_model=d_model,
+                    feature_dim=feature_dim,
+                    seq_len=seq_len,
+                    horizon=horizon,
+                    n_paths=n_paths,
+                    batch_size=batch_size,
+                    lr=lr,
+                    head_kwargs=hk,
+                    block_kwargs=bk,
+                )
+                if timeframe:
+                    experiment["timeframe"] = timeframe
+                return json.dumps(experiment, indent=2)
+            except Exception:
+                pass  # Fall through to local config builder
+
+        # Fallback: build the config dict locally without open-synth-miner.
+        # This is sufficient for remote training flows (deployment / SSH pod)
+        # where ResearchSession runs inside the Docker image.
+        logger.info(
+            "Building experiment config locally (open-synth-miner not available)"
         )
+        head_cfg: dict = {"_target_": head}
+        if hk and isinstance(hk, dict):
+            head_cfg.update(hk)
+
+        experiment = {
+            "model": {
+                "backbone": {
+                    "blocks": block_list,
+                    "d_model": d_model,
+                    "feature_dim": feature_dim,
+                    "seq_len": seq_len,
+                },
+                "head": head_cfg,
+            },
+            "training": {
+                "horizon": horizon,
+                "n_paths": n_paths,
+                "batch_size": batch_size,
+                "lr": lr,
+            },
+        }
+
+        if bk and isinstance(bk, list):
+            experiment["model"]["backbone"]["block_kwargs"] = bk
 
         # Tag the experiment with timeframe for downstream tools
         if timeframe:
