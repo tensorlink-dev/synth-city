@@ -58,6 +58,7 @@ def _import_research_session():
     ``src.research.agent_api.ResearchSession`` or ``research.agent_api.ResearchSession``
     depending on how it was installed.
     """
+    errors: list[tuple[str, Exception]] = []
     for mod_path in ("src.research.agent_api", "research.agent_api"):
         try:
             mod = importlib.import_module(mod_path)
@@ -65,11 +66,13 @@ def _import_research_session():
             if cls is not None:
                 logger.info("Loaded ResearchSession from %s", mod_path)
                 return cls
-        except ImportError:
-            pass
+        except Exception as exc:
+            logger.warning("Failed to import %s: %s: %s", mod_path, type(exc).__name__, exc)
+            errors.append((mod_path, exc))
+    details = "; ".join(f"{path}: {type(exc).__name__}: {exc}" for path, exc in errors)
     raise ImportError(
-        "Cannot import ResearchSession from src.research.agent_api or research.agent_api. "
-        "Ensure open-synth-miner is installed: pip install open-synth-miner"
+        f"Cannot import ResearchSession from any known module path. "
+        f"Errors: {details}"
     )
 
 

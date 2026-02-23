@@ -142,18 +142,20 @@ def cmd_quick(args: argparse.Namespace) -> None:
     from pipeline.bootstrap import bootstrap_dirs
 
     bootstrap_dirs()
+    errors: list[tuple[str, Exception]] = []
     for _mod_path in ("src.research.agent_api", "research.agent_api"):
         try:
             _mod = importlib.import_module(_mod_path)
             quick_experiment = getattr(_mod, "quick_experiment", None)
             if quick_experiment is not None:
                 break
-        except ImportError:
-            pass
+        except Exception as exc:
+            errors.append((_mod_path, exc))
     else:
+        details = "; ".join(f"{p}: {type(e).__name__}: {e}" for p, e in errors)
         raise ImportError(
-            "Cannot import quick_experiment from src.research.agent_api or research.agent_api. "
-            "Ensure open-synth-miner is installed: pip install open-synth-miner"
+            f"Cannot import quick_experiment from any known module path. "
+            f"Errors: {details}"
         )
     blocks = [b.strip() for b in args.blocks.split(",")] if args.blocks else None
     result = quick_experiment(
