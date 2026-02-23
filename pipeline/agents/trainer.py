@@ -39,17 +39,8 @@ class TrainerAgent(BaseAgentWrapper):
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_experiment_runs",
-            # Basilica GPU cloud — rent, setup, train remotely, stop
-            "list_available_gpus",
-            "register_ssh_key",
-            "rent_gpu",
-            "rent_cheapest_gpu",
-            "list_active_rentals",
-            "stop_gpu_rental",
+            # Basilica GPU cloud — Docker-image-based deployments (only approach)
             "check_gpu_balance",
-            "setup_basilica_pod",
-            "run_experiment_on_basilica",
-            # Basilica deployments — Docker-image-based GPU pods (recommended)
             "create_training_deployment",
             "get_training_deployment",
             "get_deployment_logs",
