@@ -58,6 +58,10 @@ _file_handler.setLevel(logging.DEBUG)
 _file_handler.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
 logging.getLogger().addHandler(_file_handler)
 
+# Suppress noisy third-party loggers — only WARNING+ reaches console or file.
+for _noisy in ("httpx", "openai", "httpcore"):
+    logging.getLogger(_noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger("synth-city")
 
 

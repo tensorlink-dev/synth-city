@@ -208,7 +208,7 @@ class SimpleAgent:
 
         all_schemas = self.tool_schemas + [self._finish_schema]
         tool_names = sorted(self.tools.keys())
-        logger.info(
+        logger.debug(
             "Agent starting: model=%s  tools=%d [%s]  max_turns=%d",
             self.model, len(tool_names), ", ".join(tool_names), self.max_turns,
         )
@@ -350,16 +350,19 @@ class SimpleAgent:
                 content = json.dumps(result)
             else:
                 content = str(result)
-            logger.info("Tool %s returned %d chars", name, len(content))
             # Log full result at DEBUG level for post-mortem diagnostics.
-            # For error results, also log at WARNING so they appear in INFO logs.
+            # For error results, log at WARNING so they appear in INFO logs.
             is_error = (
                 '"error"' in content[:200]
                 or '"status": "error"' in content[:200]
             )
             if is_error:
-                logger.warning("Tool %s error result:\n%s", name, content[:5000])
+                logger.warning(
+                    "Tool %s error result (%d chars):\n%s",
+                    name, len(content), content[:5000],
+                )
             else:
+                logger.info("Tool %s returned %d chars", name, len(content))
                 logger.debug("Tool %s result:\n%s", name, content[:10000])
             _mon.emit("tool", "tool_result", name=name, size=len(content))
         except Exception as exc:
