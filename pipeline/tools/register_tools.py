@@ -140,7 +140,7 @@ def list_component_files() -> str:
 def reload_registry() -> str:
     """Re-discover components from disk and refresh the registry."""
     try:
-        from src.models.registry import discover_components, registry
+        from osa.models.registry import discover_components, registry
 
         with _registry_lock:
             discover_components(str(_COMPONENTS_DIR))

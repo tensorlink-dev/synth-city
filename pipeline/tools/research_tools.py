@@ -140,14 +140,18 @@ _env_checked: bool = False
 
 
 def _import_research_session():
-    """Import ResearchSession, trying both possible module paths.
+    """Import ResearchSession, trying known module paths.
 
-    The open-synth-miner package may expose the class as either
-    ``src.research.agent_api.ResearchSession`` or ``research.agent_api.ResearchSession``
-    depending on how it was installed.
+    The open-synth-miner package exposes the class as
+    ``osa.research.agent_api.ResearchSession``.  Legacy installs may still
+    use ``src.research.agent_api`` or ``research.agent_api``.
     """
     errors: list[tuple[str, Exception]] = []
-    for mod_path in ("src.research.agent_api", "research.agent_api"):
+    for mod_path in (
+        "osa.research.agent_api",
+        "src.research.agent_api",
+        "research.agent_api",
+    ):
         try:
             mod = importlib.import_module(mod_path)
             cls = getattr(mod, "ResearchSession", None)

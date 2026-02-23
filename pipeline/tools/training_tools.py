@@ -557,7 +557,7 @@ def setup_basilica_pod(
             f"{_pip} --quiet {shlex.quote(osm_install)}\n"
             f"{_pip} --quiet huggingface_hub pyarrow pandas numpy torch\n"
             f"python3 << 'PYEOF'\n"
-            f"tried = ['src.research.agent_api', 'research.agent_api']\n"
+            f"tried = ['osa.research.agent_api', 'src.research.agent_api', 'research.agent_api']\n"
             f"for m in tried:\n"
             f"    try:\n"
             f"        __import__(m)\n"
@@ -688,7 +688,7 @@ pred_len   = {int(tf_cfg["pred_len"])}
 try:
     import importlib as _il
     _session_cls = None
-    for _mod_path in ("src.research.agent_api", "research.agent_api"):
+    for _mod_path in ("osa.research.agent_api", "src.research.agent_api", "research.agent_api"):
         try:
             _mod = _il.import_module(_mod_path)
             _session_cls = getattr(_mod, "ResearchSession", None)
@@ -705,7 +705,7 @@ try:
     session = ResearchSession()
 
     try:
-        from src.data.market_data_loader import (
+        from osa.data.market_data_loader import (
             HFOHLCVSource, MarketDataLoader, ZScoreEngineer,
         )
         source = HFOHLCVSource(
