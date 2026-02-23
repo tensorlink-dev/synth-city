@@ -38,12 +38,8 @@ RUN pip install --no-cache-dir \
 RUN pip install --no-cache-dir \
     huggingface_hub pyarrow pandas numpy flask
 
-# Install open-synth-miner *after* its dependencies are available.
-# Try a standard (non-editable) install first.  If the repo lacks a
-# pyproject.toml/setup.py the pip install will fail — fall back to
-# PYTHONPATH so the src layout is still importable.
-RUN pip install --no-cache-dir /app/open-synth-miner 2>&1 \
-    || echo "WARNING: pip install failed — falling back to PYTHONPATH"
+# open-synth-miner is git-install-only (no setup.py/pyproject.toml).
+# Make it importable via PYTHONPATH.
 ENV PYTHONPATH="/app/open-synth-miner:${PYTHONPATH:-}"
 
 # Verify ResearchSession is importable (fail-fast at build time, not runtime)
