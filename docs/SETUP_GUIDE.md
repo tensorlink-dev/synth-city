@@ -617,16 +617,17 @@ client.stop_rental(rental.rental_id)
 
 ### Agent tools
 
-The Trainer agent has access to these GPU tools:
+The Trainer agent has access to these GPU deployment tools:
 
 | Tool | Description |
 |------|-------------|
-| `list_available_gpus` | List cheap GPU offerings with pricing |
-| `rent_gpu` | Rent a specific offering by ID |
-| `rent_cheapest_gpu` | Auto-rent the cheapest available GPU |
-| `list_active_rentals` | Show all current rentals |
-| `stop_gpu_rental` | Stop a rental, returns cost summary |
 | `check_gpu_balance` | Check account balance |
+| `create_training_deployment` | Create a Docker-image-based GPU deployment |
+| `get_training_deployment` | Check deployment status (phase, URL) |
+| `get_deployment_logs` | Retrieve deployment container logs |
+| `list_deployments` | List all active deployments |
+| `delete_training_deployment` | Delete a deployment and free resources |
+| `run_experiment_on_deployment` | Run training on a deployment via HTTP |
 
 ---
 
@@ -939,7 +940,7 @@ The registry:
 | Execution | `run_experiment`, `run_preset`, `sweep_presets` | Trainer, Debugger |
 | Analysis | `compare_results`, `session_summary` | Planner, Trainer |
 | Publishing | `publish_model`, `log_to_trackio` | Publisher |
-| Training | `run_training_local`, `list_available_gpus`, `rent_cheapest_gpu`, `stop_gpu_rental` | Trainer |
+| Training | `run_training_local`, `create_training_deployment`, `run_experiment_on_deployment`, `delete_training_deployment` | Trainer |
 | Storage | `save_to_hippius`, `list_hippius_runs`, `load_hippius_run`, `load_hippius_history` | (advanced) |
 | Utilities | `run_python`, `read_file`, `write_file` | (advanced) |
 | Market Data | `get_price`, `get_price_history` | (advanced) |
@@ -1220,13 +1221,13 @@ The pipeline has built-in stall detection. If the same config is produced twice 
 - Try a different port: `python main.py bridge --port 9000`
 - Ensure all dependencies are installed (`pip install -r requirements.txt`)
 
-### Basilica GPU rental issues
+### Basilica GPU deployment issues
 
 - Verify `BASILICA_API_TOKEN` is set in `.env`
-- Run `list_available_gpus` to check if any offerings match your budget cap
-- If no offerings appear, increase `BASILICA_MAX_HOURLY_RATE` or broaden `BASILICA_ALLOWED_GPU_TYPES`
-- Use `list_active_rentals` to check the status of running rentals
-- Always call `stop_gpu_rental` when training completes to avoid unnecessary charges
+- Use `get_training_deployment(name)` to check deployment phase (Pending/Running/Failed)
+- Use `get_deployment_logs(name)` to debug startup or training failures
+- Use `list_deployments` to see all active deployments
+- Always call `delete_training_deployment` when training completes to avoid unnecessary charges
 
 ### Hippius storage not working
 

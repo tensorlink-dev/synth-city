@@ -253,7 +253,7 @@ class BasilicaGPUClient:
             cpu=cpu,
             memory=memory,
             storage=storage,
-            public=False,
+            public=True,
         )
         logger.info(
             "Created deployment %s (image=%s, phase=%s, url=%s)",

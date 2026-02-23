@@ -1,21 +1,24 @@
 """
-Training tools — local script execution and Basilica GPU cloud rentals.
+Training tools — local script execution and Basilica GPU cloud deployments.
 
 Local tools (``run_training_local``, ``run_python``) execute scripts in the
-workspace.  Basilica tools talk to the secure-cloud GPU marketplace via
-``basilica-sdk`` and are budget-capped to cheap offerings only.
+workspace.  Basilica tools talk to the GPU marketplace via ``basilica-sdk``.
 
-Remote training on Basilica
------------------------------
+Remote training on Basilica (Docker image deployments)
+--------------------------------------------------------
 The recommended flow for GPU-heavy training is:
 
-1. ``rent_cheapest_gpu()`` — provision a GPU pod
-2. ``setup_basilica_pod(rental_id)`` — install open-synth-miner + deps
-3. ``run_experiment_on_basilica(rental_id, experiment, ...)`` — train on the pod,
-   data is downloaded from HuggingFace directly on the pod (not transferred locally)
-4. ``stop_gpu_rental(rental_id)`` — release the pod
+1. ``create_training_deployment()`` — spin up a Docker-image-based GPU pod
+2. ``run_experiment_on_deployment(url, experiment)`` — train via HTTP
+3. ``delete_training_deployment(name)`` — free GPU resources
 
-This avoids running heavy training on the local controller machine.
+The deployment uses a pre-built Docker image with open-synth-miner already
+installed.  No SSH or pip install needed.  Training data is downloaded from
+HuggingFace directly on the pod.
+
+Legacy SSH rental tools (``rent_cheapest_gpu``, ``setup_basilica_pod``,
+``run_experiment_on_basilica``) are still registered for direct/CLI use but
+are not exposed to pipeline agents.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ import shlex
 import subprocess
 import sys
 import time
+from typing import Any
 
 from config import (
     BASILICA_DEPLOY_IMAGE,
@@ -245,7 +249,10 @@ def register_ssh_key(name: str = "synth-city", public_key_path: str = "") -> str
         "Rent a specific GPU offering by its offering ID. "
         "Returns rental ID, SSH command, IP address, and hourly cost. "
         "Use list_available_gpus first to find offering IDs. "
-        "SSH key registration is handled automatically."
+        "SSH key registration is handled automatically. "
+        "NOTE: Some offerings (especially Verda) may fail with 'Operating "
+        "system is not valid'. If you hit this, use rent_cheapest_gpu instead — "
+        "it automatically skips incompatible offerings."
     ),
 )
 def rent_gpu(offering_id: str) -> str:
@@ -264,7 +271,20 @@ def rent_gpu(offering_id: str) -> str:
             "is_spot": resp.is_spot,
         }, indent=2)
     except Exception as exc:
-        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+        error_msg = str(exc)
+        result: dict[str, Any] = {"error": f"{type(exc).__name__}: {exc}"}
+        if "Operating system is not valid" in error_msg:
+            logger.warning(
+                "Offering %s rejected: OS not valid for instance type. "
+                "Use rent_cheapest_gpu() to auto-skip incompatible offerings.",
+                offering_id,
+            )
+            result["hint"] = (
+                "This offering is incompatible (OS not valid for this instance type). "
+                "Use rent_cheapest_gpu instead — it automatically tries multiple "
+                "offerings and skips ones that fail."
+            )
+        return json.dumps(result)
 
 
 @tool(
@@ -1144,11 +1164,26 @@ def run_experiment_on_deployment(
         except Exception:
             pass
         _mon.emit("system", "error", message=f"Deployment HTTP {exc.code}: {exc.reason}")
-        return json.dumps({
+        result_dict: dict[str, Any] = {
             "status": "error",
             "error": f"HTTP {exc.code}: {exc.reason}",
             "response_body": error_body,
-        })
+        }
+        if exc.code == 401:
+            logger.warning(
+                "Deployment returned 401 Unauthorized for URL %s. "
+                "share_token provided: %s",
+                deployment_url,
+                bool(share_token),
+            )
+            result_dict["hint"] = (
+                "The deployment returned 401 Unauthorized. "
+                "If the deployment was created with public=False, you must pass "
+                "the share_token from create_training_deployment. "
+                "Alternatively, delete and recreate the deployment (it will now "
+                "be created as public by default)."
+            )
+        return json.dumps(result_dict)
     except urllib.error.URLError as exc:
         _mon.emit("system", "error", message=f"Deployment connection failed: {exc.reason}")
         return json.dumps({
