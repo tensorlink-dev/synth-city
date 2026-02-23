@@ -1,21 +1,24 @@
 """
-Training tools — local script execution and Basilica GPU cloud rentals.
+Training tools — local script execution and Basilica GPU cloud deployments.
 
 Local tools (``run_training_local``, ``run_python``) execute scripts in the
-workspace.  Basilica tools talk to the secure-cloud GPU marketplace via
-``basilica-sdk`` and are budget-capped to cheap offerings only.
+workspace.  Basilica tools talk to the GPU marketplace via ``basilica-sdk``.
 
-Remote training on Basilica
------------------------------
+Remote training on Basilica (Docker image deployments)
+--------------------------------------------------------
 The recommended flow for GPU-heavy training is:
 
-1. ``rent_cheapest_gpu()`` — provision a GPU pod
-2. ``setup_basilica_pod(rental_id)`` — install open-synth-miner + deps
-3. ``run_experiment_on_basilica(rental_id, experiment, ...)`` — train on the pod,
-   data is downloaded from HuggingFace directly on the pod (not transferred locally)
-4. ``stop_gpu_rental(rental_id)`` — release the pod
+1. ``create_training_deployment()`` — spin up a Docker-image-based GPU pod
+2. ``run_experiment_on_deployment(url, experiment)`` — train via HTTP
+3. ``delete_training_deployment(name)`` — free GPU resources
 
-This avoids running heavy training on the local controller machine.
+The deployment uses a pre-built Docker image with open-synth-miner already
+installed.  No SSH or pip install needed.  Training data is downloaded from
+HuggingFace directly on the pod.
+
+Legacy SSH rental tools (``rent_cheapest_gpu``, ``setup_basilica_pod``,
+``run_experiment_on_basilica``) are still registered for direct/CLI use but
+are not exposed to pipeline agents.
 """
 
 from __future__ import annotations
