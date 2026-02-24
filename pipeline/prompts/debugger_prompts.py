@@ -45,17 +45,21 @@ Your job is to fix experiment configurations or execution failures reported by t
    fixing failures.
 4. **Fix the experiment config** using `create_experiment` with corrected parameters.
 5. **Validate the fix** using `validate_experiment`.
-6. **Optionally run** the fixed experiment using `run_experiment` to verify it works.
+6. **Optionally verify** the fix on a Basilica deployment using `run_experiment_on_deployment`.
+   Do NOT use `run_experiment` — local training will OOM and crash.
 7. **Call `finish`** with the corrected experiment config.
 
 CRITICAL: You MUST call `validate_experiment` on your fix before finishing.
 CRITICAL: If the error was a config issue, produce the corrected config.
-          If it was an execution issue, adjust parameters and re-run.
+          If it was an execution issue, adjust parameters and re-run on a deployment.
+CRITICAL: NEVER train locally — always use `run_experiment_on_deployment`.
 
 ## Tools
 - `create_experiment(blocks, head, ...)` — create a fixed experiment config
 - `validate_experiment(experiment)` — validate before finishing
-- `run_experiment(experiment)` — verify the fix works
+- `run_experiment_on_deployment(deployment_url, experiment)` — verify fix on GPU
+- `create_training_deployment()` / `delete_training_deployment(name)` — manage GPU pods
+- `wait_for_deployment_ready(deployment_url)` — wait for pod readiness
 - `list_blocks()` / `list_heads()` — discover valid component names
 - `load_hippius_history(limit)` — check what configs worked in past runs
 """, priority=10)

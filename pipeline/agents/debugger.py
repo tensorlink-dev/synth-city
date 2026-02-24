@@ -7,6 +7,7 @@ from typing import Any, Callable
 import pipeline.prompts.debugger_prompts  # noqa: F401
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
 import pipeline.tools.research_tools  # noqa: F401 — registers experiment tools
+import pipeline.tools.training_tools  # noqa: F401 — registers training/GPU tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
 from pipeline.tools.registry import build_toolset
@@ -22,11 +23,18 @@ class DebuggerAgent(BaseAgentWrapper):
         tool_names = [
             "create_experiment",
             "validate_experiment",
-            "run_experiment",
+            # NOTE: run_experiment excluded — local training exhausts RAM.
+            # Debugger verifies fixes via run_experiment_on_deployment.
             "list_blocks",
             "list_heads",
             # Historical context (check what worked before)
             "load_hippius_history",
+            # Basilica GPU deployments — verify fixes remotely
+            "run_experiment_on_deployment",
+            "create_training_deployment",
+            "get_training_deployment",
+            "wait_for_deployment_ready",
+            "delete_training_deployment",
         ]
         return build_toolset(*tool_names)
 

@@ -91,17 +91,6 @@ Train BOTH. The model needs:
 
 ---
 
-## Local tools — lightweight use only
-
-`run_experiment` and `run_preset` are available for **validation and quick config
-checks only** — NOT for real training runs. Use them only if Basilica is unavailable
-or for single-step validation (epochs=1, n_paths=10, tiny d_model).
-
-`create_data_loader` / `data_loader_info` are diagnostic tools. The actual data
-download happens on the Basilica pod; you do not need to pre-download locally.
-
----
-
 ## Workflow
 
 ### Step 1: Create a Basilica deployment
