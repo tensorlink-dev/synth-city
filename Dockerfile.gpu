@@ -36,7 +36,7 @@ RUN git clone --depth 1 --branch "$OSM_BRANCH" "$OSM_REPO" /app/open-synth-miner
 RUN pip install --no-cache-dir \
     torch --index-url https://download.pytorch.org/whl/cu121
 RUN pip install --no-cache-dir \
-    huggingface_hub pyarrow pandas numpy flask
+    huggingface_hub pyarrow pandas numpy flask scipy torchsde
 
 # Install open-synth-miner as a package (exposes the 'osa' namespace)
 RUN pip install --no-cache-dir -e /app/open-synth-miner
