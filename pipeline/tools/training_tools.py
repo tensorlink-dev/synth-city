@@ -841,6 +841,11 @@ _DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
 # Abort early if DNS/connection failures persist this many consecutive probes
 # (meaning the hostname never resolved — the deployment may be deleted or invalid)
 _DEPLOY_HEALTH_MAX_DNS_FAILURES = 8
+# Abort early if the reverse proxy keeps returning 500s for this many probes.
+# Reverse-proxy 500s mean the pod is reachable but the training server inside
+# never started (e.g. crash on import, OOM, missing dependency).  Waiting
+# longer won't help — the container needs to be deleted and recreated.
+_DEPLOY_HEALTH_MAX_PROXY_ERRORS = 12
 # How often (in probes) to check the pod phase via the Basilica API
 _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
 
@@ -945,15 +950,21 @@ def wait_for_deployment_ready(
 ) -> str:
     """Probe a deployment URL until the HTTP server is responsive.
 
-    Includes three early-abort mechanisms so the agent doesn't waste the full
+    Includes five early-abort mechanisms so the agent doesn't waste the full
     timeout on obviously-broken deployments:
 
     1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
        ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
        is up but the health check is crashing.  Waiting longer won't fix it.
-    2. **Pod phase checking** — every few probes, queries the Basilica API to
+    2. **Consecutive DNS failures** — if the hostname never resolves after
+       ``_DEPLOY_HEALTH_MAX_DNS_FAILURES`` probes, the deployment was likely
+       deleted or never provisioned.
+    3. **Consecutive reverse-proxy errors** — if the reverse proxy keeps
+       returning HTTP 500 for ``_DEPLOY_HEALTH_MAX_PROXY_ERRORS`` probes,
+       the pod is reachable but the training server inside never started.
+    4. **Pod phase checking** — every few probes, queries the Basilica API to
        see if the pod has entered a terminal ``Failed`` phase.
-    3. **Cross-deployment failure tracking** — if multiple consecutive
+    5. **Cross-deployment failure tracking** — if multiple consecutive
        deployments have all failed health checks, the Docker image is likely
        broken.  The error message escalates to tell the agent to stop
        recreating deployments.
@@ -965,6 +976,7 @@ def wait_for_deployment_ready(
     last_detail = ""
     consecutive_server_errors = 0
     consecutive_dns_failures = 0
+    consecutive_proxy_errors = 0
 
     while time.time() < deadline:
         attempts += 1
@@ -984,9 +996,7 @@ def wait_for_deployment_ready(
             })
 
         # Track consecutive errors from the *actual server process* (tagged
-        # ``[server]`` by ``_probe_deployment_health``).  Reverse-proxy errors
-        # (``[reverse-proxy]``) mean the container isn't ready yet — those are
-        # transient and should be waited through, not trigger early abort.
+        # ``[server]`` by ``_probe_deployment_health``).
         is_server_error = "[server]" in detail
         if is_server_error:
             consecutive_server_errors += 1
@@ -1001,6 +1011,17 @@ def wait_for_deployment_ready(
             consecutive_dns_failures += 1
         else:
             consecutive_dns_failures = 0
+
+        # Track consecutive reverse-proxy errors (pod reachable, server not).
+        # ``[reverse-proxy]`` tagged errors mean the pod is running but the
+        # training server process inside never started or crashed immediately.
+        # A few of these are normal during pod startup, but if they persist
+        # for many probes the server is never going to come up.
+        is_proxy_error = "[reverse-proxy]" in detail
+        if is_proxy_error:
+            consecutive_proxy_errors += 1
+        else:
+            consecutive_proxy_errors = 0
 
         # Early abort: hostname never resolves — deployment may not exist
         if consecutive_dns_failures >= _DEPLOY_HEALTH_MAX_DNS_FAILURES:
@@ -1041,6 +1062,72 @@ def wait_for_deployment_ready(
                 error_result["error_type"] = "environment"
                 error_result["recoverable"] = False
             return json.dumps(error_result)
+
+        # Early abort: reverse proxy keeps returning 500s — training server
+        # inside the container never started (crash on import, OOM, etc.).
+        if consecutive_proxy_errors >= _DEPLOY_HEALTH_MAX_PROXY_ERRORS:
+            _deployment_failure_count += 1
+            elapsed = int(time.time() - (deadline - timeout))
+            logger.warning(
+                "Deployment %s had %d consecutive reverse-proxy errors "
+                "over %ds — training server never started (last: %s) "
+                "[%d consecutive deploy failures]",
+                deployment_url, consecutive_proxy_errors, elapsed, detail,
+                _deployment_failure_count,
+            )
+
+            # Auto-fetch deployment logs for diagnostics.
+            deploy_logs = ""
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(deployment_url).hostname or ""
+                instance_name = host.split(".")[0] if "." in host else ""
+                if instance_name:
+                    client = _get_gpu_client()
+                    deploy_logs = client.get_deployment_logs(
+                        instance_name, tail=50,
+                    )
+            except Exception as log_exc:
+                logger.debug("Could not fetch deploy logs: %s", log_exc)
+
+            proxy_err: dict[str, Any] = {
+                "status": "error",
+                "error": (
+                    f"Training server never started — reverse proxy returned "
+                    f"HTTP 500 for {consecutive_proxy_errors} consecutive "
+                    f"probes ({elapsed}s)"
+                ),
+                "url": deployment_url,
+                "last_probe": detail,
+                "probes": attempts,
+                "consecutive_deploy_failures": _deployment_failure_count,
+            }
+            if deploy_logs and deploy_logs.strip():
+                proxy_err["deploy_logs_tail"] = deploy_logs[-3000:]
+            elif deploy_logs is not None:
+                proxy_err["deploy_logs_tail"] = (
+                    "(empty — container may not have started)"
+                )
+            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+                proxy_err["hint"] = (
+                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+                    f"have all failed to start the training server. "
+                    f"The Docker image ({BASILICA_DEPLOY_IMAGE}) is likely broken "
+                    f"or incompatible with the allocated GPU. "
+                    f"Do NOT create more deployments — report this as a blocker."
+                )
+                proxy_err["error_type"] = "environment"
+                proxy_err["recoverable"] = False
+            else:
+                proxy_err["hint"] = (
+                    "The pod is running but the training server inside never "
+                    "started. The reverse proxy can reach the pod but nothing "
+                    "is listening on the expected port. Common causes: crash "
+                    "during import (missing dependency, CUDA mismatch), OOM, or "
+                    "the entrypoint script failed. Check deploy_logs_tail above "
+                    "for the error, then delete and recreate the deployment."
+                )
+            return json.dumps(proxy_err)
 
         # Early abort: server is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
