@@ -294,6 +294,51 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_gpu(args: argparse.Namespace) -> None:
+    """Check GPU availability on Basilica (filtered vs unfiltered)."""
+    from compute.basilica import BasilicaGPUClient
+    from config import BASILICA_ALLOWED_GPU_TYPES, BASILICA_MAX_HOURLY_RATE
+
+    client = BasilicaGPUClient()
+
+    all_gpus = client.list_all_gpus()
+    filtered = client.list_cheap_gpus()
+
+    print("\n=== BASILICA GPU AVAILABILITY ===")
+    print(f"Filters: max_rate=${BASILICA_MAX_HOURLY_RATE}/hr  types={BASILICA_ALLOWED_GPU_TYPES}")
+    print(f"Total GPUs on platform: {len(all_gpus)}")
+    print(f"After filters:          {len(filtered)}")
+
+    # All GPUs by type
+    type_summary: dict[str, list[float]] = {}
+    for o in all_gpus:
+        gpu_type = o.gpu_type or "unknown"
+        type_summary.setdefault(gpu_type, []).append(float(o.hourly_rate))
+
+    if type_summary:
+        print("\n--- All GPUs (unfiltered) ---")
+        for gpu_type, rates in sorted(type_summary.items()):
+            print(
+                f"  {gpu_type:25s}  count={len(rates):3d}  "
+                f"${min(rates):.4f}-${max(rates):.4f}/hr"
+            )
+
+    if filtered:
+        print("\n--- Filtered (ready to use) ---")
+        for o in filtered[:20]:
+            spot = " [spot]" if o.is_spot else ""
+            print(
+                f"  {o.gpu_type:25s}  ${float(o.hourly_rate):.4f}/hr  "
+                f"{o.provider or '?':12s}  {o.region or '?'}{spot}"
+            )
+    else:
+        if all_gpus:
+            print("\nDIAGNOSIS: Platform has GPUs but NONE pass your filters.")
+            print("  -> Raise BASILICA_MAX_HOURLY_RATE or expand BASILICA_ALLOWED_GPU_TYPES")
+        else:
+            print("\nDIAGNOSIS: Platform reports ZERO GPUs. Basilica-side issue.")
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.bootstrap import bootstrap_dirs
@@ -426,6 +471,9 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # gpu
+    subparsers.add_parser("gpu", help="Check GPU availability (filtered vs unfiltered)")
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -441,6 +489,7 @@ def main() -> None:
         "history": cmd_history,
         "bridge": cmd_bridge,
         "client": cmd_client,
+        "gpu": cmd_gpu,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)

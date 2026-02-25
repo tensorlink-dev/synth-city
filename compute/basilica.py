@@ -82,6 +82,18 @@ class BasilicaGPUClient:
     # GPU discovery
     # ------------------------------------------------------------------
 
+    def list_all_gpus(self) -> list[GpuOffering]:
+        """Return *all* GPU offerings without any filtering.
+
+        Results are sorted by ``hourly_rate`` ascending (cheapest first).
+        Useful for diagnosing availability — see what the platform actually has
+        before budget/type filters are applied.
+        """
+        all_offerings = self._client.list_secure_cloud_gpus()
+        valid = [o for o in all_offerings if o.hourly_rate is not None]
+        valid.sort(key=lambda o: float(o.hourly_rate))
+        return valid
+
     def list_cheap_gpus(self) -> list[GpuOffering]:
         """Return GPU offerings filtered by price cap and GPU-type allowlist.
 

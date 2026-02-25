@@ -352,6 +352,79 @@ def check_gpu_balance() -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
+@tool(
+    description=(
+        "Diagnostic tool: check GPU availability on Basilica. "
+        "Shows ALL GPUs the platform has (unfiltered) alongside the subset "
+        "that pass your budget/type filters. Use this to diagnose whether "
+        "deployment failures are caused by GPU availability vs image issues. "
+        "If total_all > 0 but filtered_count == 0, your filters are too strict."
+    ),
+)
+def check_gpu_availability() -> str:
+    """Compare all available GPUs against the current budget/type filters."""
+    try:
+        client = _get_gpu_client()
+        all_gpus = client.list_all_gpus()
+        filtered_gpus = client.list_cheap_gpus()
+
+        # Summarise all GPUs by type
+        type_summary: dict[str, list[float]] = {}
+        for o in all_gpus:
+            gpu_type = o.gpu_type or "unknown"
+            type_summary.setdefault(gpu_type, []).append(float(o.hourly_rate))
+
+        all_summary = []
+        for gpu_type, rates in sorted(type_summary.items()):
+            all_summary.append({
+                "gpu_type": gpu_type,
+                "count": len(rates),
+                "min_rate": round(min(rates), 4),
+                "max_rate": round(max(rates), 4),
+            })
+
+        filtered_rows = []
+        for o in filtered_gpus:
+            filtered_rows.append({
+                "gpu_type": o.gpu_type,
+                "hourly_rate": o.hourly_rate,
+                "provider": o.provider,
+                "region": o.region,
+                "is_spot": o.is_spot,
+            })
+
+        from config import BASILICA_ALLOWED_GPU_TYPES, BASILICA_MAX_HOURLY_RATE
+
+        result: dict[str, Any] = {
+            "filters": {
+                "max_hourly_rate": BASILICA_MAX_HOURLY_RATE,
+                "allowed_gpu_types": BASILICA_ALLOWED_GPU_TYPES,
+            },
+            "total_all": len(all_gpus),
+            "all_by_type": all_summary,
+            "filtered_count": len(filtered_gpus),
+            "filtered": filtered_rows[:20],  # cap output size
+        }
+        if len(all_gpus) > 0 and len(filtered_gpus) == 0:
+            result["diagnosis"] = (
+                "Platform has GPUs but NONE pass your filters. "
+                "Loosen BASILICA_MAX_HOURLY_RATE or BASILICA_ALLOWED_GPU_TYPES."
+            )
+        elif len(all_gpus) == 0:
+            result["diagnosis"] = (
+                "Platform reports ZERO available GPUs. "
+                "This is a Basilica-side availability issue."
+            )
+        else:
+            result["diagnosis"] = (
+                f"{len(filtered_gpus)} GPU(s) available within budget. "
+                "Filters look fine."
+            )
+        return json.dumps(result, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
 # ---------------------------------------------------------------------------
 # Remote training on Basilica pods
 # ---------------------------------------------------------------------------

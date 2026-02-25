@@ -39,6 +39,7 @@ class TrainerAgent(BaseAgentWrapper):
             "fetch_experiment_runs",
             # Basilica GPU cloud — Docker-image-based deployments (only approach)
             "check_gpu_balance",
+            "check_gpu_availability",
             "create_training_deployment",
             "get_training_deployment",
             "get_deployment_logs",

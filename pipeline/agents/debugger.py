@@ -30,6 +30,7 @@ class DebuggerAgent(BaseAgentWrapper):
             # Historical context (check what worked before)
             "load_hippius_history",
             # Basilica GPU deployments — verify fixes remotely
+            "check_gpu_availability",
             "run_experiment_on_deployment",
             "create_training_deployment",
             "get_training_deployment",
