@@ -1430,6 +1430,45 @@ def _poll_job_result(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Custom component code collection
+# ---------------------------------------------------------------------------
+
+_CUSTOM_COMPONENTS_DIR = os.path.join(os.getcwd(), "src", "models", "components")
+
+
+def _collect_custom_component_code() -> str:
+    """Read all .py files from src/models/components/ and concatenate them.
+
+    Returns the combined source as a single string that the training server
+    can write to disk and import.  Returns an empty string when the directory
+    doesn't exist or contains no Python files.
+    """
+    if not os.path.isdir(_CUSTOM_COMPONENTS_DIR):
+        return ""
+
+    parts: list[str] = []
+    for fname in sorted(os.listdir(_CUSTOM_COMPONENTS_DIR)):
+        if not fname.endswith(".py"):
+            continue
+        fpath = os.path.join(_CUSTOM_COMPONENTS_DIR, fname)
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                content = f.read()
+            if content.strip():
+                parts.append(f"# --- {fname} ---\n{content}")
+        except Exception as exc:
+            logger.warning("Could not read component %s: %s", fpath, exc)
+
+    combined = "\n\n".join(parts)
+    if combined:
+        logger.info(
+            "Collected %d custom component file(s) (%d bytes) from %s",
+            len(parts), len(combined), _CUSTOM_COMPONENTS_DIR,
+        )
+    return combined
+
+
 @tool(
     description=(
         "Run an experiment on a Basilica training deployment via HTTP. "
@@ -1530,6 +1569,11 @@ def run_experiment_on_deployment(
 
         job_id = _uuid.uuid4().hex
 
+        # Collect custom component source code (if any) to send to the
+        # training server so it can load components not baked into the
+        # Docker image.
+        model_code_content = _collect_custom_component_code()
+
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
@@ -1539,6 +1583,7 @@ def run_experiment_on_deployment(
             "input_len": int(tf_cfg["input_len"]),
             "pred_len": int(tf_cfg["pred_len"]),
             "job_id": job_id,
+            "model_code_content": model_code_content,
         }
 
         # Build the /train URL
@@ -1549,6 +1594,15 @@ def run_experiment_on_deployment(
             url += "/train"
 
         body = json.dumps(payload).encode()
+        logger.debug(
+            "POST %s — payload keys: %s, experiment keys: %s, "
+            "model_code_content length: %d, job_id: %s",
+            url,
+            list(payload.keys()),
+            list(exp_dict.keys()) if isinstance(exp_dict, dict) else "N/A",
+            len(model_code_content),
+            job_id,
+        )
 
         # --- Retry loop for transient HTTP 5xx errors ---
         last_http_error: urllib.error.HTTPError | None = None
@@ -1569,7 +1623,17 @@ def run_experiment_on_deployment(
 
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    # Client error (4xx) — not retryable
+                    # Client error (4xx) — not retryable, log details
+                    _err_body = ""
+                    try:
+                        _err_body = exc.read().decode()[:2000]
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Deployment returned HTTP %d (not retryable). "
+                        "URL: %s | Response: %s | Payload keys: %s",
+                        exc.code, url, _err_body, list(payload.keys()),
+                    )
                     raise
                 # Server error (5xx) — retryable
                 last_http_error = exc
