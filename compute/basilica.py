@@ -21,7 +21,13 @@ import time
 from typing import Any
 
 from basilica import BasilicaClient as _SdkClient
-from basilica import DeploymentResponse, GpuOffering, SecureCloudRentalResponse
+from basilica import (
+    DeploymentResponse,
+    GpuOffering,
+    HealthCheckConfig,
+    ProbeConfig,
+    SecureCloudRentalResponse,
+)
 
 from config import (
     BASILICA_ALLOWED_GPU_TYPES,
@@ -222,6 +228,10 @@ class BasilicaGPUClient:
     _API_INITIAL_BACKOFF = 5  # seconds
     _API_BACKOFF_FACTOR = 2
 
+    # Default TTL for training deployments — auto-delete after this many
+    # seconds to prevent orphaned pods when the pipeline crashes.
+    _DEFAULT_TTL_SECONDS = 7200  # 2 hours
+
     def create_deployment(
         self,
         name: str,
@@ -234,11 +244,18 @@ class BasilicaGPUClient:
         cpu: str = "2000m",
         memory: str = "8Gi",
         storage: str | None = "10Gi",
+        ttl_seconds: int | None = None,
+        health_check: HealthCheckConfig | None = None,
     ) -> DeploymentResponse:
         """Create a GPU deployment running a Docker image.
 
         Uses the Basilica deployments API to spin up a container with GPU
         access.  The container should expose an HTTP server on *port*.
+
+        Configures Kubernetes health probes (startup, readiness, liveness)
+        so the platform knows the training server needs time to initialize
+        and can detect when it has crashed.  Also sets a TTL so orphaned
+        pods are automatically cleaned up.
 
         Retries up to 3 times with exponential backoff on transient API
         errors (HTTP 5xx, connection failures).
@@ -250,6 +267,40 @@ class BasilicaGPUClient:
         gpu_models = gpu_models or BASILICA_DEPLOY_GPU_MODELS or None
         if min_gpu_memory_gb is None:
             min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
+
+        # Build health check config for the training server.  The startup
+        # probe gives the container up to ~5 minutes to pull data, load CUDA,
+        # and start the HTTP server.  Readiness/liveness probes then monitor
+        # ongoing health.
+        if health_check is None:
+            health_check = HealthCheckConfig(
+                startup=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=10,
+                    period_seconds=10,
+                    timeout_seconds=5,
+                    failure_threshold=30,  # 30 × 10s = 5 min startup window
+                ),
+                readiness=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=30,
+                    period_seconds=10,
+                    timeout_seconds=5,
+                    failure_threshold=3,
+                ),
+                liveness=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=60,
+                    period_seconds=30,
+                    timeout_seconds=10,
+                    failure_threshold=3,
+                ),
+            )
+
+        deploy_ttl = ttl_seconds if ttl_seconds is not None else self._DEFAULT_TTL_SECONDS
 
         last_exc: Exception | None = None
         for attempt in range(self._API_MAX_RETRIES):
@@ -266,6 +317,8 @@ class BasilicaGPUClient:
                     memory=memory,
                     storage=storage,
                     public=True,
+                    ttl_seconds=deploy_ttl,
+                    health_check=health_check,
                 )
                 logger.info(
                     "Created deployment %s (image=%s, phase=%s, url=%s)",

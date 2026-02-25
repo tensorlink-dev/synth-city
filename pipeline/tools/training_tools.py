@@ -1340,6 +1340,11 @@ def create_training_deployment(
             "share_url": getattr(resp, "share_url", None),
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
+            "next_step": (
+                "Call wait_for_deployment_ready(deployment_url='"
+                + (resp.url or "") + "') to wait for the training server "
+                "to become healthy. Do NOT poll get_training_deployment."
+            ),
         }
         if _deployment_failure_count:
             result["consecutive_deploy_failures"] = _deployment_failure_count
