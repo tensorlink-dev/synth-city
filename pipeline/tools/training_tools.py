@@ -838,6 +838,9 @@ _DEPLOY_HEALTH_INTERVAL = 15
 # Abort early if the server returns this many consecutive HTTP 5xx responses
 # (meaning the server process is running but broken — waiting longer won't help)
 _DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
+# Abort early if DNS/connection failures persist this many consecutive probes
+# (meaning the hostname never resolved — the deployment may be deleted or invalid)
+_DEPLOY_HEALTH_MAX_DNS_FAILURES = 8
 # How often (in probes) to check the pod phase via the Basilica API
 _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
 
@@ -961,6 +964,7 @@ def wait_for_deployment_ready(
     attempts = 0
     last_detail = ""
     consecutive_server_errors = 0
+    consecutive_dns_failures = 0
 
     while time.time() < deadline:
         attempts += 1
@@ -989,6 +993,55 @@ def wait_for_deployment_ready(
         else:
             consecutive_server_errors = 0
 
+        # Track consecutive DNS / connection failures (hostname never resolves).
+        # "Connection failed:" is the prefix from _probe_deployment_health for
+        # URLError exceptions (DNS, refused, unreachable, etc.).
+        is_dns_failure = detail.startswith("Connection failed:")
+        if is_dns_failure:
+            consecutive_dns_failures += 1
+        else:
+            consecutive_dns_failures = 0
+
+        # Early abort: hostname never resolves — deployment may not exist
+        if consecutive_dns_failures >= _DEPLOY_HEALTH_MAX_DNS_FAILURES:
+            _deployment_failure_count += 1
+            elapsed = int(time.time() - (deadline - timeout))
+            logger.warning(
+                "Deployment %s had %d consecutive DNS/connection failures "
+                "over %ds — aborting health wait (last: %s) "
+                "[%d consecutive deploy failures]",
+                deployment_url, consecutive_dns_failures, elapsed, detail,
+                _deployment_failure_count,
+            )
+            error_result: dict[str, Any] = {
+                "status": "error",
+                "error": (
+                    f"Deployment hostname never resolved after "
+                    f"{consecutive_dns_failures} consecutive probes ({elapsed}s)"
+                ),
+                "url": deployment_url,
+                "last_probe": detail,
+                "probes": attempts,
+                "consecutive_deploy_failures": _deployment_failure_count,
+                "hint": (
+                    "The deployment URL hostname could not be resolved. "
+                    "This usually means the deployment was deleted, never "
+                    "finished provisioning, or the URL is incorrect. "
+                    "Check get_training_deployment() for the deployment status, "
+                    "then delete and recreate the deployment if needed."
+                ),
+            }
+            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+                error_result["hint"] = (
+                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+                    f"have all failed. The deployment hostname never resolved, "
+                    f"suggesting a persistent infrastructure issue. "
+                    f"Do NOT create more deployments — report this as a blocker."
+                )
+                error_result["error_type"] = "environment"
+                error_result["recoverable"] = False
+            return json.dumps(error_result)
+
         # Early abort: server is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
             _deployment_failure_count += 1
@@ -1014,7 +1067,7 @@ def wait_for_deployment_ready(
             except Exception as log_exc:
                 logger.debug("Could not fetch deploy logs: %s", log_exc)
 
-            error_result: dict[str, Any] = {
+            error_result = {
                 "status": "error",
                 "error": (
                     f"Training server returned {consecutive_server_errors} "
@@ -1574,6 +1627,31 @@ def run_experiment_on_deployment(
         # Docker image.
         model_code_content = _collect_custom_component_code()
 
+        if not model_code_content:
+            logger.warning(
+                "model_code_content is empty — no .py files found in %s. "
+                "The training server requires model code to be provided.",
+                _CUSTOM_COMPONENTS_DIR,
+            )
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    "No custom component code found. The training server "
+                    "requires 'model_code_content' to be a non-empty string "
+                    "containing the model code."
+                ),
+                "error_type": "configuration",
+                "recoverable": True,
+                "components_dir": _CUSTOM_COMPONENTS_DIR,
+                "hint": (
+                    f"The directory '{_CUSTOM_COMPONENTS_DIR}' is empty or "
+                    f"does not exist. Use the ComponentAuthor agent or "
+                    f"write_file tool to create at least one .py file with "
+                    f"your model code (blocks/heads) in that directory, then "
+                    f"retry run_experiment_on_deployment."
+                ),
+            })
+
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
@@ -1623,7 +1701,10 @@ def run_experiment_on_deployment(
 
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    # Client error (4xx) — not retryable, log details
+                    # Client error (4xx) — not retryable, log details and
+                    # return a structured error directly instead of re-raising.
+                    # (Re-raising loses the response body because exc.read()
+                    # can only be consumed once.)
                     _err_body = ""
                     try:
                         _err_body = exc.read().decode()[:2000]
@@ -1634,7 +1715,32 @@ def run_experiment_on_deployment(
                         "URL: %s | Response: %s | Payload keys: %s",
                         exc.code, url, _err_body, list(payload.keys()),
                     )
-                    raise
+                    _mon.emit(
+                        "system", "error",
+                        message=f"Deployment HTTP {exc.code}: {exc.reason}",
+                    )
+                    client_err: dict[str, Any] = {
+                        "status": "error",
+                        "error": f"HTTP {exc.code}: {exc.reason}",
+                        "response_body": _err_body,
+                    }
+                    if exc.code == 400:
+                        client_err["hint"] = (
+                            "The training server rejected the request payload. "
+                            "Check response_body for the validation error. "
+                            "Common causes: missing or empty 'model_code_content' "
+                            "(ensure custom component .py files exist in "
+                            f"'{_CUSTOM_COMPONENTS_DIR}'), or malformed "
+                            "experiment config."
+                        )
+                    elif exc.code == 401:
+                        client_err["hint"] = (
+                            "The deployment returned 401 Unauthorized. "
+                            "If the deployment was created with public=False, "
+                            "you must pass the share_token from "
+                            "create_training_deployment."
+                        )
+                    return json.dumps(client_err)
                 # Server error (5xx) — retryable
                 last_http_error = exc
                 backoff = _DEPLOY_INITIAL_BACKOFF * (_DEPLOY_BACKOFF_FACTOR ** attempt)
