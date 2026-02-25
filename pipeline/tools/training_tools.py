@@ -1367,26 +1367,29 @@ def run_experiment_on_deployment(
     import urllib.error
     import urllib.request
 
-    # --- Pre-flight health check ---
+    # --- Pre-flight health check (with automatic wait) ---
     healthy, detail = _probe_deployment_health(deployment_url, share_token)
     if not healthy:
-        logger.warning(
-            "Pre-flight health check failed for %s: %s — skipping training",
+        logger.info(
+            "Pre-flight health check failed for %s: %s — waiting for "
+            "deployment to become ready before training",
             deployment_url, detail,
         )
-        return json.dumps({
-            "status": "error",
-            "error": f"Pre-flight health check failed: {detail}",
-            "error_type": "infrastructure",
-            "recoverable": True,
-            "url": deployment_url,
-            "hint": (
-                "The deployment failed the health check before training was "
-                "attempted. The training server may not be running or may have "
-                "crashed. Check get_deployment_logs() and consider deleting "
-                "and recreating the deployment."
-            ),
-        })
+        # Instead of failing immediately, wait for the deployment to become
+        # healthy.  This handles the common case where the agent calls
+        # run_experiment_on_deployment before the server has finished starting.
+        wait_result_str = wait_for_deployment_ready(
+            deployment_url,
+            share_token=share_token,
+            timeout=_DEPLOY_HEALTH_TIMEOUT,
+        )
+        wait_result = json.loads(wait_result_str)
+        if wait_result.get("status") != "ready":
+            logger.warning(
+                "Deployment %s failed to become ready: %s",
+                deployment_url, wait_result.get("error", "unknown"),
+            )
+            return wait_result_str
 
     try:
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
