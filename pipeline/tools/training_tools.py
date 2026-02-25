@@ -1307,6 +1307,82 @@ def delete_training_deployment(name: str) -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
+def _poll_job_result(
+    deployment_url: str,
+    job_id: str,
+    share_token: str = "",
+    max_polls: int = 40,
+    poll_interval: float = 30.0,
+) -> dict | None:
+    """Poll GET /job-result/{job_id} to recover a result after stream drop.
+
+    The training server caches completed results in memory.  If the NDJSON
+    stream was severed by a reverse proxy before the final result line, the
+    client can recover it here.
+
+    Returns the result dict, or None if the job is unknown or still running
+    after *max_polls* attempts.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = deployment_url.rstrip("/") + f"/job-result/{job_id}"
+    if share_token:
+        url += f"?token={share_token}"
+
+    logger.info(
+        "Stream may have been severed — polling %s for job result "
+        "(up to %d attempts, %ds interval)",
+        url, max_polls, poll_interval,
+    )
+
+    for attempt in range(max_polls):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read().decode())
+                # Remove streaming metadata
+                body.pop("type", None)
+                body.pop("_pad", None)
+                logger.info(
+                    "Recovered job result for %s on poll %d/%d",
+                    job_id, attempt + 1, max_polls,
+                )
+                return body
+        except urllib.error.HTTPError as exc:
+            if exc.code == 202:
+                # Job still training — keep polling
+                logger.debug(
+                    "Job %s still training (poll %d/%d)",
+                    job_id, attempt + 1, max_polls,
+                )
+            elif exc.code == 404:
+                # Job unknown — server may be old (no /job-result endpoint)
+                # or pod restarted (cache lost).
+                logger.warning(
+                    "Job %s not found on server (poll %d/%d) — "
+                    "server may not support job recovery",
+                    job_id, attempt + 1, max_polls,
+                )
+                return None
+            else:
+                logger.warning(
+                    "Job result poll HTTP %d for %s (poll %d/%d)",
+                    exc.code, job_id, attempt + 1, max_polls,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Job result poll failed for %s (poll %d/%d): %s",
+                job_id, attempt + 1, max_polls, exc,
+            )
+
+        if attempt < max_polls - 1:
+            time.sleep(poll_interval)
+
+    logger.warning("Job result recovery timed out for %s after %d polls", job_id, max_polls)
+    return None
+
+
 @tool(
     description=(
         "Run an experiment on a Basilica training deployment via HTTP. "
@@ -1403,6 +1479,10 @@ def run_experiment_on_deployment(
             for hf_name in SN50_TO_HF_ASSET.values()
         }
 
+        import uuid as _uuid
+
+        job_id = _uuid.uuid4().hex
+
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
@@ -1411,6 +1491,7 @@ def run_experiment_on_deployment(
             "asset_files": asset_files,
             "input_len": int(tf_cfg["input_len"]),
             "pred_len": int(tf_cfg["pred_len"]),
+            "job_id": job_id,
         }
 
         # Build the /train URL
@@ -1521,18 +1602,63 @@ def run_experiment_on_deployment(
                 ),
             })
 
-        # Parse the result
-        try:
-            result = json.loads(result_text)
-        except json.JSONDecodeError:
+        # Parse the result — supports both NDJSON streams (new FastAPI server)
+        # and plain JSON (legacy Flask server).
+        #
+        # NDJSON format: multiple JSON lines, each with a "type" field:
+        #   {"type": "heartbeat", ...}   (keepalive, ignored)
+        #   {"type": "result", ...}      (final training result)
+        #   {"type": "error", ...}       (training failed)
+        #
+        # The client reads the *last* result/error line.  Heartbeat lines
+        # are discarded.  If no typed lines are found, fall back to parsing
+        # the entire response as a single JSON object (backward compat).
+        result = None
+        lines = result_text.strip().split("\n")
+        if len(lines) > 1:
+            # Multi-line → NDJSON stream
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    line_type = parsed.get("type", "")
+                    if line_type in ("result", "error"):
+                        result = parsed
+                        # Remove streaming metadata before returning to agent
+                        result.pop("type", None)
+                        result.pop("_pad", None)
+                except json.JSONDecodeError:
+                    continue
+        if result is None:
+            # Single-line or no typed lines → plain JSON (backward compat)
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                pass
+
+        # If we still have no result (stream severed before final line),
+        # try to recover via the job-result endpoint.
+        if result is None and job_id:
+            result = _poll_job_result(deployment_url, job_id, share_token)
+
+        if result is None:
             _mon.emit(
                 "system", "error",
                 message="Could not parse JSON from training server",
             )
             return json.dumps({
                 "status": "error",
-                "error": "Could not parse JSON from training server",
+                "error": "Could not parse result from training server "
+                "(stream may have been severed by reverse proxy)",
                 "raw_output": result_text[:15000],
+                "job_id": job_id,
+                "hint": (
+                    "The NDJSON stream was cut before the result line. "
+                    "The server may still be training. Try polling "
+                    f"GET /job-result/{job_id} on the deployment URL."
+                ),
             })
 
         # --- Result tracking (mirrors run_experiment in research_tools) ---
