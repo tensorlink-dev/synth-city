@@ -886,8 +886,11 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
             # Server is up but ResearchSession is broken — not healthy
             return False, f"HTTP 503: server up but unhealthy ({body})"
         if exc.code == 500:
-            # Server is up but /health crashed — not healthy
-            return False, f"HTTP 500: Internal Server Error ({body})"
+            # Distinguish reverse-proxy 500 from training server 500.
+            # Our global exception handler returns JSON with an "error" key;
+            # a bare proxy 500 is typically HTML.
+            source = "reverse-proxy" if "<html" in body.lower() else "server"
+            return False, f"HTTP 500: Internal Server Error [{source}] ({body})"
         # Other 4xx — server is responsive, /health just isn't mapped (older image?)
         if 400 <= exc.code < 500:
             return True, f"HTTP {exc.code} (server responsive)"
@@ -985,6 +988,22 @@ def wait_for_deployment_ready(
                 deployment_url, consecutive_server_errors, detail,
                 _deployment_failure_count,
             )
+
+            # Auto-fetch deployment logs so the agent gets diagnostics
+            # without needing an extra tool call.
+            deploy_logs = ""
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(deployment_url).hostname or ""
+                instance_name = host.split(".")[0] if "." in host else ""
+                if instance_name:
+                    client = _get_gpu_client()
+                    deploy_logs = client.get_deployment_logs(
+                        instance_name, tail=50,
+                    )
+            except Exception as log_exc:
+                logger.debug("Could not fetch deploy logs: %s", log_exc)
+
             error_result: dict[str, Any] = {
                 "status": "error",
                 "error": (
@@ -996,11 +1015,17 @@ def wait_for_deployment_ready(
                 "probes": attempts,
                 "consecutive_deploy_failures": _deployment_failure_count,
             }
+            if deploy_logs and deploy_logs.strip():
+                error_result["deploy_logs_tail"] = deploy_logs[-3000:]
+            elif deploy_logs is not None:
+                error_result["deploy_logs_tail"] = (
+                    "(empty — container may not have started)"
+                )
             if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
                 error_result["hint"] = (
                     f"CRITICAL: {_deployment_failure_count} consecutive deployments "
                     f"have all failed health checks with the same error. "
-                    f"The Docker image (ghcr.io/tensorlink-dev/synth-city-gpu:latest) "
+                    f"The Docker image ({BASILICA_DEPLOY_IMAGE}) "
                     f"is likely broken — creating more deployments will not help. "
                     f"Report this as an infrastructure blocker in your finish output "
                     f"and do NOT create any more deployments."
@@ -1012,7 +1037,7 @@ def wait_for_deployment_ready(
                     "The training server process is running but the /health "
                     "endpoint is failing. This usually means the server "
                     "crashed during startup or ResearchSession is broken. "
-                    "Check get_deployment_logs() for the traceback, then "
+                    "Check deploy_logs_tail above for the traceback, then "
                     "delete and recreate the deployment."
                 )
             return json.dumps(error_result)
@@ -1124,6 +1149,7 @@ def create_training_deployment(
     env: str = "",
 ) -> str:
     """Create a Basilica deployment with the synth-city GPU training image."""
+    global _deployment_failure_count
     try:
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
@@ -1149,7 +1175,12 @@ def create_training_deployment(
             gpu_models=gpu_list,
             env=env_dict,
         )
-        return json.dumps({
+        # Reset the consecutive-failure counter on successful deployment
+        # creation so a previous string of failures doesn't permanently
+        # block new attempts after the underlying issue is fixed.
+        prev_failures = _deployment_failure_count
+        _deployment_failure_count = 0
+        result: dict[str, Any] = {
             "status": "created",
             "instance_name": resp.instance_name,
             "url": resp.url,
@@ -1157,7 +1188,13 @@ def create_training_deployment(
             "share_url": getattr(resp, "share_url", None),
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
-        }, indent=2)
+        }
+        if prev_failures:
+            result["note"] = (
+                f"Reset consecutive deployment failure counter "
+                f"(was {prev_failures})."
+            )
+        return json.dumps(result, indent=2)
     except Exception as exc:
         err_str = str(exc).lower()
         is_infra = (

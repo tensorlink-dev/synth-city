@@ -44,8 +44,15 @@ RUN pip install --no-cache-dir -e /app/open-synth-miner
 # Verify ResearchSession is importable (fail-fast at build time, not runtime)
 RUN python -c "from osa.research.agent_api import ResearchSession; print('OK: osa.research.agent_api')"
 
-# Copy only the training server (small, changes often → last layer)
+# Copy training server + startup wrapper (small, change often → last layer)
 COPY compute/training_server.py /app/training_server.py
+COPY compute/entrypoint.py /app/entrypoint.py
+
+# Bake in a build version so /health can report which image is running.
+# Override at build time: --build-arg BUILD_VERSION=$(git rev-parse --short HEAD)
+ARG BUILD_VERSION=unknown
+RUN echo "$BUILD_VERSION" > /app/.build_version
+ENV BUILD_VERSION=$BUILD_VERSION
 
 ENV TRAINING_SERVER_PORT=8378
 EXPOSE 8378
@@ -53,4 +60,6 @@ EXPOSE 8378
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
     CMD curl -f http://localhost:8378/health || exit 1
 
-CMD ["python", "/app/training_server.py"]
+# Use -u for unbuffered output so logs appear immediately in
+# get_deployment_logs() even if the server crashes early.
+CMD ["python", "-u", "/app/entrypoint.py"]

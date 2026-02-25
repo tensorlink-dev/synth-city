@@ -39,6 +39,28 @@ logger = logging.getLogger("training_server")
 
 app = FastAPI(title="synth-city Basilica Training Server")
 
+
+# ---------------------------------------------------------------------------
+# Global exception handler — ensure unhandled exceptions return structured
+# JSON instead of bare HTML 500 pages that confuse the health-check parser.
+# ---------------------------------------------------------------------------
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled exception on %s %s: %s",
+        request.method, request.url.path, exc, exc_info=True,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+            "path": str(request.url.path),
+        },
+    )
+
 # ---------------------------------------------------------------------------
 # Heartbeat / streaming config
 # ---------------------------------------------------------------------------
@@ -200,8 +222,15 @@ def _detect_cuda_info() -> dict[str, Any]:
 
 
 def _get_cuda_info() -> dict[str, Any]:
+    """Return cached CUDA info, re-detecting if previous attempt found no CUDA.
+
+    CUDA drivers may not be available immediately on pod start (e.g. the NVIDIA
+    device plugin hasn't finished initialising).  By re-detecting when the
+    cached result shows ``cuda_available=False``, we recover automatically once
+    the GPU becomes ready instead of permanently caching the failure.
+    """
     global _CUDA_INFO
-    if _CUDA_INFO is None:
+    if _CUDA_INFO is None or not _CUDA_INFO.get("cuda_available"):
         _CUDA_INFO = _detect_cuda_info()
     return _CUDA_INFO
 
@@ -416,34 +445,54 @@ async def health():
     """Health check with CUDA diagnostics.
 
     Kept cheap (no network calls) so infrastructure probes never timeout.
+
+    This endpoint is the primary readiness signal for the deployment health
+    probe loop in ``training_tools.py``.  It must **never** return HTTP 500
+    (which the probe interprets as "server up but broken — abort early").
+    All internal errors are caught and surfaced as a 503 with diagnostic info.
     """
     try:
-        _get_session_class()
-        session_ok = True
-        session_error = None
+        try:
+            _get_session_class()
+            session_ok = True
+            session_error = None
+        except Exception as exc:
+            session_ok = False
+            session_error = str(exc)
+
+        cuda_info = _get_cuda_info()
+
+        resp: dict[str, Any] = {
+            "status": "ok" if session_ok else "error",
+            "ts": time.time(),
+            "research_session": session_ok,
+            "cuda": cuda_info,
+        }
+
+        if session_error:
+            resp["error"] = session_error
+
+        build_ver = _get_build_version()
+        if build_ver:
+            resp["build_version"] = build_ver
+
+        if not session_ok:
+            return JSONResponse(resp, status_code=503)
+        return resp
+
     except Exception as exc:
-        session_ok = False
-        session_error = str(exc)
-
-    cuda_info = _get_cuda_info()
-
-    resp: dict[str, Any] = {
-        "status": "ok" if session_ok else "error",
-        "ts": time.time(),
-        "research_session": session_ok,
-        "cuda": cuda_info,
-    }
-
-    if session_error:
-        resp["error"] = session_error
-
-    build_ver = _get_build_version()
-    if build_ver:
-        resp["build_version"] = build_ver
-
-    if not session_ok:
-        return JSONResponse(resp, status_code=503)
-    return resp
+        # Catch-all: guarantee /health never returns 500.  The probe loop
+        # treats 503 as "not ready yet, keep polling" whereas 500 is counted
+        # toward the consecutive-server-error abort threshold.
+        logger.error("/health unexpected error: %s", exc, exc_info=True)
+        return JSONResponse(
+            {
+                "status": "error",
+                "error": f"Health check internal error: {type(exc).__name__}: {exc}",
+                "ts": time.time(),
+            },
+            status_code=503,
+        )
 
 
 @app.get("/gpu")
@@ -462,7 +511,7 @@ async def gpu_info():
             "returncode": proc.returncode,
         }
     except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        return JSONResponse({"error": str(exc)}, status_code=503)
 
 
 @app.get("/job-result/{job_id}")
