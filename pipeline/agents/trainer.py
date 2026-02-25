@@ -25,17 +25,15 @@ class TrainerAgent(BaseAgentWrapper):
         tool_names = [
             "create_experiment",
             "validate_experiment",
-            "run_experiment",
-            "run_preset",
-            "sweep_presets",
+            # NOTE: run_experiment / run_preset / sweep_presets intentionally
+            # excluded — local training exhausts RAM and crashes the process.
+            # All training MUST go through run_experiment_on_deployment.
             "compare_results",
             "session_summary",
             # Memory management
             "flush_session",
-            # Data loading (HF OHLCV datasets — for local/lightweight use only)
-            "create_data_loader",
+            # Data loading (HF OHLCV datasets — diagnostic only)
             "data_loader_info",
-            "split_data",
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_experiment_runs",
