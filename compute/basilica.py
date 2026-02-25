@@ -82,8 +82,12 @@ class BasilicaGPUClient:
     # GPU discovery
     # ------------------------------------------------------------------
 
-    def list_all_gpus(self) -> list[GpuOffering]:
-        """Return *all* GPU offerings without any filtering.
+    def list_all_gpus(self, available_only: bool = True) -> list[GpuOffering]:
+        """Return *all* GPU offerings without price/type filtering.
+
+        When *available_only* is ``True`` (the default), offerings where
+        ``availability`` is ``False`` are excluded — the platform reports
+        these as out-of-stock.
 
         Results are sorted by ``hourly_rate`` ascending (cheapest first).
         Useful for diagnosing availability — see what the platform actually has
@@ -91,11 +95,16 @@ class BasilicaGPUClient:
         """
         all_offerings = self._client.list_secure_cloud_gpus()
         valid = [o for o in all_offerings if o.hourly_rate is not None]
+        if available_only:
+            valid = [o for o in valid if getattr(o, "availability", True)]
         valid.sort(key=lambda o: float(o.hourly_rate))
         return valid
 
     def list_cheap_gpus(self) -> list[GpuOffering]:
-        """Return GPU offerings filtered by price cap and GPU-type allowlist.
+        """Return GPU offerings filtered by price cap, GPU-type allowlist, and availability.
+
+        Only offerings where ``availability`` is ``True`` are included —
+        the platform marks out-of-stock offerings as unavailable.
 
         Results are sorted by ``hourly_rate`` ascending (cheapest first).
         """
@@ -104,6 +113,7 @@ class BasilicaGPUClient:
             o for o in all_offerings
             if o.hourly_rate is not None
             and o.gpu_type is not None
+            and getattr(o, "availability", True)
             and float(o.hourly_rate) <= self.max_hourly_rate
             and any(allowed.upper() in o.gpu_type.upper() for allowed in self.allowed_gpu_types)
         ]
@@ -443,15 +453,24 @@ class BasilicaGPUClient:
         """List all deployments for this account."""
         resp = self._client.list_deployments()
         items = resp.deployments if hasattr(resp, "deployments") else []
-        return [
-            {
+        results = []
+        for d in items:
+            entry: dict[str, Any] = {
                 "instance_name": getattr(d, "instance_name", None),
                 "phase": getattr(d, "phase", None),
                 "url": getattr(d, "url", None),
                 "created_at": getattr(d, "created_at", None),
+                "message": getattr(d, "message", None),
             }
-            for d in items
-        ]
+            raw_progress = getattr(d, "progress", None)
+            if raw_progress is not None:
+                entry["progress"] = {
+                    "current_step": getattr(raw_progress, "current_step", None),
+                    "percentage": getattr(raw_progress, "percentage", None),
+                    "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+                }
+            results.append(entry)
+        return results
 
     # ------------------------------------------------------------------
     # SSH key management

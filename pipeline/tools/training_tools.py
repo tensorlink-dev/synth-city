@@ -198,6 +198,7 @@ def list_available_gpus() -> str:
                 "region": o.region,
                 "hourly_rate": o.hourly_rate,
                 "is_spot": o.is_spot,
+                "available": getattr(o, "availability", None),
                 "vcpu": o.vcpu_count,
                 "ram_gb": o.system_memory_gb,
                 "storage_gb": o.storage_gb,
@@ -365,20 +366,31 @@ def check_gpu_availability() -> str:
     """Compare all available GPUs against the current budget/type filters."""
     try:
         client = _get_gpu_client()
-        all_gpus = client.list_all_gpus()
+        # Fetch *all* offerings (including unavailable) for the full picture
+        all_gpus = client.list_all_gpus(available_only=False)
         filtered_gpus = client.list_cheap_gpus()
 
-        # Summarise all GPUs by type
-        type_summary: dict[str, list[float]] = {}
+        # Summarise all GPUs by type, tracking availability
+        type_summary: dict[str, dict[str, Any]] = {}
         for o in all_gpus:
             gpu_type = o.gpu_type or "unknown"
-            type_summary.setdefault(gpu_type, []).append(float(o.hourly_rate))
+            entry = type_summary.setdefault(
+                gpu_type, {"rates": [], "available": 0, "unavailable": 0}
+            )
+            entry["rates"].append(float(o.hourly_rate))
+            if getattr(o, "availability", True):
+                entry["available"] += 1
+            else:
+                entry["unavailable"] += 1
 
         all_summary = []
-        for gpu_type, rates in sorted(type_summary.items()):
+        for gpu_type, info in sorted(type_summary.items()):
+            rates = info["rates"]
             all_summary.append({
                 "gpu_type": gpu_type,
-                "count": len(rates),
+                "total": len(rates),
+                "available": info["available"],
+                "unavailable": info["unavailable"],
                 "min_rate": round(min(rates), 4),
                 "max_rate": round(max(rates), 4),
             })
@@ -395,24 +407,35 @@ def check_gpu_availability() -> str:
 
         from config import BASILICA_ALLOWED_GPU_TYPES, BASILICA_MAX_HOURLY_RATE
 
+        total_available = sum(e["available"] for e in type_summary.values())
+        total_unavailable = sum(e["unavailable"] for e in type_summary.values())
+
         result: dict[str, Any] = {
             "filters": {
                 "max_hourly_rate": BASILICA_MAX_HOURLY_RATE,
                 "allowed_gpu_types": BASILICA_ALLOWED_GPU_TYPES,
             },
             "total_all": len(all_gpus),
+            "total_available": total_available,
+            "total_unavailable": total_unavailable,
             "all_by_type": all_summary,
             "filtered_count": len(filtered_gpus),
             "filtered": filtered_rows[:20],  # cap output size
         }
-        if len(all_gpus) > 0 and len(filtered_gpus) == 0:
+        if total_available > 0 and len(filtered_gpus) == 0:
             result["diagnosis"] = (
-                "Platform has GPUs but NONE pass your filters. "
-                "Loosen BASILICA_MAX_HOURLY_RATE or BASILICA_ALLOWED_GPU_TYPES."
+                f"Platform has {total_available} available GPU(s) but NONE pass "
+                "your filters. Loosen BASILICA_MAX_HOURLY_RATE or "
+                "BASILICA_ALLOWED_GPU_TYPES."
+            )
+        elif total_available == 0 and len(all_gpus) > 0:
+            result["diagnosis"] = (
+                f"Platform lists {len(all_gpus)} GPU(s) but ALL are marked "
+                "unavailable. This is a Basilica-side stock issue."
             )
         elif len(all_gpus) == 0:
             result["diagnosis"] = (
-                "Platform reports ZERO available GPUs. "
+                "Platform reports ZERO GPU offerings. "
                 "This is a Basilica-side availability issue."
             )
         else:
@@ -1276,13 +1299,26 @@ def wait_for_deployment_ready(
                 if instance_name:
                     resp = client.get_deployment(instance_name)
                     phase = getattr(resp, "phase", "")
+                    # Log progress details for observability
+                    raw_progress = getattr(resp, "progress", None)
+                    if raw_progress is not None:
+                        step = getattr(raw_progress, "current_step", "")
+                        pct = getattr(raw_progress, "percentage", None)
+                        elapsed = getattr(raw_progress, "elapsed_seconds", None)
+                        pct_str = f" ({pct:.0f}%)" if pct is not None else ""
+                        elapsed_str = f" [{elapsed}s]" if elapsed is not None else ""
+                        logger.info(
+                            "Deployment %s phase=%s step=%s%s%s",
+                            instance_name, phase, step, pct_str, elapsed_str,
+                        )
                     if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
                         _deployment_failure_count += 1
                         logger.warning(
                             "Deployment %s pod phase is %r — aborting health wait",
                             deployment_url, phase,
                         )
-                        return json.dumps({
+                        msg = getattr(resp, "message", "")
+                        error_result: dict[str, Any] = {
                             "status": "error",
                             "error": f"Deployment pod phase is '{phase}'",
                             "url": deployment_url,
@@ -1295,7 +1331,10 @@ def wait_for_deployment_ready(
                                 "state. Check get_deployment_logs() for the error, "
                                 "then delete and recreate the deployment."
                             ),
-                        })
+                        }
+                        if msg:
+                            error_result["message"] = msg
+                        return json.dumps(error_result)
             except Exception as phase_exc:
                 logger.debug("Phase check failed (non-fatal): %s", phase_exc)
 
@@ -1405,11 +1444,22 @@ def create_training_deployment(
         # cycles — it is only reset when a deployment actually passes a health
         # check (inside wait_for_deployment_ready).  Resetting here would
         # prevent the CRITICAL threshold from ever being reached.
+        # Extract progress info if available (e.g. scheduling, pulling)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
         result: dict[str, Any] = {
             "status": "created",
             "instance_name": resp.instance_name,
             "url": resp.url,
             "phase": resp.phase,
+            "message": getattr(resp, "message", None),
             "share_url": getattr(resp, "share_url", None),
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
@@ -1419,6 +1469,8 @@ def create_training_deployment(
                 "to become healthy. Do NOT poll get_training_deployment."
             ),
         }
+        if progress:
+            result["progress"] = progress
         if _deployment_failure_count:
             result["consecutive_deploy_failures"] = _deployment_failure_count
             result["note"] = (
@@ -1470,31 +1522,73 @@ def create_training_deployment(
     },
 )
 def get_training_deployment(name: str) -> str:
-    """Get deployment status."""
+    """Get deployment status including phase, progress, and pod details."""
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
-        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+
+        # Serialize replicas
         raw_replicas = getattr(resp, "replicas", None)
         replicas = None
         if raw_replicas is not None:
-            replicas = [
-                {
-                    "phase": getattr(r, "phase", None),
-                    "ready": getattr(r, "ready", None),
-                    "started": getattr(r, "started", None),
-                    "name": getattr(r, "name", None),
+            if hasattr(raw_replicas, "__iter__"):
+                replicas = [
+                    {
+                        "phase": getattr(r, "phase", None),
+                        "ready": getattr(r, "ready", None),
+                        "started": getattr(r, "started", None),
+                        "name": getattr(r, "name", None),
+                    }
+                    for r in raw_replicas
+                ]
+            elif hasattr(raw_replicas, "desired"):
+                # ReplicaStatus object with desired/ready counts
+                replicas = {
+                    "desired": getattr(raw_replicas, "desired", None),
+                    "ready": getattr(raw_replicas, "ready", None),
                 }
-                for r in raw_replicas
-            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
-        return json.dumps({
+            else:
+                replicas = str(raw_replicas)
+
+        # Serialize progress (DeploymentProgress)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
+        # Serialize pods (list of PodInfo)
+        raw_pods = getattr(resp, "pods", None)
+        pods = None
+        if raw_pods is not None and hasattr(raw_pods, "__iter__"):
+            pods = [
+                {
+                    "name": getattr(p, "name", None),
+                    "status": getattr(p, "status", None),
+                    "node": getattr(p, "node", None),
+                }
+                for p in raw_pods
+            ]
+
+        result: dict[str, Any] = {
             "instance_name": resp.instance_name,
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
             "replicas": replicas,
             "created_at": str(getattr(resp, "created_at", "")),
-        }, indent=2)
+        }
+
+        # Only include progress/pods when present to keep output concise
+        if progress:
+            result["progress"] = progress
+        if pods:
+            result["pods"] = pods
+
+        return json.dumps(result, indent=2)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
