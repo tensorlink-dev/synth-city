@@ -102,6 +102,27 @@ def _build_data_loader(
 
 
 # ---------------------------------------------------------------------------
+# Error handlers
+# ---------------------------------------------------------------------------
+
+@app.errorhandler(Exception)
+def handle_exception(exc):
+    """Catch-all: ensure unhandled exceptions return JSON, not Flask HTML."""
+    logger.error("Unhandled exception: %s", exc, exc_info=True)
+    try:
+        return jsonify({
+            "status": "error",
+            "error": f"{type(exc).__name__}: {exc}",
+        }), 500
+    except Exception:
+        return Response(
+            json.dumps({"status": "error", "error": str(exc)}),
+            status=500,
+            content_type="application/json",
+        )
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
@@ -115,11 +136,18 @@ def health():
         return jsonify({"status": "error", "error": str(exc)}), 503
     except Exception as exc:
         logger.error("Health check failed: %s", exc, exc_info=True)
-        return jsonify({
-            "status": "error",
-            "error": str(exc),
-            "traceback": traceback.format_exc(),
-        }), 500
+        # Use Response+json.dumps instead of jsonify as a safety net —
+        # if the exception contains non-serialisable data, jsonify can
+        # itself raise, causing Flask to return an empty-body 500.
+        return Response(
+            json.dumps({
+                "status": "error",
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            }),
+            status=500,
+            content_type="application/json",
+        )
 
 
 @app.route("/gpu", methods=["GET"])

@@ -880,8 +880,8 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         body = ""
         try:
             body = exc.read().decode()[:500]
-        except Exception:
-            pass
+        except Exception as read_exc:
+            logger.debug("Could not read HTTP error body: %s", read_exc)
         if exc.code == 503:
             # Server is up but ResearchSession is broken — not healthy
             return False, f"HTTP 503: server up but unhealthy ({body})"
@@ -969,9 +969,16 @@ def wait_for_deployment_ready(
                 "detail": detail,
             })
 
-        # Track consecutive HTTP 5xx errors (server is up but broken)
+        # Track consecutive HTTP 5xx errors from the *application*.
+        # Distinguish between:
+        #  - Empty-body 5xx → infrastructure proxy/ingress returning an
+        #    error while the container is still starting.  Treat like a
+        #    connection error (keep waiting).
+        #  - Non-empty-body 5xx → the Flask app responded but /health
+        #    crashed.  The server is running but broken; waiting won't help.
         is_server_error = detail.startswith("HTTP 5")
-        if is_server_error:
+        has_app_body = is_server_error and not detail.endswith("()")
+        if has_app_body:
             consecutive_server_errors += 1
         else:
             consecutive_server_errors = 0
