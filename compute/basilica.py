@@ -28,6 +28,11 @@ from basilica import (
     ProbeConfig,
     SecureCloudRentalResponse,
 )
+from basilica.exceptions import (
+    BasilicaError,
+    NetworkError,
+    RateLimitError,
+)
 
 from config import (
     BASILICA_ALLOWED_GPU_TYPES,
@@ -302,6 +307,19 @@ class BasilicaGPUClient:
 
         deploy_ttl = ttl_seconds if ttl_seconds is not None else self._DEFAULT_TTL_SECONDS
 
+        # Pre-flight: verify the Basilica API is reachable before attempting
+        # to create a deployment.  Catches outages early with a clear message
+        # rather than failing deep in the retry loop.
+        try:
+            self._client.health_check()
+        except Exception as hc_exc:
+            logger.warning("Basilica API health check failed: %s", hc_exc)
+            raise NetworkError(
+                f"Basilica API is unreachable (health check failed: {hc_exc}). "
+                f"The API may be down — retry later.",
+                original_error=hc_exc,
+            ) from hc_exc
+
         last_exc: Exception | None = None
         for attempt in range(self._API_MAX_RETRIES):
             try:
@@ -325,32 +343,62 @@ class BasilicaGPUClient:
                     resp.instance_name, image, resp.phase, resp.url,
                 )
                 return resp
+            except (NetworkError, RateLimitError) as exc:
+                # SDK-typed transient errors — always retry.
+                last_exc = exc
+                if isinstance(exc, RateLimitError) and exc.retry_after:
+                    backoff = exc.retry_after
+                else:
+                    backoff = self._API_INITIAL_BACKOFF * (
+                        self._API_BACKOFF_FACTOR ** attempt
+                    )
+                logger.warning(
+                    "create_deployment attempt %d/%d failed (%s: %s) — "
+                    "retrying in %ds",
+                    attempt + 1, self._API_MAX_RETRIES,
+                    type(exc).__name__, exc, backoff,
+                )
+                if attempt < self._API_MAX_RETRIES - 1:
+                    time.sleep(backoff)
+            except BasilicaError as exc:
+                # Other SDK errors (auth, validation, resource) — only
+                # retry if the SDK explicitly marks them retryable.
+                if getattr(exc, "retryable", False):
+                    last_exc = exc
+                    backoff = self._API_INITIAL_BACKOFF * (
+                        self._API_BACKOFF_FACTOR ** attempt
+                    )
+                    logger.warning(
+                        "create_deployment attempt %d/%d failed (%s: %s, "
+                        "retryable=True) — retrying in %ds",
+                        attempt + 1, self._API_MAX_RETRIES,
+                        type(exc).__name__, exc, backoff,
+                    )
+                    if attempt < self._API_MAX_RETRIES - 1:
+                        time.sleep(backoff)
+                else:
+                    raise
             except Exception as exc:
+                # Unexpected errors — check string as fallback for
+                # non-SDK exceptions (e.g. httpx, urllib).
                 last_exc = exc
                 err_str = str(exc).lower()
-                # Only retry on transient/server errors, not client errors
                 is_transient = (
                     "500" in err_str
                     or "502" in err_str
                     or "503" in err_str
-                    or "504" in err_str
                     or "connection" in err_str
                     or "timeout" in err_str
-                    or "internal server error" in err_str
                 )
                 if not is_transient:
                     raise
-
                 backoff = self._API_INITIAL_BACKOFF * (
                     self._API_BACKOFF_FACTOR ** attempt
                 )
                 logger.warning(
                     "create_deployment attempt %d/%d failed (%s) — "
                     "retrying in %ds",
-                    attempt + 1,
-                    self._API_MAX_RETRIES,
-                    exc,
-                    backoff,
+                    attempt + 1, self._API_MAX_RETRIES, exc, backoff,
                 )
                 if attempt < self._API_MAX_RETRIES - 1:
                     time.sleep(backoff)
