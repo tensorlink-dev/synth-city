@@ -21,7 +21,18 @@ import time
 from typing import Any
 
 from basilica import BasilicaClient as _SdkClient
-from basilica import DeploymentResponse, GpuOffering, SecureCloudRentalResponse
+from basilica import (
+    DeploymentResponse,
+    GpuOffering,
+    HealthCheckConfig,
+    ProbeConfig,
+    SecureCloudRentalResponse,
+)
+from basilica.exceptions import (
+    BasilicaError,
+    NetworkError,
+    RateLimitError,
+)
 
 from config import (
     BASILICA_ALLOWED_GPU_TYPES,
@@ -71,8 +82,29 @@ class BasilicaGPUClient:
     # GPU discovery
     # ------------------------------------------------------------------
 
+    def list_all_gpus(self, available_only: bool = True) -> list[GpuOffering]:
+        """Return *all* GPU offerings without price/type filtering.
+
+        When *available_only* is ``True`` (the default), offerings where
+        ``availability`` is ``False`` are excluded — the platform reports
+        these as out-of-stock.
+
+        Results are sorted by ``hourly_rate`` ascending (cheapest first).
+        Useful for diagnosing availability — see what the platform actually has
+        before budget/type filters are applied.
+        """
+        all_offerings = self._client.list_secure_cloud_gpus()
+        valid = [o for o in all_offerings if o.hourly_rate is not None]
+        if available_only:
+            valid = [o for o in valid if getattr(o, "availability", True)]
+        valid.sort(key=lambda o: float(o.hourly_rate))
+        return valid
+
     def list_cheap_gpus(self) -> list[GpuOffering]:
-        """Return GPU offerings filtered by price cap and GPU-type allowlist.
+        """Return GPU offerings filtered by price cap, GPU-type allowlist, and availability.
+
+        Only offerings where ``availability`` is ``True`` are included —
+        the platform marks out-of-stock offerings as unavailable.
 
         Results are sorted by ``hourly_rate`` ascending (cheapest first).
         """
@@ -81,6 +113,7 @@ class BasilicaGPUClient:
             o for o in all_offerings
             if o.hourly_rate is not None
             and o.gpu_type is not None
+            and getattr(o, "availability", True)
             and float(o.hourly_rate) <= self.max_hourly_rate
             and any(allowed.upper() in o.gpu_type.upper() for allowed in self.allowed_gpu_types)
         ]
@@ -222,6 +255,10 @@ class BasilicaGPUClient:
     _API_INITIAL_BACKOFF = 5  # seconds
     _API_BACKOFF_FACTOR = 2
 
+    # Default TTL for training deployments — auto-delete after this many
+    # seconds to prevent orphaned pods when the pipeline crashes.
+    _DEFAULT_TTL_SECONDS = 7200  # 2 hours
+
     def create_deployment(
         self,
         name: str,
@@ -234,11 +271,18 @@ class BasilicaGPUClient:
         cpu: str = "2000m",
         memory: str = "8Gi",
         storage: str | None = "10Gi",
+        ttl_seconds: int | None = None,
+        health_check: HealthCheckConfig | None = None,
     ) -> DeploymentResponse:
         """Create a GPU deployment running a Docker image.
 
         Uses the Basilica deployments API to spin up a container with GPU
         access.  The container should expose an HTTP server on *port*.
+
+        Configures Kubernetes health probes (startup, readiness, liveness)
+        so the platform knows the training server needs time to initialize
+        and can detect when it has crashed.  Also sets a TTL so orphaned
+        pods are automatically cleaned up.
 
         Retries up to 3 times with exponential backoff on transient API
         errors (HTTP 5xx, connection failures).
@@ -250,6 +294,53 @@ class BasilicaGPUClient:
         gpu_models = gpu_models or BASILICA_DEPLOY_GPU_MODELS or None
         if min_gpu_memory_gb is None:
             min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
+
+        # Build health check config for the training server.  The startup
+        # probe gives the container up to ~5 minutes to pull data, load CUDA,
+        # and start the HTTP server.  Readiness/liveness probes then monitor
+        # ongoing health.
+        if health_check is None:
+            health_check = HealthCheckConfig(
+                startup=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=10,
+                    period_seconds=10,
+                    timeout_seconds=5,
+                    failure_threshold=30,  # 30 × 10s = 5 min startup window
+                ),
+                readiness=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=30,
+                    period_seconds=10,
+                    timeout_seconds=5,
+                    failure_threshold=3,
+                ),
+                liveness=ProbeConfig(
+                    path="/health",
+                    port=port,
+                    initial_delay_seconds=60,
+                    period_seconds=30,
+                    timeout_seconds=10,
+                    failure_threshold=3,
+                ),
+            )
+
+        deploy_ttl = ttl_seconds if ttl_seconds is not None else self._DEFAULT_TTL_SECONDS
+
+        # Pre-flight: verify the Basilica API is reachable before attempting
+        # to create a deployment.  Catches outages early with a clear message
+        # rather than failing deep in the retry loop.
+        try:
+            self._client.health_check()
+        except Exception as hc_exc:
+            logger.warning("Basilica API health check failed: %s", hc_exc)
+            raise NetworkError(
+                f"Basilica API is unreachable (health check failed: {hc_exc}). "
+                f"The API may be down — retry later.",
+                original_error=hc_exc,
+            ) from hc_exc
 
         last_exc: Exception | None = None
         for attempt in range(self._API_MAX_RETRIES):
@@ -266,38 +357,70 @@ class BasilicaGPUClient:
                     memory=memory,
                     storage=storage,
                     public=True,
+                    ttl_seconds=deploy_ttl,
+                    health_check=health_check,
                 )
                 logger.info(
                     "Created deployment %s (image=%s, phase=%s, url=%s)",
                     resp.instance_name, image, resp.phase, resp.url,
                 )
                 return resp
+            except (NetworkError, RateLimitError) as exc:
+                # SDK-typed transient errors — always retry.
+                last_exc = exc
+                if isinstance(exc, RateLimitError) and exc.retry_after:
+                    backoff = exc.retry_after
+                else:
+                    backoff = self._API_INITIAL_BACKOFF * (
+                        self._API_BACKOFF_FACTOR ** attempt
+                    )
+                logger.warning(
+                    "create_deployment attempt %d/%d failed (%s: %s) — "
+                    "retrying in %ds",
+                    attempt + 1, self._API_MAX_RETRIES,
+                    type(exc).__name__, exc, backoff,
+                )
+                if attempt < self._API_MAX_RETRIES - 1:
+                    time.sleep(backoff)
+            except BasilicaError as exc:
+                # Other SDK errors (auth, validation, resource) — only
+                # retry if the SDK explicitly marks them retryable.
+                if getattr(exc, "retryable", False):
+                    last_exc = exc
+                    backoff = self._API_INITIAL_BACKOFF * (
+                        self._API_BACKOFF_FACTOR ** attempt
+                    )
+                    logger.warning(
+                        "create_deployment attempt %d/%d failed (%s: %s, "
+                        "retryable=True) — retrying in %ds",
+                        attempt + 1, self._API_MAX_RETRIES,
+                        type(exc).__name__, exc, backoff,
+                    )
+                    if attempt < self._API_MAX_RETRIES - 1:
+                        time.sleep(backoff)
+                else:
+                    raise
             except Exception as exc:
+                # Unexpected errors — check string as fallback for
+                # non-SDK exceptions (e.g. httpx, urllib).
                 last_exc = exc
                 err_str = str(exc).lower()
-                # Only retry on transient/server errors, not client errors
                 is_transient = (
                     "500" in err_str
                     or "502" in err_str
                     or "503" in err_str
-                    or "504" in err_str
                     or "connection" in err_str
                     or "timeout" in err_str
-                    or "internal server error" in err_str
                 )
                 if not is_transient:
                     raise
-
                 backoff = self._API_INITIAL_BACKOFF * (
                     self._API_BACKOFF_FACTOR ** attempt
                 )
                 logger.warning(
                     "create_deployment attempt %d/%d failed (%s) — "
                     "retrying in %ds",
-                    attempt + 1,
-                    self._API_MAX_RETRIES,
-                    exc,
-                    backoff,
+                    attempt + 1, self._API_MAX_RETRIES, exc, backoff,
                 )
                 if attempt < self._API_MAX_RETRIES - 1:
                     time.sleep(backoff)
@@ -330,15 +453,24 @@ class BasilicaGPUClient:
         """List all deployments for this account."""
         resp = self._client.list_deployments()
         items = resp.deployments if hasattr(resp, "deployments") else []
-        return [
-            {
+        results = []
+        for d in items:
+            entry: dict[str, Any] = {
                 "instance_name": getattr(d, "instance_name", None),
                 "phase": getattr(d, "phase", None),
                 "url": getattr(d, "url", None),
                 "created_at": getattr(d, "created_at", None),
+                "message": getattr(d, "message", None),
             }
-            for d in items
-        ]
+            raw_progress = getattr(d, "progress", None)
+            if raw_progress is not None:
+                entry["progress"] = {
+                    "current_step": getattr(raw_progress, "current_step", None),
+                    "percentage": getattr(raw_progress, "percentage", None),
+                    "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+                }
+            results.append(entry)
+        return results
 
     # ------------------------------------------------------------------
     # SSH key management

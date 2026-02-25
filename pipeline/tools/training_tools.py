@@ -198,6 +198,7 @@ def list_available_gpus() -> str:
                 "region": o.region,
                 "hourly_rate": o.hourly_rate,
                 "is_spot": o.is_spot,
+                "available": getattr(o, "availability", None),
                 "vcpu": o.vcpu_count,
                 "ram_gb": o.system_memory_gb,
                 "storage_gb": o.storage_gb,
@@ -348,6 +349,101 @@ def check_gpu_balance() -> str:
         client = _get_gpu_client()
         balance = client.get_balance()
         return json.dumps(balance, indent=2)
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+@tool(
+    description=(
+        "Diagnostic tool: check GPU availability on Basilica. "
+        "Shows ALL GPUs the platform has (unfiltered) alongside the subset "
+        "that pass your budget/type filters. Use this to diagnose whether "
+        "deployment failures are caused by GPU availability vs image issues. "
+        "If total_all > 0 but filtered_count == 0, your filters are too strict."
+    ),
+)
+def check_gpu_availability() -> str:
+    """Compare all available GPUs against the current budget/type filters."""
+    try:
+        client = _get_gpu_client()
+        # Fetch *all* offerings (including unavailable) for the full picture
+        all_gpus = client.list_all_gpus(available_only=False)
+        filtered_gpus = client.list_cheap_gpus()
+
+        # Summarise all GPUs by type, tracking availability
+        type_summary: dict[str, dict[str, Any]] = {}
+        for o in all_gpus:
+            gpu_type = o.gpu_type or "unknown"
+            entry = type_summary.setdefault(
+                gpu_type, {"rates": [], "available": 0, "unavailable": 0}
+            )
+            entry["rates"].append(float(o.hourly_rate))
+            if getattr(o, "availability", True):
+                entry["available"] += 1
+            else:
+                entry["unavailable"] += 1
+
+        all_summary = []
+        for gpu_type, info in sorted(type_summary.items()):
+            rates = info["rates"]
+            all_summary.append({
+                "gpu_type": gpu_type,
+                "total": len(rates),
+                "available": info["available"],
+                "unavailable": info["unavailable"],
+                "min_rate": round(min(rates), 4),
+                "max_rate": round(max(rates), 4),
+            })
+
+        filtered_rows = []
+        for o in filtered_gpus:
+            filtered_rows.append({
+                "gpu_type": o.gpu_type,
+                "hourly_rate": o.hourly_rate,
+                "provider": o.provider,
+                "region": o.region,
+                "is_spot": o.is_spot,
+            })
+
+        from config import BASILICA_ALLOWED_GPU_TYPES, BASILICA_MAX_HOURLY_RATE
+
+        total_available = sum(e["available"] for e in type_summary.values())
+        total_unavailable = sum(e["unavailable"] for e in type_summary.values())
+
+        result: dict[str, Any] = {
+            "filters": {
+                "max_hourly_rate": BASILICA_MAX_HOURLY_RATE,
+                "allowed_gpu_types": BASILICA_ALLOWED_GPU_TYPES,
+            },
+            "total_all": len(all_gpus),
+            "total_available": total_available,
+            "total_unavailable": total_unavailable,
+            "all_by_type": all_summary,
+            "filtered_count": len(filtered_gpus),
+            "filtered": filtered_rows[:20],  # cap output size
+        }
+        if total_available > 0 and len(filtered_gpus) == 0:
+            result["diagnosis"] = (
+                f"Platform has {total_available} available GPU(s) but NONE pass "
+                "your filters. Loosen BASILICA_MAX_HOURLY_RATE or "
+                "BASILICA_ALLOWED_GPU_TYPES."
+            )
+        elif total_available == 0 and len(all_gpus) > 0:
+            result["diagnosis"] = (
+                f"Platform lists {len(all_gpus)} GPU(s) but ALL are marked "
+                "unavailable. This is a Basilica-side stock issue."
+            )
+        elif len(all_gpus) == 0:
+            result["diagnosis"] = (
+                "Platform reports ZERO GPU offerings. "
+                "This is a Basilica-side availability issue."
+            )
+        else:
+            result["diagnosis"] = (
+                f"{len(filtered_gpus)} GPU(s) available within budget. "
+                "Filters look fine."
+            )
+        return json.dumps(result, indent=2)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
@@ -838,6 +934,14 @@ _DEPLOY_HEALTH_INTERVAL = 15
 # Abort early if the server returns this many consecutive HTTP 5xx responses
 # (meaning the server process is running but broken — waiting longer won't help)
 _DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
+# Abort early if DNS/connection failures persist this many consecutive probes
+# (meaning the hostname never resolved — the deployment may be deleted or invalid)
+_DEPLOY_HEALTH_MAX_DNS_FAILURES = 8
+# Abort early if the reverse proxy keeps returning 500s for this many probes.
+# Reverse-proxy 500s mean the pod is reachable but the training server inside
+# never started (e.g. crash on import, OOM, missing dependency).  Waiting
+# longer won't help — the container needs to be deleted and recreated.
+_DEPLOY_HEALTH_MAX_PROXY_ERRORS = 12
 # How often (in probes) to check the pod phase via the Basilica API
 _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
 
@@ -942,15 +1046,21 @@ def wait_for_deployment_ready(
 ) -> str:
     """Probe a deployment URL until the HTTP server is responsive.
 
-    Includes three early-abort mechanisms so the agent doesn't waste the full
+    Includes five early-abort mechanisms so the agent doesn't waste the full
     timeout on obviously-broken deployments:
 
     1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
        ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
        is up but the health check is crashing.  Waiting longer won't fix it.
-    2. **Pod phase checking** — every few probes, queries the Basilica API to
+    2. **Consecutive DNS failures** — if the hostname never resolves after
+       ``_DEPLOY_HEALTH_MAX_DNS_FAILURES`` probes, the deployment was likely
+       deleted or never provisioned.
+    3. **Consecutive reverse-proxy errors** — if the reverse proxy keeps
+       returning HTTP 500 for ``_DEPLOY_HEALTH_MAX_PROXY_ERRORS`` probes,
+       the pod is reachable but the training server inside never started.
+    4. **Pod phase checking** — every few probes, queries the Basilica API to
        see if the pod has entered a terminal ``Failed`` phase.
-    3. **Cross-deployment failure tracking** — if multiple consecutive
+    5. **Cross-deployment failure tracking** — if multiple consecutive
        deployments have all failed health checks, the Docker image is likely
        broken.  The error message escalates to tell the agent to stop
        recreating deployments.
@@ -961,6 +1071,8 @@ def wait_for_deployment_ready(
     attempts = 0
     last_detail = ""
     consecutive_server_errors = 0
+    consecutive_dns_failures = 0
+    consecutive_proxy_errors = 0
 
     while time.time() < deadline:
         attempts += 1
@@ -980,14 +1092,138 @@ def wait_for_deployment_ready(
             })
 
         # Track consecutive errors from the *actual server process* (tagged
-        # ``[server]`` by ``_probe_deployment_health``).  Reverse-proxy errors
-        # (``[reverse-proxy]``) mean the container isn't ready yet — those are
-        # transient and should be waited through, not trigger early abort.
+        # ``[server]`` by ``_probe_deployment_health``).
         is_server_error = "[server]" in detail
         if is_server_error:
             consecutive_server_errors += 1
         else:
             consecutive_server_errors = 0
+
+        # Track consecutive DNS / connection failures (hostname never resolves).
+        # "Connection failed:" is the prefix from _probe_deployment_health for
+        # URLError exceptions (DNS, refused, unreachable, etc.).
+        is_dns_failure = detail.startswith("Connection failed:")
+        if is_dns_failure:
+            consecutive_dns_failures += 1
+        else:
+            consecutive_dns_failures = 0
+
+        # Track consecutive reverse-proxy errors (pod reachable, server not).
+        # ``[reverse-proxy]`` tagged errors mean the pod is running but the
+        # training server process inside never started or crashed immediately.
+        # A few of these are normal during pod startup, but if they persist
+        # for many probes the server is never going to come up.
+        is_proxy_error = "[reverse-proxy]" in detail
+        if is_proxy_error:
+            consecutive_proxy_errors += 1
+        else:
+            consecutive_proxy_errors = 0
+
+        # Early abort: hostname never resolves — deployment may not exist
+        if consecutive_dns_failures >= _DEPLOY_HEALTH_MAX_DNS_FAILURES:
+            _deployment_failure_count += 1
+            elapsed = int(time.time() - (deadline - timeout))
+            logger.warning(
+                "Deployment %s had %d consecutive DNS/connection failures "
+                "over %ds — aborting health wait (last: %s) "
+                "[%d consecutive deploy failures]",
+                deployment_url, consecutive_dns_failures, elapsed, detail,
+                _deployment_failure_count,
+            )
+            error_result: dict[str, Any] = {
+                "status": "error",
+                "error": (
+                    f"Deployment hostname never resolved after "
+                    f"{consecutive_dns_failures} consecutive probes ({elapsed}s)"
+                ),
+                "url": deployment_url,
+                "last_probe": detail,
+                "probes": attempts,
+                "consecutive_deploy_failures": _deployment_failure_count,
+                "hint": (
+                    "The deployment URL hostname could not be resolved. "
+                    "This usually means the deployment was deleted, never "
+                    "finished provisioning, or the URL is incorrect. "
+                    "Check get_training_deployment() for the deployment status, "
+                    "then delete and recreate the deployment if needed."
+                ),
+            }
+            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+                error_result["hint"] = (
+                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+                    f"have all failed. The deployment hostname never resolved, "
+                    f"suggesting a persistent infrastructure issue. "
+                    f"Do NOT create more deployments — report this as a blocker."
+                )
+                error_result["error_type"] = "environment"
+                error_result["recoverable"] = False
+            return json.dumps(error_result)
+
+        # Early abort: reverse proxy keeps returning 500s — training server
+        # inside the container never started (crash on import, OOM, etc.).
+        if consecutive_proxy_errors >= _DEPLOY_HEALTH_MAX_PROXY_ERRORS:
+            _deployment_failure_count += 1
+            elapsed = int(time.time() - (deadline - timeout))
+            logger.warning(
+                "Deployment %s had %d consecutive reverse-proxy errors "
+                "over %ds — training server never started (last: %s) "
+                "[%d consecutive deploy failures]",
+                deployment_url, consecutive_proxy_errors, elapsed, detail,
+                _deployment_failure_count,
+            )
+
+            # Auto-fetch deployment logs for diagnostics.
+            deploy_logs = ""
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(deployment_url).hostname or ""
+                instance_name = host.split(".")[0] if "." in host else ""
+                if instance_name:
+                    client = _get_gpu_client()
+                    deploy_logs = client.get_deployment_logs(
+                        instance_name, tail=50,
+                    )
+            except Exception as log_exc:
+                logger.debug("Could not fetch deploy logs: %s", log_exc)
+
+            proxy_err: dict[str, Any] = {
+                "status": "error",
+                "error": (
+                    f"Training server never started — reverse proxy returned "
+                    f"HTTP 500 for {consecutive_proxy_errors} consecutive "
+                    f"probes ({elapsed}s)"
+                ),
+                "url": deployment_url,
+                "last_probe": detail,
+                "probes": attempts,
+                "consecutive_deploy_failures": _deployment_failure_count,
+            }
+            if deploy_logs and deploy_logs.strip():
+                proxy_err["deploy_logs_tail"] = deploy_logs[-3000:]
+            elif deploy_logs is not None:
+                proxy_err["deploy_logs_tail"] = (
+                    "(empty — container may not have started)"
+                )
+            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
+                proxy_err["hint"] = (
+                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+                    f"have all failed to start the training server. "
+                    f"The Docker image ({BASILICA_DEPLOY_IMAGE}) is likely broken "
+                    f"or incompatible with the allocated GPU. "
+                    f"Do NOT create more deployments — report this as a blocker."
+                )
+                proxy_err["error_type"] = "environment"
+                proxy_err["recoverable"] = False
+            else:
+                proxy_err["hint"] = (
+                    "The pod is running but the training server inside never "
+                    "started. The reverse proxy can reach the pod but nothing "
+                    "is listening on the expected port. Common causes: crash "
+                    "during import (missing dependency, CUDA mismatch), OOM, or "
+                    "the entrypoint script failed. Check deploy_logs_tail above "
+                    "for the error, then delete and recreate the deployment."
+                )
+            return json.dumps(proxy_err)
 
         # Early abort: server is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
@@ -1014,7 +1250,7 @@ def wait_for_deployment_ready(
             except Exception as log_exc:
                 logger.debug("Could not fetch deploy logs: %s", log_exc)
 
-            error_result: dict[str, Any] = {
+            error_result = {
                 "status": "error",
                 "error": (
                     f"Training server returned {consecutive_server_errors} "
@@ -1063,13 +1299,26 @@ def wait_for_deployment_ready(
                 if instance_name:
                     resp = client.get_deployment(instance_name)
                     phase = getattr(resp, "phase", "")
+                    # Log progress details for observability
+                    raw_progress = getattr(resp, "progress", None)
+                    if raw_progress is not None:
+                        step = getattr(raw_progress, "current_step", "")
+                        pct = getattr(raw_progress, "percentage", None)
+                        elapsed = getattr(raw_progress, "elapsed_seconds", None)
+                        pct_str = f" ({pct:.0f}%)" if pct is not None else ""
+                        elapsed_str = f" [{elapsed}s]" if elapsed is not None else ""
+                        logger.info(
+                            "Deployment %s phase=%s step=%s%s%s",
+                            instance_name, phase, step, pct_str, elapsed_str,
+                        )
                     if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
                         _deployment_failure_count += 1
                         logger.warning(
                             "Deployment %s pod phase is %r — aborting health wait",
                             deployment_url, phase,
                         )
-                        return json.dumps({
+                        msg = getattr(resp, "message", "")
+                        error_result: dict[str, Any] = {
                             "status": "error",
                             "error": f"Deployment pod phase is '{phase}'",
                             "url": deployment_url,
@@ -1082,7 +1331,10 @@ def wait_for_deployment_ready(
                                 "state. Check get_deployment_logs() for the error, "
                                 "then delete and recreate the deployment."
                             ),
-                        })
+                        }
+                        if msg:
+                            error_result["message"] = msg
+                        return json.dumps(error_result)
             except Exception as phase_exc:
                 logger.debug("Phase check failed (non-fatal): %s", phase_exc)
 
@@ -1124,6 +1376,10 @@ def wait_for_deployment_ready(
         "Docker image. The deployment starts a pre-built container with "
         "open-synth-miner already installed — no SSH or pip install needed. "
         "Returns the deployment URL for sending training requests. "
+        "IMPORTANT: After creating a deployment, call wait_for_deployment_ready() "
+        "with the returned URL — do NOT poll get_training_deployment() in a loop. "
+        "wait_for_deployment_ready handles health probing, early abort on failures, "
+        "and cross-deployment failure tracking automatically. "
         "name: deployment name (default: auto-generated). "
         "image: Docker image (default: from config). "
         "gpu_models: list of acceptable GPU models (e.g. ['A4000']). "
@@ -1159,7 +1415,6 @@ def create_training_deployment(
     env: str = "",
 ) -> str:
     """Create a Basilica deployment with the synth-city GPU training image."""
-    global _deployment_failure_count
     try:
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
@@ -1185,24 +1440,43 @@ def create_training_deployment(
             gpu_models=gpu_list,
             env=env_dict,
         )
-        # Reset the consecutive-failure counter on successful deployment
-        # creation so a previous string of failures doesn't permanently
-        # block new attempts after the underlying issue is fixed.
-        prev_failures = _deployment_failure_count
-        _deployment_failure_count = 0
+        # Keep the consecutive-failure counter intact across create/delete
+        # cycles — it is only reset when a deployment actually passes a health
+        # check (inside wait_for_deployment_ready).  Resetting here would
+        # prevent the CRITICAL threshold from ever being reached.
+        # Extract progress info if available (e.g. scheduling, pulling)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
         result: dict[str, Any] = {
             "status": "created",
             "instance_name": resp.instance_name,
             "url": resp.url,
             "phase": resp.phase,
+            "message": getattr(resp, "message", None),
             "share_url": getattr(resp, "share_url", None),
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
+            "next_step": (
+                "Call wait_for_deployment_ready(deployment_url='"
+                + (resp.url or "") + "') to wait for the training server "
+                "to become healthy. Do NOT poll get_training_deployment."
+            ),
         }
-        if prev_failures:
+        if progress:
+            result["progress"] = progress
+        if _deployment_failure_count:
+            result["consecutive_deploy_failures"] = _deployment_failure_count
             result["note"] = (
-                f"Reset consecutive deployment failure counter "
-                f"(was {prev_failures})."
+                f"WARNING: {_deployment_failure_count} previous consecutive "
+                f"deployment(s) failed health checks. If this deployment also "
+                f"fails, the Docker image may be broken."
             )
         return json.dumps(result, indent=2)
     except Exception as exc:
@@ -1231,7 +1505,10 @@ def create_training_deployment(
 @tool(
     description=(
         "Check the status of a Basilica training deployment. "
-        "Returns phase (Pending/Running/Failed), URL, and pod info."
+        "Returns phase (Pending/Running/Failed), URL, and pod info. "
+        "NOTE: To wait for a deployment to become ready, use "
+        "wait_for_deployment_ready() instead of polling this tool repeatedly — "
+        "it handles health probing and early failure detection automatically."
     ),
     parameters_schema={
         "type": "object",
@@ -1245,31 +1522,73 @@ def create_training_deployment(
     },
 )
 def get_training_deployment(name: str) -> str:
-    """Get deployment status."""
+    """Get deployment status including phase, progress, and pod details."""
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
-        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+
+        # Serialize replicas
         raw_replicas = getattr(resp, "replicas", None)
         replicas = None
         if raw_replicas is not None:
-            replicas = [
-                {
-                    "phase": getattr(r, "phase", None),
-                    "ready": getattr(r, "ready", None),
-                    "started": getattr(r, "started", None),
-                    "name": getattr(r, "name", None),
+            if hasattr(raw_replicas, "__iter__"):
+                replicas = [
+                    {
+                        "phase": getattr(r, "phase", None),
+                        "ready": getattr(r, "ready", None),
+                        "started": getattr(r, "started", None),
+                        "name": getattr(r, "name", None),
+                    }
+                    for r in raw_replicas
+                ]
+            elif hasattr(raw_replicas, "desired"):
+                # ReplicaStatus object with desired/ready counts
+                replicas = {
+                    "desired": getattr(raw_replicas, "desired", None),
+                    "ready": getattr(raw_replicas, "ready", None),
                 }
-                for r in raw_replicas
-            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
-        return json.dumps({
+            else:
+                replicas = str(raw_replicas)
+
+        # Serialize progress (DeploymentProgress)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
+        # Serialize pods (list of PodInfo)
+        raw_pods = getattr(resp, "pods", None)
+        pods = None
+        if raw_pods is not None and hasattr(raw_pods, "__iter__"):
+            pods = [
+                {
+                    "name": getattr(p, "name", None),
+                    "status": getattr(p, "status", None),
+                    "node": getattr(p, "node", None),
+                }
+                for p in raw_pods
+            ]
+
+        result: dict[str, Any] = {
             "instance_name": resp.instance_name,
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
             "replicas": replicas,
             "created_at": str(getattr(resp, "created_at", "")),
-        }, indent=2)
+        }
+
+        # Only include progress/pods when present to keep output concise
+        if progress:
+            result["progress"] = progress
+        if pods:
+            result["pods"] = pods
+
+        return json.dumps(result, indent=2)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
@@ -1574,6 +1893,31 @@ def run_experiment_on_deployment(
         # Docker image.
         model_code_content = _collect_custom_component_code()
 
+        if not model_code_content:
+            logger.warning(
+                "model_code_content is empty — no .py files found in %s. "
+                "The training server requires model code to be provided.",
+                _CUSTOM_COMPONENTS_DIR,
+            )
+            return json.dumps({
+                "status": "error",
+                "error": (
+                    "No custom component code found. The training server "
+                    "requires 'model_code_content' to be a non-empty string "
+                    "containing the model code."
+                ),
+                "error_type": "configuration",
+                "recoverable": True,
+                "components_dir": _CUSTOM_COMPONENTS_DIR,
+                "hint": (
+                    f"The directory '{_CUSTOM_COMPONENTS_DIR}' is empty or "
+                    f"does not exist. Use the ComponentAuthor agent or "
+                    f"write_file tool to create at least one .py file with "
+                    f"your model code (blocks/heads) in that directory, then "
+                    f"retry run_experiment_on_deployment."
+                ),
+            })
+
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
@@ -1623,7 +1967,10 @@ def run_experiment_on_deployment(
 
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    # Client error (4xx) — not retryable, log details
+                    # Client error (4xx) — not retryable, log details and
+                    # return a structured error directly instead of re-raising.
+                    # (Re-raising loses the response body because exc.read()
+                    # can only be consumed once.)
                     _err_body = ""
                     try:
                         _err_body = exc.read().decode()[:2000]
@@ -1634,7 +1981,32 @@ def run_experiment_on_deployment(
                         "URL: %s | Response: %s | Payload keys: %s",
                         exc.code, url, _err_body, list(payload.keys()),
                     )
-                    raise
+                    _mon.emit(
+                        "system", "error",
+                        message=f"Deployment HTTP {exc.code}: {exc.reason}",
+                    )
+                    client_err: dict[str, Any] = {
+                        "status": "error",
+                        "error": f"HTTP {exc.code}: {exc.reason}",
+                        "response_body": _err_body,
+                    }
+                    if exc.code == 400:
+                        client_err["hint"] = (
+                            "The training server rejected the request payload. "
+                            "Check response_body for the validation error. "
+                            "Common causes: missing or empty 'model_code_content' "
+                            "(ensure custom component .py files exist in "
+                            f"'{_CUSTOM_COMPONENTS_DIR}'), or malformed "
+                            "experiment config."
+                        )
+                    elif exc.code == 401:
+                        client_err["hint"] = (
+                            "The deployment returned 401 Unauthorized. "
+                            "If the deployment was created with public=False, "
+                            "you must pass the share_token from "
+                            "create_training_deployment."
+                        )
+                    return json.dumps(client_err)
                 # Server error (5xx) — retryable
                 last_http_error = exc
                 backoff = _DEPLOY_INITIAL_BACKOFF * (_DEPLOY_BACKOFF_FACTOR ** attempt)
