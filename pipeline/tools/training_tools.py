@@ -883,14 +883,21 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         except Exception:
             pass
         if exc.code == 503:
-            # Server is up but ResearchSession is broken — not healthy
-            return False, f"HTTP 503: server up but unhealthy ({body})"
+            # Server is up but ResearchSession is broken — not healthy.
+            # Tag as [server] so the caller can distinguish from proxy errors.
+            return False, f"HTTP 503: server up but unhealthy [server] ({body})"
         if exc.code == 500:
             # Distinguish reverse-proxy 500 from training server 500.
             # Our global exception handler returns JSON with an "error" key;
-            # a bare proxy 500 is typically HTML.
-            source = "reverse-proxy" if "<html" in body.lower() else "server"
-            return False, f"HTTP 500: Internal Server Error [{source}] ({body})"
+            # a bare proxy 500 is typically HTML or has an empty body
+            # (ingress returns 500 when no backend pod is ready yet).
+            if not body.strip() or "<html" in body.lower():
+                return False, f"HTTP 500: Internal Server Error [reverse-proxy] ({body})"
+            return False, f"HTTP 500: Internal Server Error [server] ({body})"
+        if exc.code in (502, 504):
+            # 502 Bad Gateway / 504 Gateway Timeout — reverse proxy can't
+            # reach the backend container (still starting or crashed).
+            return False, f"HTTP {exc.code}: {exc.reason} [reverse-proxy] ({body})"
         # Other 4xx — server is responsive, /health just isn't mapped (older image?)
         if 400 <= exc.code < 500:
             return True, f"HTTP {exc.code} (server responsive)"
@@ -972,8 +979,11 @@ def wait_for_deployment_ready(
                 "detail": detail,
             })
 
-        # Track consecutive HTTP 5xx errors (server is up but broken)
-        is_server_error = detail.startswith("HTTP 5")
+        # Track consecutive errors from the *actual server process* (tagged
+        # ``[server]`` by ``_probe_deployment_health``).  Reverse-proxy errors
+        # (``[reverse-proxy]``) mean the container isn't ready yet — those are
+        # transient and should be waited through, not trigger early abort.
+        is_server_error = "[server]" in detail
         if is_server_error:
             consecutive_server_errors += 1
         else:
