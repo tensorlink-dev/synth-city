@@ -306,6 +306,63 @@ def _build_data_loader(
 
 
 # ---------------------------------------------------------------------------
+# Custom component code installation
+# ---------------------------------------------------------------------------
+
+_CUSTOM_CODE_DIR = os.path.join(os.getcwd(), "src", "models", "components")
+
+
+def _install_custom_code(code_content: str, job_id: str) -> None:
+    """Write custom component code to the components directory.
+
+    The code string may contain multiple files delimited by
+    ``# --- filename.py ---`` headers.  Each section is written as a
+    separate file.  If no headers are found the entire string is written
+    as ``_custom_{job_id}.py``.
+    """
+    os.makedirs(_CUSTOM_CODE_DIR, exist_ok=True)
+
+    # Split by "# --- filename.py ---" markers
+    import re as _re
+
+    sections = _re.split(r"^# --- (\S+\.py) ---\s*$", code_content, flags=_re.MULTILINE)
+
+    if len(sections) >= 3:
+        # sections = [preamble, name1, body1, name2, body2, ...]
+        written = 0
+        for i in range(1, len(sections), 2):
+            fname = sections[i]
+            fbody = sections[i + 1] if i + 1 < len(sections) else ""
+            if fbody.strip():
+                fpath = os.path.join(_CUSTOM_CODE_DIR, fname)
+                with open(fpath, "w", encoding="utf-8") as f:
+                    f.write(fbody)
+                written += 1
+                logger.info("Installed custom component: %s (%d bytes)", fname, len(fbody))
+        if written:
+            _reload_components()
+    elif code_content.strip():
+        # No headers — write as a single file
+        fname = f"_custom_{job_id[:8]}.py"
+        fpath = os.path.join(_CUSTOM_CODE_DIR, fname)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(code_content)
+        logger.info("Installed custom component: %s (%d bytes)", fname, len(code_content))
+        _reload_components()
+
+
+def _reload_components() -> None:
+    """Best-effort registry reload after installing custom components."""
+    try:
+        from osa.models.registry import discover_components
+
+        discover_components(_CUSTOM_CODE_DIR)
+        logger.info("Component registry reloaded from %s", _CUSTOM_CODE_DIR)
+    except Exception as exc:
+        logger.warning("Could not reload component registry: %s", exc)
+
+
+# ---------------------------------------------------------------------------
 # Synchronous training runner (runs in thread pool)
 # ---------------------------------------------------------------------------
 
@@ -587,6 +644,19 @@ async def train(request: Request):
     input_len = body.get("input_len", 288)
     pred_len = body.get("pred_len", 288)
     job_id = body.get("job_id") or uuid.uuid4().hex
+    model_code_content = body.get("model_code_content", "")
+
+    logger.info(
+        "POST /train — job_id=%s, epochs=%d, payload_keys=%s, "
+        "model_code_content_len=%d",
+        job_id, epochs, list(body.keys()), len(model_code_content),
+    )
+
+    # Install custom component code (if provided) so it can be imported
+    # during training.  This allows the client to send components not baked
+    # into the Docker image.
+    if model_code_content:
+        _install_custom_code(model_code_content, job_id)
 
     # Strip timeframe tag (used by caller, not by ResearchSession)
     experiment.pop("timeframe", None)
