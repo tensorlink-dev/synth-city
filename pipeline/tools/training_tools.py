@@ -1264,6 +1264,10 @@ def wait_for_deployment_ready(
         "Docker image. The deployment starts a pre-built container with "
         "open-synth-miner already installed — no SSH or pip install needed. "
         "Returns the deployment URL for sending training requests. "
+        "IMPORTANT: After creating a deployment, call wait_for_deployment_ready() "
+        "with the returned URL — do NOT poll get_training_deployment() in a loop. "
+        "wait_for_deployment_ready handles health probing, early abort on failures, "
+        "and cross-deployment failure tracking automatically. "
         "name: deployment name (default: auto-generated). "
         "image: Docker image (default: from config). "
         "gpu_models: list of acceptable GPU models (e.g. ['A4000']). "
@@ -1299,7 +1303,6 @@ def create_training_deployment(
     env: str = "",
 ) -> str:
     """Create a Basilica deployment with the synth-city GPU training image."""
-    global _deployment_failure_count
     try:
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
@@ -1325,11 +1328,10 @@ def create_training_deployment(
             gpu_models=gpu_list,
             env=env_dict,
         )
-        # Reset the consecutive-failure counter on successful deployment
-        # creation so a previous string of failures doesn't permanently
-        # block new attempts after the underlying issue is fixed.
-        prev_failures = _deployment_failure_count
-        _deployment_failure_count = 0
+        # Keep the consecutive-failure counter intact across create/delete
+        # cycles — it is only reset when a deployment actually passes a health
+        # check (inside wait_for_deployment_ready).  Resetting here would
+        # prevent the CRITICAL threshold from ever being reached.
         result: dict[str, Any] = {
             "status": "created",
             "instance_name": resp.instance_name,
@@ -1339,10 +1341,12 @@ def create_training_deployment(
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
         }
-        if prev_failures:
+        if _deployment_failure_count:
+            result["consecutive_deploy_failures"] = _deployment_failure_count
             result["note"] = (
-                f"Reset consecutive deployment failure counter "
-                f"(was {prev_failures})."
+                f"WARNING: {_deployment_failure_count} previous consecutive "
+                f"deployment(s) failed health checks. If this deployment also "
+                f"fails, the Docker image may be broken."
             )
         return json.dumps(result, indent=2)
     except Exception as exc:
@@ -1371,7 +1375,10 @@ def create_training_deployment(
 @tool(
     description=(
         "Check the status of a Basilica training deployment. "
-        "Returns phase (Pending/Running/Failed), URL, and pod info."
+        "Returns phase (Pending/Running/Failed), URL, and pod info. "
+        "NOTE: To wait for a deployment to become ready, use "
+        "wait_for_deployment_ready() instead of polling this tool repeatedly — "
+        "it handles health probing and early failure detection automatically."
     ),
     parameters_schema={
         "type": "object",
