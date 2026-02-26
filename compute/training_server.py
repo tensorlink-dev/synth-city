@@ -19,7 +19,13 @@ import os
 import subprocess
 import traceback
 
-from flask import Flask, Response, jsonify, request
+# Early stdout print before heavy imports — if this doesn't appear in
+# container logs, Python itself is crashing (segfault, OOM, bad image).
+print("training_server.py: stdlib imports OK, loading flask...", flush=True)
+
+from flask import Flask, Response, jsonify, request  # noqa: E402
+
+print("training_server.py: flask OK", flush=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -244,13 +250,23 @@ def train():
 
 if __name__ == "__main__":
     port = int(os.environ.get("TRAINING_SERVER_PORT", "8378"))
+    print(f"training_server.py: starting on port {port}", flush=True)
     logger.info("Starting training server on port %d", port)
+
+    # Print environment diagnostics for debugging container issues
+    print("training_server.py: environment diagnostics:", flush=True)
+    try:
+        import torch
+        print(f"  torch={torch.__version__}, cuda={torch.cuda.is_available()}", flush=True)
+    except Exception as exc:
+        print(f"  torch import FAILED: {exc}", flush=True)
 
     # Eagerly try to import ResearchSession at startup so any errors
     # appear in the pod logs immediately instead of only on first request.
     try:
         _get_session_class()
         logger.info("Startup self-test passed: ResearchSession is importable")
+        print("training_server.py: ResearchSession import OK", flush=True)
     except Exception as exc:
         logger.error(
             "Startup self-test FAILED: ResearchSession is NOT importable. "
@@ -258,5 +274,7 @@ if __name__ == "__main__":
             exc,
             exc_info=True,
         )
+        print(f"training_server.py: ResearchSession import FAILED: {exc}", flush=True)
 
+    print(f"training_server.py: starting Flask on 0.0.0.0:{port}", flush=True)
     app.run(host="0.0.0.0", port=port, threaded=False)
