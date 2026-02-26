@@ -1044,6 +1044,18 @@ def wait_for_deployment_ready(
     # We mirror that logic here.
     _FAILED_PHASES = {"failed", "error", "crashloopbackoff"}
 
+    # Pod-level statuses that indicate a terminal or semi-terminal problem.
+    # These come from resp.pods[].status and are Kubernetes conditions.
+    _POD_TERMINAL_STATUSES = {
+        "imagepullbackoff",      # Image can't be pulled (bad tag, auth, etc.)
+        "errimagepull",          # Same — immediate image pull failure
+        "invalidimageformat",    # Corrupted or wrong-arch image
+        "registryunavailable",   # Can't reach the registry
+        "crashloopbackoff",      # Container keeps crashing on restart
+        "oomkilled",             # Out of memory
+        "createcontainererror",  # Bad container spec
+    }
+
     def _is_deployment_ready(resp: Any) -> bool:
         """Check if a deployment is actually serving traffic.
 
@@ -1070,6 +1082,48 @@ def wait_for_deployment_ready(
 
         return False
 
+    def _check_pod_status(resp: Any) -> str | None:
+        """Inspect per-pod status for terminal failures.
+
+        Returns a human-readable error string if any pod is in a
+        known-bad state (``ImagePullBackOff``, ``CrashLoopBackOff``,
+        etc.), otherwise ``None``.
+        """
+        pods = getattr(resp, "pods", None) or []
+        for pod in pods:
+            status = (getattr(pod, "status", "") or "").lower()
+            if status in _POD_TERMINAL_STATUSES:
+                pod_name = getattr(pod, "name", "?")
+                node = getattr(pod, "node", "?")
+                return (
+                    f"Pod {pod_name} is in terminal state '{status}' "
+                    f"(node={node})"
+                )
+        return None
+
+    def _summarize_deployment(resp: Any) -> str:
+        """One-line summary of deployment for debug logging."""
+        state = getattr(resp, "state", "?")
+        phase = getattr(resp, "phase", "?")
+        msg = getattr(resp, "message", "")
+        replicas = getattr(resp, "replicas", None)
+        r_desired = getattr(replicas, "desired", "?") if replicas else "?"
+        r_ready = getattr(replicas, "ready", "?") if replicas else "?"
+        pods = getattr(resp, "pods", None) or []
+        pod_statuses = ", ".join(
+            f"{getattr(p, 'name', '?')}={getattr(p, 'status', '?')}"
+            for p in pods
+        ) or "(no pods)"
+        parts = [
+            f"state={state}",
+            f"phase={phase}",
+            f"replicas={r_ready}/{r_desired}",
+            f"pods=[{pod_statuses}]",
+        ]
+        if msg:
+            parts.append(f"msg={msg}")
+        return " ".join(parts)
+
     pod_phase = "unknown"
     pod_state = "unknown"
     phase_polls = 0
@@ -1084,40 +1138,61 @@ def wait_for_deployment_ready(
 
                 if _is_deployment_ready(resp):
                     logger.info(
-                        "Deployment %s is ready (state=%s, phase=%s) "
-                        "after %d polls",
-                        deployment_url, pod_state, pod_phase, phase_polls,
+                        "Deployment %s is ready (%s) after %d polls",
+                        deployment_url,
+                        _summarize_deployment(resp),
+                        phase_polls,
                     )
                     break
 
                 if pod_phase in _FAILED_PHASES or pod_state in _FAILED_PHASES:
                     _deployment_failure_count += 1
                     logs = _fetch_deploy_logs_safe(instance_name)
-                    msg = getattr(resp, "message", "") or ""
+                    summary = _summarize_deployment(resp)
                     logger.warning(
-                        "Deployment %s failed (state=%s, phase=%s, msg=%s)",
-                        deployment_url, pod_state, pod_phase, msg,
+                        "Deployment %s failed: %s",
+                        deployment_url, summary,
                     )
                     return json.dumps(
                         _build_wait_error(
                             deployment_url=deployment_url,
-                            error=(
-                                f"Deployment failed: state={pod_state}, "
-                                f"phase={pod_phase}"
-                                + (f" ({msg})" if msg else "")
-                            ),
-                            last_probe=f"state={pod_state}, phase={pod_phase}",
+                            error=f"Deployment failed: {summary}",
+                            last_probe=summary,
                             probes=0,
                             deploy_logs=logs,
                             phase=pod_phase,
                         )
                     )
+
+                # Check individual pod statuses for terminal failures
+                # (e.g. ImagePullBackOff, CrashLoopBackOff) that the
+                # high-level state/phase may not reflect yet.
+                pod_error = _check_pod_status(resp)
+                if pod_error:
+                    _deployment_failure_count += 1
+                    logs = _fetch_deploy_logs_safe(instance_name)
+                    summary = _summarize_deployment(resp)
+                    logger.warning(
+                        "Deployment %s has pod-level failure: %s (%s)",
+                        deployment_url, pod_error, summary,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=pod_error,
+                            last_probe=summary,
+                            probes=0,
+                            deploy_logs=logs,
+                            phase=pod_phase,
+                        )
+                    )
+
         except Exception as exc:
             logger.debug("Phase poll %d failed (non-fatal): %s", phase_polls, exc)
 
         logger.debug(
-            "Deployment %s state=%s phase=%s (poll %d), waiting...",
-            deployment_url, pod_state, pod_phase, phase_polls,
+            "Deployment %s phase=%s state=%s (poll %d), waiting...",
+            deployment_url, pod_phase, pod_state, phase_polls,
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
     else:
@@ -1188,7 +1263,7 @@ def wait_for_deployment_ready(
                 )
             )
 
-        # Periodically check pod phase to detect crashes during health wait
+        # Periodically check pod phase + pod status to detect crashes
         if health_probes % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
             try:
                 client = _get_gpu_client()
@@ -1196,29 +1271,53 @@ def wait_for_deployment_ready(
                     resp = client.get_deployment(instance_name)
                     phase = (getattr(resp, "phase", "") or "").lower()
                     state = (getattr(resp, "state", "") or "").lower()
+
+                    # Check deployment-level failure
                     if phase in _FAILED_PHASES or state in _FAILED_PHASES:
                         _deployment_failure_count += 1
                         logs = _fetch_deploy_logs_safe(instance_name)
-                        msg = getattr(resp, "message", "") or ""
+                        summary = _summarize_deployment(resp)
                         logger.warning(
-                            "Deployment %s failed during health wait "
-                            "(state=%s, phase=%s, msg=%s)",
-                            deployment_url, state, phase, msg,
+                            "Deployment %s failed during health wait: %s",
+                            deployment_url, summary,
                         )
                         return json.dumps(
                             _build_wait_error(
                                 deployment_url=deployment_url,
-                                error=(
-                                    f"Deployment failed: state={state}, "
-                                    f"phase={phase}"
-                                    + (f" ({msg})" if msg else "")
-                                ),
+                                error=f"Deployment failed: {summary}",
                                 last_probe=detail,
                                 probes=health_probes,
                                 deploy_logs=logs,
                                 phase=phase,
                             )
                         )
+
+                    # Check pod-level terminal failures
+                    pod_error = _check_pod_status(resp)
+                    if pod_error:
+                        _deployment_failure_count += 1
+                        logs = _fetch_deploy_logs_safe(instance_name)
+                        summary = _summarize_deployment(resp)
+                        logger.warning(
+                            "Deployment %s pod failure during health "
+                            "wait: %s (%s)",
+                            deployment_url, pod_error, summary,
+                        )
+                        return json.dumps(
+                            _build_wait_error(
+                                deployment_url=deployment_url,
+                                error=pod_error,
+                                last_probe=detail,
+                                probes=health_probes,
+                                deploy_logs=logs,
+                                phase=phase,
+                            )
+                        )
+
+                    logger.debug(
+                        "Phase check during health wait: %s",
+                        _summarize_deployment(resp),
+                    )
             except Exception as phase_exc:
                 logger.debug("Phase check failed (non-fatal): %s", phase_exc)
 
@@ -1228,13 +1327,24 @@ def wait_for_deployment_ready(
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
 
-    # Full timeout expired
+    # Full timeout expired — fetch final deployment status for diagnostics
     _deployment_failure_count += 1
     logs = _fetch_deploy_logs_safe(instance_name)
+    final_summary = ""
+    if instance_name:
+        try:
+            resp = _get_gpu_client().get_deployment(instance_name)
+            final_summary = _summarize_deployment(resp)
+        except Exception:
+            final_summary = "(could not fetch final status)"
     return json.dumps(
         _build_wait_error(
             deployment_url=deployment_url,
-            error=f"Deployment not ready after {timeout}s ({health_probes} health probes)",
+            error=(
+                f"Deployment not ready after {timeout}s "
+                f"({health_probes} health probes). "
+                f"Final status: {final_summary}"
+            ),
             last_probe=last_detail,
             probes=health_probes,
             deploy_logs=logs,
@@ -1287,12 +1397,15 @@ def _build_wait_error(
         )
     else:
         result["hint"] = (
-            "The pod is running but the training server inside never started. "
-            "The reverse proxy can reach the pod but nothing is listening on "
-            "the expected port. Common causes: crash during import (missing "
-            "dependency, CUDA mismatch), OOM, or the entrypoint script failed. "
-            "Check deploy_logs_tail above for the error, then delete and "
-            "recreate the deployment."
+            "The pod is running but the training server inside never started "
+            "and produced no logs. This usually means the container image "
+            "could not be pulled (wrong tag, GHCR auth, deleted image) or "
+            "the container crashed immediately (OOM before Python started, "
+            "CUDA driver mismatch, segfault in torch import). "
+            "Check the deployment status fields (state, phase, pods) "
+            "for the specific Kubernetes failure reason. "
+            "If the image cannot be pulled, this is an infrastructure "
+            "issue — creating more deployments will not help."
         )
     return result
 
