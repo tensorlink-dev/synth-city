@@ -1036,8 +1036,39 @@ def wait_for_deployment_ready(
     #   → starting → health_check → ready
     # Terminal failure: failed
     # Terminal shutdown: terminating
-    _READY_PHASES = {"running", "ready", "active"}
+    #
+    # IMPORTANT: state="Active" does NOT mean the pod is serving traffic.
+    # The SDK's own is_ready check requires:
+    #   state in ("Active", "Running") AND replicas.ready > 0
+    #   AND replicas.ready == replicas.desired
+    # We mirror that logic here.
     _FAILED_PHASES = {"failed", "error", "crashloopbackoff"}
+
+    def _is_deployment_ready(resp: Any) -> bool:
+        """Check if a deployment is actually serving traffic.
+
+        Mirrors the Basilica SDK's ``DeploymentStatus.is_ready`` logic:
+        the high-level *state* must be "Active" or "Running" AND the
+        replica counts must confirm at least one ready replica matching
+        the desired count.  The granular *phase* of "ready" or "running"
+        is also accepted as an authoritative signal.
+        """
+        phase = (getattr(resp, "phase", "") or "").lower()
+        state = (getattr(resp, "state", "") or "").lower()
+
+        # Granular phase "ready" or "running" is authoritative
+        if phase in ("ready", "running"):
+            return True
+
+        # High-level state requires replica confirmation
+        if state in ("active", "running"):
+            replicas = getattr(resp, "replicas", None)
+            if replicas is not None:
+                desired = getattr(replicas, "desired", 0) or 0
+                ready = getattr(replicas, "ready", 0) or 0
+                return ready > 0 and ready >= desired
+
+        return False
 
     pod_phase = "unknown"
     pod_state = "unknown"
@@ -1051,8 +1082,7 @@ def wait_for_deployment_ready(
                 pod_phase = (getattr(resp, "phase", "") or "").lower()
                 pod_state = (getattr(resp, "state", "") or "").lower()
 
-                # Check both state and phase for readiness
-                if pod_phase in _READY_PHASES or pod_state in _READY_PHASES:
+                if _is_deployment_ready(resp):
                     logger.info(
                         "Deployment %s is ready (state=%s, phase=%s) "
                         "after %d polls",
@@ -1094,13 +1124,12 @@ def wait_for_deployment_ready(
         # Phase 1 exhausted its budget — pod never reached Running.
         # Fall through to Phase 2 anyway; the health probes will either
         # succeed (if the pod started late) or time out.
-        if pod_phase not in _READY_PHASES and pod_state not in _READY_PHASES:
-            logger.info(
-                "Deployment %s still state=%s phase=%s after %d polls "
-                "(%.0fs) — proceeding to health probes",
-                deployment_url, pod_state, pod_phase, phase_polls,
-                timeout * _DEPLOY_PHASE_WAIT_FRACTION,
-            )
+        logger.info(
+            "Deployment %s still state=%s phase=%s after %d polls "
+            "(%.0fs) — proceeding to health probes",
+            deployment_url, pod_state, pod_phase, phase_polls,
+            timeout * _DEPLOY_PHASE_WAIT_FRACTION,
+        )
 
     # ------------------------------------------------------------------
     # Phase 2: Probe /health until the server is ready
