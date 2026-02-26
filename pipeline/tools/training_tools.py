@@ -850,6 +850,45 @@ _DEPLOY_PHASE_WAIT_FRACTION = 0.5
 
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
 
+# Training server port inside the container (must match Dockerfile EXPOSE)
+_DEPLOY_SERVER_PORT = 8378
+
+
+def _build_health_check():
+    """Build a Kubernetes ``HealthCheckConfig`` for the training server.
+
+    Configures readiness and startup probes so the reverse proxy only routes
+    traffic once the Flask server is actually listening on ``/health``.
+    Without these, the proxy returns empty-body HTTP 500 during container
+    startup (image pull, CUDA init, torch import).
+
+    Returns ``None`` if the SDK version doesn't support ``HealthCheckConfig``.
+    """
+    try:
+        from basilica import HealthCheckConfig, ProbeConfig
+    except ImportError:
+        logger.debug("basilica SDK does not export HealthCheckConfig — skipping")
+        return None
+
+    return HealthCheckConfig(
+        readiness=ProbeConfig(
+            path="/health",
+            port=_DEPLOY_SERVER_PORT,
+            initial_delay_seconds=10,
+            period_seconds=10,
+            timeout_seconds=5,
+            failure_threshold=3,
+        ),
+        startup=ProbeConfig(
+            path="/health",
+            port=_DEPLOY_SERVER_PORT,
+            initial_delay_seconds=15,
+            period_seconds=10,
+            timeout_seconds=5,
+            failure_threshold=30,  # 30 × 10s = 300s max startup time
+        ),
+    )
+
 # ---------------------------------------------------------------------------
 # Cross-deployment failure tracking
 # ---------------------------------------------------------------------------
@@ -990,9 +1029,18 @@ def wait_for_deployment_ready(
     phase_deadline = time.time() + timeout * _DEPLOY_PHASE_WAIT_FRACTION
 
     # ------------------------------------------------------------------
-    # Phase 1: Wait for pod phase to become "Running"
+    # Phase 1: Wait for pod phase to become "Running" / "ready"
     # ------------------------------------------------------------------
+    # Granular phases from the SDK (in lifecycle order):
+    #   pending → scheduling → pulling → initializing → storage_sync
+    #   → starting → health_check → ready
+    # Terminal failure: failed
+    # Terminal shutdown: terminating
+    _READY_PHASES = {"running", "ready", "active"}
+    _FAILED_PHASES = {"failed", "error", "crashloopbackoff"}
+
     pod_phase = "unknown"
+    pod_state = "unknown"
     phase_polls = 0
     while time.time() < min(phase_deadline, deadline):
         phase_polls += 1
@@ -1001,26 +1049,34 @@ def wait_for_deployment_ready(
             if instance_name:
                 resp = client.get_deployment(instance_name)
                 pod_phase = (getattr(resp, "phase", "") or "").lower()
+                pod_state = (getattr(resp, "state", "") or "").lower()
 
-                if pod_phase == "running":
+                # Check both state and phase for readiness
+                if pod_phase in _READY_PHASES or pod_state in _READY_PHASES:
                     logger.info(
-                        "Deployment %s pod phase is Running after %d polls",
-                        deployment_url, phase_polls,
+                        "Deployment %s is ready (state=%s, phase=%s) "
+                        "after %d polls",
+                        deployment_url, pod_state, pod_phase, phase_polls,
                     )
                     break
 
-                if pod_phase in ("failed", "error", "crashloopbackoff"):
+                if pod_phase in _FAILED_PHASES or pod_state in _FAILED_PHASES:
                     _deployment_failure_count += 1
                     logs = _fetch_deploy_logs_safe(instance_name)
+                    msg = getattr(resp, "message", "") or ""
                     logger.warning(
-                        "Deployment %s pod phase is %r — aborting",
-                        deployment_url, pod_phase,
+                        "Deployment %s failed (state=%s, phase=%s, msg=%s)",
+                        deployment_url, pod_state, pod_phase, msg,
                     )
                     return json.dumps(
                         _build_wait_error(
                             deployment_url=deployment_url,
-                            error=f"Deployment pod phase is '{pod_phase}'",
-                            last_probe=f"phase={pod_phase}",
+                            error=(
+                                f"Deployment failed: state={pod_state}, "
+                                f"phase={pod_phase}"
+                                + (f" ({msg})" if msg else "")
+                            ),
+                            last_probe=f"state={pod_state}, phase={pod_phase}",
                             probes=0,
                             deploy_logs=logs,
                             phase=pod_phase,
@@ -1030,19 +1086,19 @@ def wait_for_deployment_ready(
             logger.debug("Phase poll %d failed (non-fatal): %s", phase_polls, exc)
 
         logger.debug(
-            "Deployment %s phase=%s (poll %d), waiting...",
-            deployment_url, pod_phase, phase_polls,
+            "Deployment %s state=%s phase=%s (poll %d), waiting...",
+            deployment_url, pod_state, pod_phase, phase_polls,
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
     else:
         # Phase 1 exhausted its budget — pod never reached Running.
         # Fall through to Phase 2 anyway; the health probes will either
         # succeed (if the pod started late) or time out.
-        if pod_phase != "running":
+        if pod_phase not in _READY_PHASES and pod_state not in _READY_PHASES:
             logger.info(
-                "Deployment %s still phase=%s after %d polls (%.0fs) — "
-                "proceeding to health probes",
-                deployment_url, pod_phase, phase_polls,
+                "Deployment %s still state=%s phase=%s after %d polls "
+                "(%.0fs) — proceeding to health probes",
+                deployment_url, pod_state, pod_phase, phase_polls,
                 timeout * _DEPLOY_PHASE_WAIT_FRACTION,
             )
 
@@ -1110,17 +1166,24 @@ def wait_for_deployment_ready(
                 if instance_name:
                     resp = client.get_deployment(instance_name)
                     phase = (getattr(resp, "phase", "") or "").lower()
-                    if phase in ("failed", "error", "crashloopbackoff"):
+                    state = (getattr(resp, "state", "") or "").lower()
+                    if phase in _FAILED_PHASES or state in _FAILED_PHASES:
                         _deployment_failure_count += 1
                         logs = _fetch_deploy_logs_safe(instance_name)
+                        msg = getattr(resp, "message", "") or ""
                         logger.warning(
-                            "Deployment %s pod phase is %r — aborting health wait",
-                            deployment_url, phase,
+                            "Deployment %s failed during health wait "
+                            "(state=%s, phase=%s, msg=%s)",
+                            deployment_url, state, phase, msg,
                         )
                         return json.dumps(
                             _build_wait_error(
                                 deployment_url=deployment_url,
-                                error=f"Deployment pod phase is '{phase}'",
+                                error=(
+                                    f"Deployment failed: state={state}, "
+                                    f"phase={phase}"
+                                    + (f" ({msg})" if msg else "")
+                                ),
                                 last_probe=detail,
                                 probes=health_probes,
                                 deploy_logs=logs,
@@ -1265,11 +1328,17 @@ def create_training_deployment(
         if HF_TOKEN and "HF_TOKEN" not in env_dict:
             env_dict["HF_TOKEN"] = HF_TOKEN
 
+        # Build Kubernetes health probes so the reverse proxy only routes
+        # traffic once the training server is actually listening.  Without
+        # this, the proxy returns empty-body HTTP 500 during container startup.
+        health_check = _build_health_check()
+
         resp = client.create_deployment(
             name=deploy_name,
             image=deploy_image,
             gpu_models=gpu_list,
             env=env_dict,
+            health_check=health_check,
         )
         return json.dumps({
             "status": "created",
@@ -1324,25 +1393,46 @@ def get_training_deployment(name: str) -> str:
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
-        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+
+        # replicas is a ReplicaStatus(desired, ready) — NOT a list
         raw_replicas = getattr(resp, "replicas", None)
         replicas = None
         if raw_replicas is not None:
-            replicas = [
-                {
-                    "phase": getattr(r, "phase", None),
-                    "ready": getattr(r, "ready", None),
-                    "started": getattr(r, "started", None),
-                    "name": getattr(r, "name", None),
-                }
-                for r in raw_replicas
-            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
+            replicas = {
+                "desired": getattr(raw_replicas, "desired", None),
+                "ready": getattr(raw_replicas, "ready", None),
+            }
+
+        # Per-pod detail (PodInfo objects with name, status, node)
+        raw_pods = getattr(resp, "pods", None) or []
+        pods = [
+            {
+                "name": getattr(p, "name", None),
+                "status": getattr(p, "status", None),
+                "node": getattr(p, "node", None),
+            }
+            for p in raw_pods
+        ] if hasattr(raw_pods, "__iter__") else None
+
+        # Progress info (current_step, percentage, elapsed_seconds)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
         return json.dumps({
             "instance_name": resp.instance_name,
+            "state": getattr(resp, "state", None),
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
             "replicas": replicas,
+            "pods": pods if pods else None,
+            "progress": progress,
             "created_at": str(getattr(resp, "created_at", "")),
         }, indent=2)
     except Exception as exc:
