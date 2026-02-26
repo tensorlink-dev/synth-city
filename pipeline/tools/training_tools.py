@@ -832,14 +832,21 @@ _DEPLOY_MAX_RETRIES = 4
 _DEPLOY_INITIAL_BACKOFF = 30  # seconds
 _DEPLOY_BACKOFF_FACTOR = 2    # exponential multiplier
 
-# Timeout for deployment health/readiness probes (seconds)
-_DEPLOY_HEALTH_TIMEOUT = 300
+# Timeout for deployment health/readiness probes (seconds).
+# Generous default: image pull (~60-120s) + CUDA/torch init (~30-60s) + Flask
+# startup.  Total can easily reach 3-5 min on cold starts.
+_DEPLOY_HEALTH_TIMEOUT = 600
 _DEPLOY_HEALTH_INTERVAL = 15
 # Abort early if the server returns this many consecutive HTTP 5xx responses
-# (meaning the server process is running but broken — waiting longer won't help)
+# with a non-empty body (meaning the Flask app responded but is broken —
+# waiting longer won't help).  Empty-body 5xx from the reverse proxy are NOT
+# counted here because they indicate the container is still starting.
 _DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
 # How often (in probes) to check the pod phase via the Basilica API
 _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
+# Maximum time (seconds) to wait for the pod phase to become "Running"
+# before starting health probes.  Uses a portion of the total timeout.
+_DEPLOY_PHASE_WAIT_FRACTION = 0.5
 
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
 
@@ -925,57 +932,147 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         "required": ["deployment_url"],
     },
 )
+def _extract_instance_name(deployment_url: str) -> str:
+    """Extract the instance name (UUID) from a deployment URL."""
+    from urllib.parse import urlparse
+    host = urlparse(deployment_url).hostname or ""
+    return host.split(".")[0] if "." in host else ""
+
+
+def _fetch_deploy_logs_safe(instance_name: str, tail: int = 80) -> str:
+    """Best-effort fetch of deployment logs; returns empty string on failure."""
+    if not instance_name:
+        return ""
+    try:
+        client = _get_gpu_client()
+        logs = client.get_deployment_logs(instance_name, tail=tail)
+        return (logs or "").strip()
+    except Exception:
+        return ""
+
+
 def wait_for_deployment_ready(
     deployment_url: str,
     share_token: str = "",
     timeout: int = _DEPLOY_HEALTH_TIMEOUT,
 ) -> str:
-    """Probe a deployment URL until the HTTP server is responsive.
+    """Wait for a Basilica deployment to become healthy and ready for training.
 
-    Includes three early-abort mechanisms so the agent doesn't waste the full
-    timeout on obviously-broken deployments:
+    Uses a two-phase approach:
 
-    1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
-       ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
-       is up but the health check is crashing.  Waiting longer won't fix it.
-    2. **Pod phase checking** — every few probes, queries the Basilica API to
-       see if the pod has entered a terminal ``Failed`` phase.
-    3. **Cross-deployment failure tracking** — if multiple consecutive
-       deployments have all failed health checks, the Docker image is likely
-       broken.  The error message escalates to tell the agent to stop
-       recreating deployments.
+    **Phase 1 — Pod scheduling** (up to half the timeout):
+    Polls the Basilica API until the pod phase becomes ``Running``.  No health
+    probes are sent during this phase because the container hasn't started yet
+    (image is being pulled, GPU is being allocated, etc.).
+
+    **Phase 2 — Server health** (remaining timeout):
+    Probes ``/health`` every 15 s until the training server responds HTTP 200.
+
+    Early-abort mechanisms:
+    1. **Terminal pod phase** — aborts immediately if the pod enters ``Failed``,
+       ``Error``, or ``CrashLoopBackOff``.
+    2. **Consecutive app errors** — aborts if the Flask app itself returns
+       ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` consecutive HTTP 5xx responses
+       *with a non-empty body* (meaning the server is running but broken).
+       Empty-body 5xx from the infrastructure proxy are NOT counted because
+       they indicate the container is still starting.
+    3. **Cross-deployment failure tracking** — escalates if multiple consecutive
+       deployments fail.
+
+    On any failure, deployment logs are automatically fetched and included in
+    the error result so the agent doesn't need a separate ``get_deployment_logs``
+    call.
     """
     global _deployment_failure_count
 
+    instance_name = _extract_instance_name(deployment_url)
     deadline = time.time() + timeout
-    attempts = 0
+    phase_deadline = time.time() + timeout * _DEPLOY_PHASE_WAIT_FRACTION
+
+    # ------------------------------------------------------------------
+    # Phase 1: Wait for pod phase to become "Running"
+    # ------------------------------------------------------------------
+    pod_phase = "unknown"
+    phase_polls = 0
+    while time.time() < min(phase_deadline, deadline):
+        phase_polls += 1
+        try:
+            client = _get_gpu_client()
+            if instance_name:
+                resp = client.get_deployment(instance_name)
+                pod_phase = (getattr(resp, "phase", "") or "").lower()
+
+                if pod_phase == "running":
+                    logger.info(
+                        "Deployment %s pod phase is Running after %d polls",
+                        deployment_url, phase_polls,
+                    )
+                    break
+
+                if pod_phase in ("failed", "error", "crashloopbackoff"):
+                    _deployment_failure_count += 1
+                    logs = _fetch_deploy_logs_safe(instance_name)
+                    logger.warning(
+                        "Deployment %s pod phase is %r — aborting",
+                        deployment_url, pod_phase,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=f"Deployment pod phase is '{pod_phase}'",
+                            last_probe=f"phase={pod_phase}",
+                            probes=0,
+                            deploy_logs=logs,
+                            phase=pod_phase,
+                        )
+                    )
+        except Exception as exc:
+            logger.debug("Phase poll %d failed (non-fatal): %s", phase_polls, exc)
+
+        logger.debug(
+            "Deployment %s phase=%s (poll %d), waiting...",
+            deployment_url, pod_phase, phase_polls,
+        )
+        time.sleep(_DEPLOY_HEALTH_INTERVAL)
+    else:
+        # Phase 1 exhausted its budget — pod never reached Running.
+        # Fall through to Phase 2 anyway; the health probes will either
+        # succeed (if the pod started late) or time out.
+        if pod_phase != "running":
+            logger.info(
+                "Deployment %s still phase=%s after %d polls (%.0fs) — "
+                "proceeding to health probes",
+                deployment_url, pod_phase, phase_polls,
+                timeout * _DEPLOY_PHASE_WAIT_FRACTION,
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 2: Probe /health until the server is ready
+    # ------------------------------------------------------------------
+    health_probes = 0
     last_detail = ""
     consecutive_server_errors = 0
 
     while time.time() < deadline:
-        attempts += 1
+        health_probes += 1
         healthy, detail = _probe_deployment_health(deployment_url, share_token)
         last_detail = detail
+
         if healthy:
             logger.info(
-                "Deployment %s healthy after %d probes: %s",
-                deployment_url, attempts, detail,
+                "Deployment %s healthy after %d health probes: %s",
+                deployment_url, health_probes, detail,
             )
-            _deployment_failure_count = 0  # reset on success
+            _deployment_failure_count = 0
             return json.dumps({
                 "status": "ready",
                 "url": deployment_url,
-                "probes": attempts,
+                "probes": health_probes,
                 "detail": detail,
             })
 
-        # Track consecutive HTTP 5xx errors from the *application*.
-        # Distinguish between:
-        #  - Empty-body 5xx → infrastructure proxy/ingress returning an
-        #    error while the container is still starting.  Treat like a
-        #    connection error (keep waiting).
-        #  - Non-empty-body 5xx → the Flask app responded but /health
-        #    crashed.  The server is running but broken; waiting won't help.
+        # Distinguish proxy errors (empty body → container still starting)
+        # from app errors (non-empty body → Flask responded but broken).
         is_server_error = detail.startswith("HTTP 5")
         has_app_body = is_server_error and not detail.endswith("()")
         if has_app_body:
@@ -983,111 +1080,129 @@ def wait_for_deployment_ready(
         else:
             consecutive_server_errors = 0
 
-        # Early abort: server is running but /health keeps crashing
+        # Early abort: Flask app is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
             _deployment_failure_count += 1
+            logs = _fetch_deploy_logs_safe(instance_name)
             logger.warning(
-                "Deployment %s returned %d consecutive server errors — "
+                "Deployment %s returned %d consecutive app server errors — "
                 "aborting health wait (last: %s) [%d consecutive deploy failures]",
                 deployment_url, consecutive_server_errors, detail,
                 _deployment_failure_count,
             )
-            error_result: dict[str, Any] = {
-                "status": "error",
-                "error": (
-                    f"Training server returned {consecutive_server_errors} "
-                    f"consecutive HTTP 5xx errors"
-                ),
-                "url": deployment_url,
-                "last_probe": detail,
-                "probes": attempts,
-                "consecutive_deploy_failures": _deployment_failure_count,
-            }
-            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
-                error_result["hint"] = (
-                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
-                    f"have all failed health checks with the same error. "
-                    f"The Docker image (ghcr.io/tensorlink-dev/synth-city-gpu:latest) "
-                    f"is likely broken — creating more deployments will not help. "
-                    f"Report this as an infrastructure blocker in your finish output "
-                    f"and do NOT create any more deployments."
+            return json.dumps(
+                _build_wait_error(
+                    deployment_url=deployment_url,
+                    error=(
+                        f"Training server returned {consecutive_server_errors} "
+                        f"consecutive HTTP 5xx errors"
+                    ),
+                    last_probe=detail,
+                    probes=health_probes,
+                    deploy_logs=logs,
                 )
-                error_result["error_type"] = "environment"
-                error_result["recoverable"] = False
-            else:
-                error_result["hint"] = (
-                    "The training server process is running but the /health "
-                    "endpoint is failing. This usually means the server "
-                    "crashed during startup or ResearchSession is broken. "
-                    "Check get_deployment_logs() for the traceback, then "
-                    "delete and recreate the deployment."
-                )
-            return json.dumps(error_result)
+            )
 
-        # Periodically check pod phase to detect Failed deployments early
-        if attempts % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
+        # Periodically check pod phase to detect crashes during health wait
+        if health_probes % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
             try:
                 client = _get_gpu_client()
-                # Extract instance name from URL (UUID prefix of *.deployments.basilica.ai)
-                from urllib.parse import urlparse
-                host = urlparse(deployment_url).hostname or ""
-                instance_name = host.split(".")[0] if "." in host else ""
                 if instance_name:
                     resp = client.get_deployment(instance_name)
-                    phase = getattr(resp, "phase", "")
-                    if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
+                    phase = (getattr(resp, "phase", "") or "").lower()
+                    if phase in ("failed", "error", "crashloopbackoff"):
                         _deployment_failure_count += 1
+                        logs = _fetch_deploy_logs_safe(instance_name)
                         logger.warning(
                             "Deployment %s pod phase is %r — aborting health wait",
                             deployment_url, phase,
                         )
-                        return json.dumps({
-                            "status": "error",
-                            "error": f"Deployment pod phase is '{phase}'",
-                            "url": deployment_url,
-                            "phase": phase,
-                            "last_probe": detail,
-                            "probes": attempts,
-                            "consecutive_deploy_failures": _deployment_failure_count,
-                            "hint": (
-                                "The deployment pod has entered a terminal failure "
-                                "state. Check get_deployment_logs() for the error, "
-                                "then delete and recreate the deployment."
-                            ),
-                        })
+                        return json.dumps(
+                            _build_wait_error(
+                                deployment_url=deployment_url,
+                                error=f"Deployment pod phase is '{phase}'",
+                                last_probe=detail,
+                                probes=health_probes,
+                                deploy_logs=logs,
+                                phase=phase,
+                            )
+                        )
             except Exception as phase_exc:
                 logger.debug("Phase check failed (non-fatal): %s", phase_exc)
 
         logger.debug(
             "Deployment %s not ready (probe %d): %s",
-            deployment_url, attempts, detail,
+            deployment_url, health_probes, detail,
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
 
     # Full timeout expired
     _deployment_failure_count += 1
-    error_result = {
+    logs = _fetch_deploy_logs_safe(instance_name)
+    return json.dumps(
+        _build_wait_error(
+            deployment_url=deployment_url,
+            error=f"Deployment not ready after {timeout}s ({health_probes} health probes)",
+            last_probe=last_detail,
+            probes=health_probes,
+            deploy_logs=logs,
+        )
+    )
+
+
+def _build_wait_error(
+    *,
+    deployment_url: str,
+    error: str,
+    last_probe: str,
+    probes: int,
+    deploy_logs: str,
+    phase: str = "",
+) -> dict[str, Any]:
+    """Build a structured error dict for ``wait_for_deployment_ready`` failures.
+
+    Includes deployment logs (when available) so the agent can diagnose the
+    problem without a separate ``get_deployment_logs()`` call.
+    """
+    result: dict[str, Any] = {
         "status": "error",
-        "error": f"Deployment not ready after {timeout}s ({attempts} probes)",
+        "error": error,
         "url": deployment_url,
-        "last_probe": last_detail,
+        "last_probe": last_probe,
+        "probes": probes,
         "consecutive_deploy_failures": _deployment_failure_count,
     }
+    if phase:
+        result["phase"] = phase
+    result["deploy_logs_tail"] = deploy_logs or "(empty — container may not have started)"
+
     if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
-        error_result["hint"] = (
-            f"CRITICAL: {_deployment_failure_count} consecutive deployments have all "
-            f"failed health checks. The Docker image is likely broken — creating "
-            f"more deployments will not help. Report this as an infrastructure "
-            f"blocker in your finish output and do NOT create more deployments."
+        result["hint"] = (
+            f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+            f"have all failed health checks. "
+            f"The Docker image (ghcr.io/tensorlink-dev/synth-city-gpu:latest) "
+            f"is likely broken — creating more deployments will not help. "
+            f"Report this as an infrastructure blocker in your finish output "
+            f"and do NOT create any more deployments."
         )
-        error_result["error_type"] = "environment"
-        error_result["recoverable"] = False
+        result["error_type"] = "environment"
+        result["recoverable"] = False
+    elif deploy_logs:
+        result["hint"] = (
+            "The training server process started but is unhealthy. "
+            "Check the deploy_logs_tail above for the error, then "
+            "delete and recreate the deployment."
+        )
     else:
-        error_result["hint"] = (
-            "The deployment pod may be running but the training server inside "
-            "has not started. Check get_deployment_logs() for startup errors."
+        result["hint"] = (
+            "The pod is running but the training server inside never started. "
+            "The reverse proxy can reach the pod but nothing is listening on "
+            "the expected port. Common causes: crash during import (missing "
+            "dependency, CUDA mismatch), OOM, or the entrypoint script failed. "
+            "Check deploy_logs_tail above for the error, then delete and "
+            "recreate the deployment."
         )
-    return json.dumps(error_result)
+    return result
 
 
 @tool(
