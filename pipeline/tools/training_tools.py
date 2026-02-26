@@ -1382,7 +1382,7 @@ def _build_wait_error(
         result["hint"] = (
             f"CRITICAL: {_deployment_failure_count} consecutive deployments "
             f"have all failed health checks. "
-            f"The Docker image (ghcr.io/tensorlink-dev/synth-city-gpu:latest) "
+            f"The Docker image (ghcr.io/tensorlink-ai/synth-city-gpu:latest) "
             f"is likely broken — creating more deployments will not help. "
             f"Report this as an infrastructure blocker in your finish output "
             f"and do NOT create any more deployments."
