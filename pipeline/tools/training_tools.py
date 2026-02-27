@@ -944,6 +944,25 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         return False, f"{type(exc).__name__}: {exc}"
 
 
+def _extract_instance_name(deployment_url: str) -> str:
+    """Extract the instance name (UUID) from a deployment URL."""
+    from urllib.parse import urlparse
+    host = urlparse(deployment_url).hostname or ""
+    return host.split(".")[0] if "." in host else ""
+
+
+def _fetch_deploy_logs_safe(instance_name: str, tail: int = 80) -> str:
+    """Best-effort fetch of deployment logs; returns empty string on failure."""
+    if not instance_name:
+        return ""
+    try:
+        client = _get_gpu_client()
+        logs = client.get_deployment_logs(instance_name, tail=tail)
+        return (logs or "").strip()
+    except Exception:
+        return ""
+
+
 @tool(
     description=(
         "Wait for a Basilica deployment to become healthy and ready to accept "
@@ -971,25 +990,6 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         "required": ["deployment_url"],
     },
 )
-def _extract_instance_name(deployment_url: str) -> str:
-    """Extract the instance name (UUID) from a deployment URL."""
-    from urllib.parse import urlparse
-    host = urlparse(deployment_url).hostname or ""
-    return host.split(".")[0] if "." in host else ""
-
-
-def _fetch_deploy_logs_safe(instance_name: str, tail: int = 80) -> str:
-    """Best-effort fetch of deployment logs; returns empty string on failure."""
-    if not instance_name:
-        return ""
-    try:
-        client = _get_gpu_client()
-        logs = client.get_deployment_logs(instance_name, tail=tail)
-        return (logs or "").strip()
-    except Exception:
-        return ""
-
-
 def wait_for_deployment_ready(
     deployment_url: str,
     share_token: str = "",
