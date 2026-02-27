@@ -33,9 +33,12 @@ from config import (
     BASILICA_ALLOWED_GPU_TYPES,
     BASILICA_API_TOKEN,
     BASILICA_API_URL,
+    BASILICA_DEPLOY_CPU,
     BASILICA_DEPLOY_GPU_MODELS,
     BASILICA_DEPLOY_IMAGE,
+    BASILICA_DEPLOY_MEMORY,
     BASILICA_DEPLOY_MIN_GPU_MEMORY_GB,
+    BASILICA_DEPLOY_STORAGE,
     BASILICA_MAX_HOURLY_RATE,
 )
 
@@ -237,9 +240,9 @@ class BasilicaGPUClient:
         min_gpu_memory_gb: int | None = None,
         env: dict[str, str] | None = None,
         port: int = 8378,
-        cpu: str = "2000m",
-        memory: str = "8Gi",
-        storage: str | None = "10Gi",
+        cpu: str = "",
+        memory: str = "",
+        storage: str | None = "",
         health_check: Any | None = None,
     ) -> DeploymentResponse:
         """Create a GPU deployment running a Docker image.
@@ -261,6 +264,9 @@ class BasilicaGPUClient:
         gpu_models = gpu_models or BASILICA_DEPLOY_GPU_MODELS or None
         if min_gpu_memory_gb is None:
             min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
+        cpu = cpu or BASILICA_DEPLOY_CPU
+        memory = memory or BASILICA_DEPLOY_MEMORY
+        storage = storage or BASILICA_DEPLOY_STORAGE or None
 
         last_exc: Exception | None = None
         for attempt in range(self._API_MAX_RETRIES):

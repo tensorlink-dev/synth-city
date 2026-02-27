@@ -60,6 +60,10 @@ BASILICA_DEPLOY_GPU_MODELS: list[str] = [
 BASILICA_DEPLOY_MIN_GPU_MEMORY_GB: int = int(
     os.getenv("BASILICA_DEPLOY_MIN_GPU_MEMORY_GB", "12")
 )
+# Pod resource requests (lower = easier to schedule, but may OOM during training)
+BASILICA_DEPLOY_CPU: str = os.getenv("BASILICA_DEPLOY_CPU", "2000m")
+BASILICA_DEPLOY_MEMORY: str = os.getenv("BASILICA_DEPLOY_MEMORY", "8Gi")
+BASILICA_DEPLOY_STORAGE: str = os.getenv("BASILICA_DEPLOY_STORAGE", "10Gi")
 
 # ---------------------------------------------------------------------------
 # Bittensor
