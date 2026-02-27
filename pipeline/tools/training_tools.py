@@ -1187,6 +1187,42 @@ def wait_for_deployment_ready(
                         )
                     )
 
+                # Detect GPU scheduling failure: if the deployment is
+                # Active but replicas.desired is still 0 after several
+                # polls, no GPU nodes match the request.  Waiting longer
+                # won't help — the agent should try different GPU models.
+                replicas = getattr(resp, "replicas", None)
+                r_desired = getattr(replicas, "desired", None) if replicas else None
+                if (
+                    phase_polls >= 6  # ~90s of polling
+                    and pod_state == "active"
+                    and r_desired is not None
+                    and int(r_desired) == 0
+                ):
+                    _deployment_failure_count += 1
+                    summary = _summarize_deployment(resp)
+                    logger.warning(
+                        "Deployment %s stuck with replicas=0/0 — "
+                        "no GPU nodes match the request: %s",
+                        deployment_url, summary,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=(
+                                "No GPU nodes available: deployment is Active but "
+                                "desired replicas = 0 (no pods scheduled). "
+                                "The Basilica cluster has no GPU nodes matching "
+                                "your requested gpu_models. Try omitting gpu_models "
+                                "to accept any available GPU, or try again later."
+                            ),
+                            last_probe=summary,
+                            probes=0,
+                            deploy_logs="",
+                            phase=pod_phase,
+                        )
+                    )
+
         except Exception as exc:
             logger.debug("Phase poll %d failed (non-fatal): %s", phase_polls, exc)
 
