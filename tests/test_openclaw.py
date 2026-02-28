@@ -76,6 +76,7 @@ class TestPipelineState:
         state.mark_failed(ValueError("bad input"))
         assert state.running is False
         assert state.status == "failed"
+        assert state.error is not None
         assert "ValueError" in state.error
         assert "bad input" in state.error
 
@@ -119,17 +120,17 @@ class TestValidationHelpers:
     def test_validate_positive_int_negative(self) -> None:
         val, err = _validate_positive_int(-1, "x")
         assert val is None
-        assert "positive" in err
+        assert err is not None and "positive" in err
 
     def test_validate_positive_int_zero(self) -> None:
         val, err = _validate_positive_int(0, "x")
         assert val is None
-        assert "positive" in err
+        assert err is not None and "positive" in err
 
     def test_validate_positive_int_bad_type(self) -> None:
         val, err = _validate_positive_int("abc", "x")
         assert val is None
-        assert "integer" in err
+        assert err is not None and "integer" in err
 
     def test_validate_positive_float(self) -> None:
         val, err = _validate_positive_float(0.5, "x")
@@ -139,7 +140,7 @@ class TestValidationHelpers:
     def test_validate_positive_float_negative(self) -> None:
         val, err = _validate_positive_float(-0.1, "x")
         assert val is None
-        assert "positive" in err
+        assert err is not None and "positive" in err
 
 
 # ---------------------------------------------------------------------------

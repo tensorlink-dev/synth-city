@@ -418,7 +418,7 @@ async def _wait_and_persist(
 ) -> None:
     """Background: wait for training to complete after stream drop, then cache result."""
     train_result = None
-    train_error: Exception | None = None
+    train_error: BaseException | None = None
 
     try:
         train_result = await asyncio.wait_for(task, timeout=timeout)
@@ -439,9 +439,9 @@ async def _wait_and_persist(
 
     # If task finished but we didn't capture the result above
     if train_error is None and train_result is None and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            train_error = exc
+        task_exc = task.exception()
+        if task_exc is not None:
+            train_error = task_exc
         else:
             train_result = task.result()
 
@@ -802,11 +802,10 @@ async def train(request: Request):
 async def _startup():
     port = os.environ.get("TRAINING_SERVER_PORT", "8378")
     logger.info("Training server starting on port %s", port)
-
-    # Eagerly import ResearchSession so errors appear in pod logs immediately.
     try:
         _get_session_class()
         logger.info("Startup self-test passed: ResearchSession is importable")
+        print("training_server.py: ResearchSession import OK", flush=True)
     except Exception as exc:
         logger.error(
             "Startup self-test FAILED: ResearchSession is NOT importable. "
@@ -814,6 +813,7 @@ async def _startup():
             exc,
             exc_info=True,
         )
+        print(f"training_server.py: ResearchSession import FAILED: {exc}", flush=True)
 
     # Eagerly detect CUDA info and log it.
     cuda_info = _get_cuda_info()

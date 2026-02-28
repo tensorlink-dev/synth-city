@@ -23,12 +23,20 @@ from typing import Any
 from basilica import BasilicaClient as _SdkClient
 from basilica import DeploymentResponse, GpuOffering, SecureCloudRentalResponse
 
+try:
+    from basilica import HealthCheckConfig, ProbeConfig
+except ImportError:
+    HealthCheckConfig = None  # type: ignore[assignment,misc]
+    ProbeConfig = None  # type: ignore[assignment,misc]
+
 from config import (
     BASILICA_ALLOWED_GPU_TYPES,
     BASILICA_API_TOKEN,
     BASILICA_API_URL,
+    BASILICA_DEPLOY_CPU,
     BASILICA_DEPLOY_GPU_MODELS,
     BASILICA_DEPLOY_IMAGE,
+    BASILICA_DEPLOY_MEMORY,
     BASILICA_DEPLOY_MIN_GPU_MEMORY_GB,
     BASILICA_MAX_HOURLY_RATE,
 )
@@ -231,14 +239,18 @@ class BasilicaGPUClient:
         min_gpu_memory_gb: int | None = None,
         env: dict[str, str] | None = None,
         port: int = 8378,
-        cpu: str = "2000m",
-        memory: str = "8Gi",
-        storage: str | None = "10Gi",
+        cpu: str = "",
+        memory: str = "",
+        health_check: Any | None = None,
     ) -> DeploymentResponse:
         """Create a GPU deployment running a Docker image.
 
         Uses the Basilica deployments API to spin up a container with GPU
         access.  The container should expose an HTTP server on *port*.
+
+        When *health_check* is provided (a ``HealthCheckConfig``), Kubernetes
+        readiness/startup probes are configured so the reverse proxy only
+        routes traffic once the server is actually listening.
 
         Retries up to 3 times with exponential backoff on transient API
         errors (HTTP 5xx, connection failures).
@@ -250,11 +262,13 @@ class BasilicaGPUClient:
         gpu_models = gpu_models or BASILICA_DEPLOY_GPU_MODELS or None
         if min_gpu_memory_gb is None:
             min_gpu_memory_gb = BASILICA_DEPLOY_MIN_GPU_MEMORY_GB
+        cpu = cpu or BASILICA_DEPLOY_CPU
+        memory = memory or BASILICA_DEPLOY_MEMORY
 
         last_exc: Exception | None = None
         for attempt in range(self._API_MAX_RETRIES):
             try:
-                resp = self._client.create_deployment(
+                kwargs: dict[str, Any] = dict(
                     instance_name=name,
                     image=image,
                     port=port,
@@ -264,9 +278,11 @@ class BasilicaGPUClient:
                     env=env or {},
                     cpu=cpu,
                     memory=memory,
-                    storage=storage,
                     public=True,
                 )
+                if health_check is not None:
+                    kwargs["health_check"] = health_check
+                resp = self._client.create_deployment(**kwargs)
                 logger.info(
                     "Created deployment %s (image=%s, phase=%s, url=%s)",
                     resp.instance_name, image, resp.phase, resp.url,

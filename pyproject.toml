@@ -53,6 +53,12 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
 
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+# Many dependencies (basilica, wandb, osa, torch, etc.) don't ship type stubs
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

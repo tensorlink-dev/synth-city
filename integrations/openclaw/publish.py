@@ -5,7 +5,8 @@ Usage::
 
     python integrations/openclaw/publish.py
     python integrations/openclaw/publish.py --version 0.1.2
-    python integrations/openclaw/publish.py --skill-dir ./integrations/openclaw/skill --version 0.1.2
+    python integrations/openclaw/publish.py \
+        --skill-dir ./integrations/openclaw/skill --version 0.1.2
 
 Wraps ``clawhub publish`` and automatically retries with exponential backoff
 when the ClawHub registry returns a rate limit error.

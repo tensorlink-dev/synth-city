@@ -513,9 +513,9 @@ def setup_basilica_pod(
         else:
             # Deduplicate consecutive identical errors for readability
             deduped: list[str] = []
-            for e in ssh_errors:
-                if not deduped or e != deduped[-1]:
-                    deduped.append(e)
+            for err in ssh_errors:
+                if not deduped or err != deduped[-1]:
+                    deduped.append(err)
 
             # Add diagnostic info about key mismatch
             key_info = "unknown"
@@ -832,16 +832,62 @@ _DEPLOY_MAX_RETRIES = 4
 _DEPLOY_INITIAL_BACKOFF = 30  # seconds
 _DEPLOY_BACKOFF_FACTOR = 2    # exponential multiplier
 
-# Timeout for deployment health/readiness probes (seconds)
-_DEPLOY_HEALTH_TIMEOUT = 300
+# Timeout for deployment health/readiness probes (seconds).
+# Generous default: image pull (~60-120s) + CUDA/torch init (~30-60s) + Flask
+# startup.  Total can easily reach 3-5 min on cold starts.
+_DEPLOY_HEALTH_TIMEOUT = 600
 _DEPLOY_HEALTH_INTERVAL = 15
 # Abort early if the server returns this many consecutive HTTP 5xx responses
-# (meaning the server process is running but broken — waiting longer won't help)
+# with a non-empty body (meaning the Flask app responded but is broken —
+# waiting longer won't help).  Empty-body 5xx from the reverse proxy are NOT
+# counted here because they indicate the container is still starting.
 _DEPLOY_HEALTH_MAX_SERVER_ERRORS = 5
 # How often (in probes) to check the pod phase via the Basilica API
 _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL = 4
+# Maximum time (seconds) to wait for the pod phase to become "Running"
+# before starting health probes.  Uses a portion of the total timeout.
+_DEPLOY_PHASE_WAIT_FRACTION = 0.5
 
 _DEPLOYMENT_NAME_PREFIX = "synth-city-trainer"
+
+# Training server port inside the container (must match Dockerfile EXPOSE)
+_DEPLOY_SERVER_PORT = 8378
+
+
+def _build_health_check():
+    """Build a Kubernetes ``HealthCheckConfig`` for the training server.
+
+    Configures readiness and startup probes so the reverse proxy only routes
+    traffic once the Flask server is actually listening on ``/health``.
+    Without these, the proxy returns empty-body HTTP 500 during container
+    startup (image pull, CUDA init, torch import).
+
+    Returns ``None`` if the SDK version doesn't support ``HealthCheckConfig``.
+    """
+    try:
+        from basilica import HealthCheckConfig, ProbeConfig
+    except ImportError:
+        logger.debug("basilica SDK does not export HealthCheckConfig — skipping")
+        return None
+
+    return HealthCheckConfig(
+        readiness=ProbeConfig(
+            path="/health",
+            port=_DEPLOY_SERVER_PORT,
+            initial_delay_seconds=10,
+            period_seconds=10,
+            timeout_seconds=5,
+            failure_threshold=3,
+        ),
+        startup=ProbeConfig(
+            path="/health",
+            port=_DEPLOY_SERVER_PORT,
+            initial_delay_seconds=15,
+            period_seconds=10,
+            timeout_seconds=5,
+            failure_threshold=30,  # 30 × 10s = 300s max startup time
+        ),
+    )
 
 # ---------------------------------------------------------------------------
 # Cross-deployment failure tracking
@@ -880,8 +926,8 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         body = ""
         try:
             body = exc.read().decode()[:500]
-        except Exception:
-            pass
+        except Exception as read_exc:
+            logger.debug("Could not read HTTP error body: %s", read_exc)
         if exc.code == 503:
             # Server is up but ResearchSession is broken — not healthy.
             # Tag as [server] so the caller can distinguish from proxy errors.
@@ -906,6 +952,25 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         return False, f"Connection failed: {exc.reason}"
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
+
+
+def _extract_instance_name(deployment_url: str) -> str:
+    """Extract the instance name (UUID) from a deployment URL."""
+    from urllib.parse import urlparse
+    host = urlparse(deployment_url).hostname or ""
+    return host.split(".")[0] if "." in host else ""
+
+
+def _fetch_deploy_logs_safe(instance_name: str, tail: int = 80) -> str:
+    """Best-effort fetch of deployment logs; returns empty string on failure."""
+    if not instance_name:
+        return ""
+    try:
+        client = _get_gpu_client()
+        logs = client.get_deployment_logs(instance_name, tail=tail)
+        return (logs or "").strip()
+    except Exception:
+        return ""
 
 
 @tool(
@@ -940,42 +1005,275 @@ def wait_for_deployment_ready(
     share_token: str = "",
     timeout: int = _DEPLOY_HEALTH_TIMEOUT,
 ) -> str:
-    """Probe a deployment URL until the HTTP server is responsive.
+    """Wait for a Basilica deployment to become healthy and ready for training.
 
-    Includes three early-abort mechanisms so the agent doesn't waste the full
-    timeout on obviously-broken deployments:
+    Uses a two-phase approach:
 
-    1. **Consecutive server errors** — if the health endpoint returns HTTP 5xx
-       ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` times in a row, the server process
-       is up but the health check is crashing.  Waiting longer won't fix it.
-    2. **Pod phase checking** — every few probes, queries the Basilica API to
-       see if the pod has entered a terminal ``Failed`` phase.
-    3. **Cross-deployment failure tracking** — if multiple consecutive
-       deployments have all failed health checks, the Docker image is likely
-       broken.  The error message escalates to tell the agent to stop
-       recreating deployments.
+    **Phase 1 — Pod scheduling** (up to half the timeout):
+    Polls the Basilica API until the pod phase becomes ``Running``.  No health
+    probes are sent during this phase because the container hasn't started yet
+    (image is being pulled, GPU is being allocated, etc.).
+
+    **Phase 2 — Server health** (remaining timeout):
+    Probes ``/health`` every 15 s until the training server responds HTTP 200.
+
+    Early-abort mechanisms:
+    1. **Terminal pod phase** — aborts immediately if the pod enters ``Failed``,
+       ``Error``, or ``CrashLoopBackOff``.
+    2. **Consecutive app errors** — aborts if the Flask app itself returns
+       ``_DEPLOY_HEALTH_MAX_SERVER_ERRORS`` consecutive HTTP 5xx responses
+       *with a non-empty body* (meaning the server is running but broken).
+       Empty-body 5xx from the infrastructure proxy are NOT counted because
+       they indicate the container is still starting.
+    3. **Cross-deployment failure tracking** — escalates if multiple consecutive
+       deployments fail.
+
+    On any failure, deployment logs are automatically fetched and included in
+    the error result so the agent doesn't need a separate ``get_deployment_logs``
+    call.
     """
     global _deployment_failure_count
 
+    instance_name = _extract_instance_name(deployment_url)
     deadline = time.time() + timeout
-    attempts = 0
+    phase_deadline = time.time() + timeout * _DEPLOY_PHASE_WAIT_FRACTION
+
+    # ------------------------------------------------------------------
+    # Phase 1: Wait for pod phase to become "Running" / "ready"
+    # ------------------------------------------------------------------
+    # Granular phases from the SDK (in lifecycle order):
+    #   pending → scheduling → pulling → initializing → storage_sync
+    #   → starting → health_check → ready
+    # Terminal failure: failed
+    # Terminal shutdown: terminating
+    #
+    # IMPORTANT: state="Active" does NOT mean the pod is serving traffic.
+    # The SDK's own is_ready check requires:
+    #   state in ("Active", "Running") AND replicas.ready > 0
+    #   AND replicas.ready == replicas.desired
+    # We mirror that logic here.
+    _FAILED_PHASES = {"failed", "error", "crashloopbackoff"}
+
+    # Pod-level statuses that indicate a terminal or semi-terminal problem.
+    # These come from resp.pods[].status and are Kubernetes conditions.
+    _POD_TERMINAL_STATUSES = {
+        "imagepullbackoff",      # Image can't be pulled (bad tag, auth, etc.)
+        "errimagepull",          # Same — immediate image pull failure
+        "invalidimageformat",    # Corrupted or wrong-arch image
+        "registryunavailable",   # Can't reach the registry
+        "crashloopbackoff",      # Container keeps crashing on restart
+        "oomkilled",             # Out of memory
+        "createcontainererror",  # Bad container spec
+    }
+
+    def _is_deployment_ready(resp: Any) -> bool:
+        """Check if a deployment is actually serving traffic.
+
+        Mirrors the Basilica SDK's ``DeploymentStatus.is_ready`` logic:
+        the high-level *state* must be "Active" or "Running" AND the
+        replica counts must confirm at least one ready replica matching
+        the desired count.  The granular *phase* of "ready" or "running"
+        is also accepted as an authoritative signal.
+        """
+        phase = (getattr(resp, "phase", "") or "").lower()
+        state = (getattr(resp, "state", "") or "").lower()
+
+        # Granular phase "ready" or "running" is authoritative
+        if phase in ("ready", "running"):
+            return True
+
+        # High-level state requires replica confirmation
+        if state in ("active", "running"):
+            replicas = getattr(resp, "replicas", None)
+            if replicas is not None:
+                desired = getattr(replicas, "desired", 0) or 0
+                ready = getattr(replicas, "ready", 0) or 0
+                return ready > 0 and ready >= desired
+
+        return False
+
+    def _check_pod_status(resp: Any) -> str | None:
+        """Inspect per-pod status for terminal failures.
+
+        Returns a human-readable error string if any pod is in a
+        known-bad state (``ImagePullBackOff``, ``CrashLoopBackOff``,
+        etc.), otherwise ``None``.
+        """
+        pods = getattr(resp, "pods", None) or []
+        for pod in pods:
+            status = (getattr(pod, "status", "") or "").lower()
+            if status in _POD_TERMINAL_STATUSES:
+                pod_name = getattr(pod, "name", "?")
+                node = getattr(pod, "node", "?")
+                return (
+                    f"Pod {pod_name} is in terminal state '{status}' "
+                    f"(node={node})"
+                )
+        return None
+
+    def _summarize_deployment(resp: Any) -> str:
+        """One-line summary of deployment for debug logging."""
+        state = getattr(resp, "state", "?")
+        phase = getattr(resp, "phase", "?")
+        msg = getattr(resp, "message", "")
+        replicas = getattr(resp, "replicas", None)
+        r_desired = getattr(replicas, "desired", "?") if replicas else "?"
+        r_ready = getattr(replicas, "ready", "?") if replicas else "?"
+        pods = getattr(resp, "pods", None) or []
+        pod_statuses = ", ".join(
+            f"{getattr(p, 'name', '?')}={getattr(p, 'status', '?')}"
+            for p in pods
+        ) or "(no pods)"
+        parts = [
+            f"state={state}",
+            f"phase={phase}",
+            f"replicas={r_ready}/{r_desired}",
+            f"pods=[{pod_statuses}]",
+        ]
+        if msg:
+            parts.append(f"msg={msg}")
+        return " ".join(parts)
+
+    pod_phase = "unknown"
+    pod_state = "unknown"
+    phase_polls = 0
+    while time.time() < min(phase_deadline, deadline):
+        phase_polls += 1
+        try:
+            client = _get_gpu_client()
+            if instance_name:
+                resp = client.get_deployment(instance_name)
+                pod_phase = (getattr(resp, "phase", "") or "").lower()
+                pod_state = (getattr(resp, "state", "") or "").lower()
+
+                if _is_deployment_ready(resp):
+                    logger.info(
+                        "Deployment %s is ready (%s) after %d polls",
+                        deployment_url,
+                        _summarize_deployment(resp),
+                        phase_polls,
+                    )
+                    break
+
+                if pod_phase in _FAILED_PHASES or pod_state in _FAILED_PHASES:
+                    _deployment_failure_count += 1
+                    logs = _fetch_deploy_logs_safe(instance_name)
+                    summary = _summarize_deployment(resp)
+                    logger.warning(
+                        "Deployment %s failed: %s",
+                        deployment_url, summary,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=f"Deployment failed: {summary}",
+                            last_probe=summary,
+                            probes=0,
+                            deploy_logs=logs,
+                            phase=pod_phase,
+                        )
+                    )
+
+                # Check individual pod statuses for terminal failures
+                # (e.g. ImagePullBackOff, CrashLoopBackOff) that the
+                # high-level state/phase may not reflect yet.
+                pod_error = _check_pod_status(resp)
+                if pod_error:
+                    _deployment_failure_count += 1
+                    logs = _fetch_deploy_logs_safe(instance_name)
+                    summary = _summarize_deployment(resp)
+                    logger.warning(
+                        "Deployment %s has pod-level failure: %s (%s)",
+                        deployment_url, pod_error, summary,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=pod_error,
+                            last_probe=summary,
+                            probes=0,
+                            deploy_logs=logs,
+                            phase=pod_phase,
+                        )
+                    )
+
+                # Detect GPU scheduling failure: if the deployment is
+                # Active but replicas.desired is still 0 after several
+                # polls, no GPU nodes match the request.  Waiting longer
+                # won't help — the agent should try different GPU models.
+                replicas = getattr(resp, "replicas", None)
+                r_desired = getattr(replicas, "desired", None) if replicas else None
+                if (
+                    phase_polls >= 6  # ~90s of polling
+                    and pod_state == "active"
+                    and r_desired is not None
+                    and int(r_desired) == 0
+                ):
+                    _deployment_failure_count += 1
+                    summary = _summarize_deployment(resp)
+                    logger.warning(
+                        "Deployment %s stuck with replicas=0/0 — "
+                        "no GPU nodes match the request: %s",
+                        deployment_url, summary,
+                    )
+                    return json.dumps(
+                        _build_wait_error(
+                            deployment_url=deployment_url,
+                            error=(
+                                "No GPU nodes available: deployment is Active but "
+                                "desired replicas = 0 (no pods scheduled). "
+                                "The Basilica cluster has no GPU nodes matching "
+                                "your requested gpu_models. Try omitting gpu_models "
+                                "to accept any available GPU, or try again later."
+                            ),
+                            last_probe=summary,
+                            probes=0,
+                            deploy_logs="",
+                            phase=pod_phase,
+                        )
+                    )
+
+        except Exception as exc:
+            logger.debug("Phase poll %d failed (non-fatal): %s", phase_polls, exc)
+
+        logger.debug(
+            "Deployment %s phase=%s state=%s (poll %d), waiting...",
+            deployment_url, pod_phase, pod_state, phase_polls,
+        )
+        time.sleep(_DEPLOY_HEALTH_INTERVAL)
+    else:
+        # Phase 1 exhausted its budget — pod never reached Running.
+        # Fall through to Phase 2 anyway; the health probes will either
+        # succeed (if the pod started late) or time out.
+        logger.info(
+            "Deployment %s still state=%s phase=%s after %d polls "
+            "(%.0fs) — proceeding to health probes",
+            deployment_url, pod_state, pod_phase, phase_polls,
+            timeout * _DEPLOY_PHASE_WAIT_FRACTION,
+        )
+
+    # ------------------------------------------------------------------
+    # Phase 2: Probe /health until the server is ready
+    # ------------------------------------------------------------------
+    health_probes = 0
     last_detail = ""
     consecutive_server_errors = 0
 
     while time.time() < deadline:
-        attempts += 1
+        health_probes += 1
         healthy, detail = _probe_deployment_health(deployment_url, share_token)
         last_detail = detail
+
         if healthy:
             logger.info(
-                "Deployment %s healthy after %d probes: %s",
-                deployment_url, attempts, detail,
+                "Deployment %s healthy after %d health probes: %s",
+                deployment_url, health_probes, detail,
             )
-            _deployment_failure_count = 0  # reset on success
+            _deployment_failure_count = 0
             return json.dumps({
                 "status": "ready",
                 "url": deployment_url,
-                "probes": attempts,
+                "probes": health_probes,
                 "detail": detail,
             })
 
@@ -989,133 +1287,174 @@ def wait_for_deployment_ready(
         else:
             consecutive_server_errors = 0
 
-        # Early abort: server is running but /health keeps crashing
+        # Early abort: Flask app is running but /health keeps crashing
         if consecutive_server_errors >= _DEPLOY_HEALTH_MAX_SERVER_ERRORS:
             _deployment_failure_count += 1
+            logs = _fetch_deploy_logs_safe(instance_name)
             logger.warning(
-                "Deployment %s returned %d consecutive server errors — "
+                "Deployment %s returned %d consecutive app server errors — "
                 "aborting health wait (last: %s) [%d consecutive deploy failures]",
                 deployment_url, consecutive_server_errors, detail,
                 _deployment_failure_count,
             )
-
-            # Auto-fetch deployment logs so the agent gets diagnostics
-            # without needing an extra tool call.
-            deploy_logs = ""
-            try:
-                from urllib.parse import urlparse
-                host = urlparse(deployment_url).hostname or ""
-                instance_name = host.split(".")[0] if "." in host else ""
-                if instance_name:
-                    client = _get_gpu_client()
-                    deploy_logs = client.get_deployment_logs(
-                        instance_name, tail=50,
-                    )
-            except Exception as log_exc:
-                logger.debug("Could not fetch deploy logs: %s", log_exc)
-
-            error_result: dict[str, Any] = {
-                "status": "error",
-                "error": (
-                    f"Training server returned {consecutive_server_errors} "
-                    f"consecutive HTTP 5xx errors"
-                ),
-                "url": deployment_url,
-                "last_probe": detail,
-                "probes": attempts,
-                "consecutive_deploy_failures": _deployment_failure_count,
-            }
-            if deploy_logs and deploy_logs.strip():
-                error_result["deploy_logs_tail"] = deploy_logs[-3000:]
-            elif deploy_logs is not None:
-                error_result["deploy_logs_tail"] = (
-                    "(empty — container may not have started)"
+            return json.dumps(
+                _build_wait_error(
+                    deployment_url=deployment_url,
+                    error=(
+                        f"Training server returned {consecutive_server_errors} "
+                        f"consecutive HTTP 5xx errors"
+                    ),
+                    last_probe=detail,
+                    probes=health_probes,
+                    deploy_logs=logs,
                 )
-            if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
-                error_result["hint"] = (
-                    f"CRITICAL: {_deployment_failure_count} consecutive deployments "
-                    f"have all failed health checks with the same error. "
-                    f"The Docker image ({BASILICA_DEPLOY_IMAGE}) "
-                    f"is likely broken — creating more deployments will not help. "
-                    f"Report this as an infrastructure blocker in your finish output "
-                    f"and do NOT create any more deployments."
-                )
-                error_result["error_type"] = "environment"
-                error_result["recoverable"] = False
-            else:
-                error_result["hint"] = (
-                    "The training server process is running but the /health "
-                    "endpoint is failing. This usually means the server "
-                    "crashed during startup or ResearchSession is broken. "
-                    "Check deploy_logs_tail above for the traceback, then "
-                    "delete and recreate the deployment."
-                )
-            return json.dumps(error_result)
+            )
 
-        # Periodically check pod phase to detect Failed deployments early
-        if attempts % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
+        # Periodically check pod phase + pod status to detect crashes
+        if health_probes % _DEPLOY_HEALTH_PHASE_CHECK_INTERVAL == 0:
             try:
                 client = _get_gpu_client()
-                # Extract instance name from URL (UUID prefix of *.deployments.basilica.ai)
-                from urllib.parse import urlparse
-                host = urlparse(deployment_url).hostname or ""
-                instance_name = host.split(".")[0] if "." in host else ""
                 if instance_name:
                     resp = client.get_deployment(instance_name)
-                    phase = getattr(resp, "phase", "")
-                    if phase and phase.lower() in ("failed", "error", "crashloopbackoff"):
+                    phase = (getattr(resp, "phase", "") or "").lower()
+                    state = (getattr(resp, "state", "") or "").lower()
+
+                    # Check deployment-level failure
+                    if phase in _FAILED_PHASES or state in _FAILED_PHASES:
                         _deployment_failure_count += 1
+                        logs = _fetch_deploy_logs_safe(instance_name)
+                        summary = _summarize_deployment(resp)
                         logger.warning(
-                            "Deployment %s pod phase is %r — aborting health wait",
-                            deployment_url, phase,
+                            "Deployment %s failed during health wait: %s",
+                            deployment_url, summary,
                         )
-                        return json.dumps({
-                            "status": "error",
-                            "error": f"Deployment pod phase is '{phase}'",
-                            "url": deployment_url,
-                            "phase": phase,
-                            "last_probe": detail,
-                            "probes": attempts,
-                            "consecutive_deploy_failures": _deployment_failure_count,
-                            "hint": (
-                                "The deployment pod has entered a terminal failure "
-                                "state. Check get_deployment_logs() for the error, "
-                                "then delete and recreate the deployment."
-                            ),
-                        })
+                        return json.dumps(
+                            _build_wait_error(
+                                deployment_url=deployment_url,
+                                error=f"Deployment failed: {summary}",
+                                last_probe=detail,
+                                probes=health_probes,
+                                deploy_logs=logs,
+                                phase=phase,
+                            )
+                        )
+
+                    # Check pod-level terminal failures
+                    pod_error = _check_pod_status(resp)
+                    if pod_error:
+                        _deployment_failure_count += 1
+                        logs = _fetch_deploy_logs_safe(instance_name)
+                        summary = _summarize_deployment(resp)
+                        logger.warning(
+                            "Deployment %s pod failure during health "
+                            "wait: %s (%s)",
+                            deployment_url, pod_error, summary,
+                        )
+                        return json.dumps(
+                            _build_wait_error(
+                                deployment_url=deployment_url,
+                                error=pod_error,
+                                last_probe=detail,
+                                probes=health_probes,
+                                deploy_logs=logs,
+                                phase=phase,
+                            )
+                        )
+
+                    logger.debug(
+                        "Phase check during health wait: %s",
+                        _summarize_deployment(resp),
+                    )
             except Exception as phase_exc:
                 logger.debug("Phase check failed (non-fatal): %s", phase_exc)
 
         logger.debug(
             "Deployment %s not ready (probe %d): %s",
-            deployment_url, attempts, detail,
+            deployment_url, health_probes, detail,
         )
         time.sleep(_DEPLOY_HEALTH_INTERVAL)
 
-    # Full timeout expired
+    # Full timeout expired — fetch final deployment status for diagnostics
     _deployment_failure_count += 1
-    error_result = {
+    logs = _fetch_deploy_logs_safe(instance_name)
+    final_summary = ""
+    if instance_name:
+        try:
+            resp = _get_gpu_client().get_deployment(instance_name)
+            final_summary = _summarize_deployment(resp)
+        except Exception:
+            final_summary = "(could not fetch final status)"
+    return json.dumps(
+        _build_wait_error(
+            deployment_url=deployment_url,
+            error=(
+                f"Deployment not ready after {timeout}s "
+                f"({health_probes} health probes). "
+                f"Final status: {final_summary}"
+            ),
+            last_probe=last_detail,
+            probes=health_probes,
+            deploy_logs=logs,
+        )
+    )
+
+
+def _build_wait_error(
+    *,
+    deployment_url: str,
+    error: str,
+    last_probe: str,
+    probes: int,
+    deploy_logs: str,
+    phase: str = "",
+) -> dict[str, Any]:
+    """Build a structured error dict for ``wait_for_deployment_ready`` failures.
+
+    Includes deployment logs (when available) so the agent can diagnose the
+    problem without a separate ``get_deployment_logs()`` call.
+    """
+    result: dict[str, Any] = {
         "status": "error",
-        "error": f"Deployment not ready after {timeout}s ({attempts} probes)",
+        "error": error,
         "url": deployment_url,
-        "last_probe": last_detail,
+        "last_probe": last_probe,
+        "probes": probes,
         "consecutive_deploy_failures": _deployment_failure_count,
     }
+    if phase:
+        result["phase"] = phase
+    result["deploy_logs_tail"] = deploy_logs or "(empty — container may not have started)"
+
     if _deployment_failure_count >= _MAX_CONSECUTIVE_DEPLOY_FAILURES:
-        error_result["hint"] = (
-            f"CRITICAL: {_deployment_failure_count} consecutive deployments have all "
-            f"failed health checks. The Docker image is likely broken — creating "
-            f"more deployments will not help. Report this as an infrastructure "
-            f"blocker in your finish output and do NOT create more deployments."
+        result["hint"] = (
+            f"CRITICAL: {_deployment_failure_count} consecutive deployments "
+            f"have all failed health checks. "
+            f"The Docker image (ghcr.io/tensorlink-ai/synth-city-gpu:latest) "
+            f"is likely broken — creating more deployments will not help. "
+            f"Report this as an infrastructure blocker in your finish output "
+            f"and do NOT create any more deployments."
         )
-        error_result["error_type"] = "environment"
-        error_result["recoverable"] = False
+        result["error_type"] = "environment"
+        result["recoverable"] = False
+    elif deploy_logs:
+        result["hint"] = (
+            "The training server process started but is unhealthy. "
+            "Check the deploy_logs_tail above for the error, then "
+            "delete and recreate the deployment."
+        )
     else:
-        error_result["hint"] = (
-            "The deployment pod may be running but the training server inside "
-            "has not started. Check get_deployment_logs() for startup errors."
+        result["hint"] = (
+            "The pod is running but the training server inside never started "
+            "and produced no logs. This usually means the container image "
+            "could not be pulled (wrong tag, GHCR auth, deleted image) or "
+            "the container crashed immediately (OOM before Python started, "
+            "CUDA driver mismatch, segfault in torch import). "
+            "Check the deployment status fields (state, phase, pods) "
+            "for the specific Kubernetes failure reason. "
+            "If the image cannot be pulled, this is an infrastructure "
+            "issue — creating more deployments will not help."
         )
-    return json.dumps(error_result)
+    return result
 
 
 @tool(
@@ -1179,11 +1518,17 @@ def create_training_deployment(
         if HF_TOKEN and "HF_TOKEN" not in env_dict:
             env_dict["HF_TOKEN"] = HF_TOKEN
 
+        # Build Kubernetes health probes so the reverse proxy only routes
+        # traffic once the training server is actually listening.  Without
+        # this, the proxy returns empty-body HTTP 500 during container startup.
+        health_check = _build_health_check()
+
         resp = client.create_deployment(
             name=deploy_name,
             image=deploy_image,
             gpu_models=gpu_list,
             env=env_dict,
+            health_check=health_check,
         )
         # Reset the consecutive-failure counter on successful deployment
         # creation so a previous string of failures doesn't permanently
@@ -1214,18 +1559,18 @@ def create_training_deployment(
             or "internal server error" in err_str
             or "connection" in err_str
         )
-        result: dict[str, Any] = {
+        err_result: dict[str, Any] = {
             "error": f"{type(exc).__name__}: {exc}",
         }
         if is_infra:
-            result["error_type"] = "infrastructure"
-            result["recoverable"] = True
-            result["hint"] = (
+            err_result["error_type"] = "infrastructure"
+            err_result["recoverable"] = True
+            err_result["hint"] = (
                 "Deployment creation failed due to a server-side error. "
                 "This is likely a transient Basilica infrastructure issue. "
                 "Wait a moment and try again."
             )
-        return json.dumps(result)
+        return json.dumps(err_result)
 
 
 @tool(
@@ -1249,25 +1594,46 @@ def get_training_deployment(name: str) -> str:
     try:
         client = _get_gpu_client()
         resp = client.get_deployment(name)
-        # Serialize replicas (list of SDK ReplicaStatus objects) to plain dicts
+
+        # replicas is a ReplicaStatus(desired, ready) — NOT a list
         raw_replicas = getattr(resp, "replicas", None)
         replicas = None
         if raw_replicas is not None:
-            replicas = [
-                {
-                    "phase": getattr(r, "phase", None),
-                    "ready": getattr(r, "ready", None),
-                    "started": getattr(r, "started", None),
-                    "name": getattr(r, "name", None),
-                }
-                for r in raw_replicas
-            ] if hasattr(raw_replicas, "__iter__") else str(raw_replicas)
+            replicas = {
+                "desired": getattr(raw_replicas, "desired", None),
+                "ready": getattr(raw_replicas, "ready", None),
+            }
+
+        # Per-pod detail (PodInfo objects with name, status, node)
+        raw_pods = getattr(resp, "pods", None) or []
+        pods = [
+            {
+                "name": getattr(p, "name", None),
+                "status": getattr(p, "status", None),
+                "node": getattr(p, "node", None),
+            }
+            for p in raw_pods
+        ] if hasattr(raw_pods, "__iter__") else None
+
+        # Progress info (current_step, percentage, elapsed_seconds)
+        raw_progress = getattr(resp, "progress", None)
+        progress = None
+        if raw_progress is not None:
+            progress = {
+                "current_step": getattr(raw_progress, "current_step", None),
+                "percentage": getattr(raw_progress, "percentage", None),
+                "elapsed_seconds": getattr(raw_progress, "elapsed_seconds", None),
+            }
+
         return json.dumps({
             "instance_name": resp.instance_name,
+            "state": getattr(resp, "state", None),
             "phase": resp.phase,
             "url": resp.url,
             "message": getattr(resp, "message", ""),
             "replicas": replicas,
+            "pods": pods if pods else None,
+            "progress": progress,
             "created_at": str(getattr(resp, "created_at", "")),
         }, indent=2)
     except Exception as exc:

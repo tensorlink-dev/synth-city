@@ -18,6 +18,7 @@ import logging
 import uuid
 from typing import Any
 
+from pipeline.agents.base import BaseAgentWrapper
 from pipeline.agents.code_checker import CodeCheckerAgent
 from pipeline.agents.debugger import DebuggerAgent
 from pipeline.agents.planner import PlannerAgent
@@ -41,7 +42,7 @@ _CORE_AGENTS: dict[str, type] = {
 }
 
 
-def resolve_agent(agent_name: str) -> type | None:
+def resolve_agent(agent_name: str) -> type[BaseAgentWrapper] | None:
     """Resolve an agent class by name.
 
     Checks the core agent dict first, then falls back to dynamic import
@@ -213,6 +214,8 @@ class PipelineOrchestrator:
                     stage.name,
                     result.raw_text[:5000],
                 )
+                # Persist the failed run so future planners can see what was tried
+                self._save_to_hippius(results)
                 _mon.emit("pipeline", "pipeline_complete", success=False)
                 return results
 
@@ -340,6 +343,7 @@ class PipelineOrchestrator:
         base_temp = params["base_temperature"]
         temp_step = params["temperature_step"]
         last_result: AgentResult | None = None
+        prior_attempts: list[str] = []
 
         for attempt in range(max_retries):
             temp = base_temp + (attempt * temp_step)
@@ -360,9 +364,18 @@ class PipelineOrchestrator:
 
             # Inject failure context from previous attempt, or use default
             if last_result and not last_result.success:
+                # Build a summary of ALL previous attempts so the agent
+                # knows exactly what was tried and avoids repeating it.
+                attempts_summary = "\n".join(
+                    f"  Attempt {i}: {desc}" for i, desc in enumerate(prior_attempts, 1)
+                )
                 task["user_message"] = (
-                    f"Previous attempt failed. Error: {last_result.raw_text[:5000]}\n\n"
-                    f"Please try a different approach. Attempt {attempt + 1}/{max_retries}."
+                    f"## Previous Attempts (all failed)\n\n"
+                    f"{attempts_summary}\n\n"
+                    f"## Most Recent Error\n\n{last_result.raw_text[:3000]}\n\n"
+                    f"You MUST try a DIFFERENT approach. Do NOT repeat the same "
+                    f"experiments or GPU models listed above. "
+                    f"Attempt {attempt + 1}/{max_retries}."
                 )
 
             try:
@@ -389,6 +402,9 @@ class PipelineOrchestrator:
 
             if result.success:
                 return result
+
+            # Extract a compact summary of what this attempt tried
+            prior_attempts.append(self._summarize_attempt(result))
 
             last_result = result
             logger.warning(
@@ -589,6 +605,44 @@ class PipelineOrchestrator:
             logger.debug("Hippius save skipped: %s", exc)
 
     # ----------------------------------------------------------- helpers
+    @staticmethod
+    def _summarize_attempt(result: AgentResult) -> str:
+        """Extract a compact description of what an attempt tried (for retry context)."""
+        parts: list[str] = []
+
+        # Try to pull experiment names / GPU models from structured output
+        if isinstance(result.structured, dict):
+            nested = result.structured.get("result", result.structured)
+            if isinstance(nested, dict):
+                # Experiments tried
+                exps = nested.get("validated_experiments") or nested.get("experiments")
+                if isinstance(exps, list):
+                    names = [
+                        e.get("name", "?") for e in exps
+                        if isinstance(e, dict)
+                    ]
+                    if names:
+                        parts.append(f"experiments=[{', '.join(names[:6])}]")
+
+                # GPU models tried
+                gpus = nested.get("gpu_models_tried")
+                if isinstance(gpus, list) and gpus:
+                    parts.append(f"gpu_models=[{', '.join(str(g) for g in gpus[:6])}]")
+
+                # Blocker type
+                blocker = nested.get("infrastructure_blocker")
+                if isinstance(blocker, dict):
+                    parts.append(f"error={blocker.get('error', 'unknown')}")
+                elif nested.get("error"):
+                    parts.append(f"error={nested['error']}")
+
+        if not parts:
+            # Fallback: first line of raw text
+            first_line = (result.raw_text or "unknown").split("\n")[0][:200]
+            parts.append(first_line)
+
+        return "; ".join(parts)
+
     @staticmethod
     def _extract_best(result: AgentResult) -> dict[str, Any] | None:
         """Extract the best experiment info from a trainer result."""

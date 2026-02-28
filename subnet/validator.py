@@ -136,7 +136,7 @@ def evaluate_multi_asset(
     -------
     dict with per-asset scores, weighted total, and metadata.
     """
-    per_asset: dict[str, dict[str, float]] = {}
+    per_asset: dict[str, dict[str, Any]] = {}
     weighted_sum = 0.0
 
     for asset, weight in SN50_ASSETS.items():
