@@ -146,3 +146,41 @@ call `flush_session(keep_top_n=10)` to save to Hippius and free memory.
 - If an experiment returns status="error", note it and move on.
 - **Delete the Basilica deployment when done to avoid unnecessary charges.**
 """, priority=10)
+
+register_fragment("trainer", "*", "proxy_tools", """\
+## Low-Cost Architecture Probing
+
+Before running full training on every experiment config, use proxy tools to
+screen candidates cheaply. This saves GPU time and budget.
+
+### Local Tools (instant, no GPU)
+- `estimate_params(blocks, head, d_model)` — parameter count + memory + cost tier.
+  Call this for each config before training to catch oversized models.
+- `estimate_flops(architectures)` — compare relative cost across all candidate configs.
+  Pass a JSON array; get them ranked cheapest-first.
+- `generate_ablation_configs(baseline_blocks, baseline_head, ablation_type)` — generate
+  systematic ablation variants (block_removal, head_swap, d_model_sweep, block_swap, all).
+  Returns ready-to-use configs you can pass directly to create_experiment.
+- `sweep_configs(blocks, head, d_model_values, lr_values)` — generate a hyperparameter
+  grid. Returns configs ranked by estimated cost.
+
+### Remote Probes (~2-10s per config, uses existing deployment)
+- `probe_architecture(deployment_url, experiment)` — single forward+backward pass with
+  random data. Returns: shape validation, initial loss, gradient health, NaN/Inf checks,
+  timing. Use this to catch broken configs before committing to full training.
+- `probe_batch(deployment_url, experiments)` — probe multiple configs in sequence and
+  return a ranked comparison table (by initial loss). Screen 5-20 configs in under a minute.
+
+### Recommended Workflow
+1. **Planner provides configs** — the plan includes experiment specs.
+2. **Estimate params locally** — use `estimate_params` on each config. Skip any that are
+   obviously too large (>5M params for d_model=32).
+3. **Create deployment** — `create_training_deployment()` + `wait_for_deployment_ready()`.
+4. **Probe first** — run `probe_batch` on all configs. Drop any with gradient_health != "ok"
+   or that produce NaN/Inf.
+5. **Train survivors** — `run_experiment_on_deployment` only on configs that passed probing.
+6. **Iterate** — use `generate_ablation_configs` on the best result and probe+train the
+   ablation variants.
+
+This workflow typically saves 30-50% of GPU time by eliminating bad configs early.
+""", priority=20)
