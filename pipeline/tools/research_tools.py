@@ -316,7 +316,7 @@ def list_blocks() -> str:
     """Discover registered blocks in open-synth-miner."""
     env_err = _check_env()
     if env_err:
-        logger.info("Returning static block list (open-synth-miner not available)")
+        logger.info("Returning static block list (osa not installed)")
         return json.dumps({"blocks": _FALLBACK_BLOCKS, "source": "static"}, indent=2)
     try:
         session = _get_session()
@@ -331,7 +331,7 @@ def list_heads() -> str:
     """Discover registered heads in open-synth-miner."""
     env_err = _check_env()
     if env_err:
-        logger.info("Returning static head list (open-synth-miner not available)")
+        logger.info("Returning static head list (osa not installed)")
         return json.dumps({"heads": _FALLBACK_HEADS, "source": "static"}, indent=2)
     try:
         session = _get_session()
@@ -346,7 +346,7 @@ def list_presets() -> str:
     """Discover built-in experiment presets."""
     env_err = _check_env()
     if env_err:
-        logger.info("Returning static preset list (open-synth-miner not available)")
+        logger.info("Returning static preset list (osa not installed)")
         return json.dumps({"presets": _FALLBACK_PRESETS, "source": "static"}, indent=2)
     try:
         session = _get_session()
@@ -457,11 +457,11 @@ def create_experiment(
             except Exception:
                 pass  # Fall through to local config builder
 
-        # Fallback: build the config dict locally without open-synth-miner.
+        # Fallback: build the config dict locally without osa.
         # This is sufficient for remote training flows (deployment / SSH pod)
         # where ResearchSession runs inside the Docker image.
         logger.info(
-            "Building experiment config locally (open-synth-miner not available)"
+            "Building experiment config locally (osa not installed)"
         )
         head_cfg: dict = {"_target_": head}
         if hk and isinstance(hk, dict):
@@ -733,7 +733,7 @@ def compare_results() -> str:
     if env_err:
         return json.dumps({
             "ranking": [],
-            "note": "No session (open-synth-miner not installed)",
+            "note": "No session (osa not installed)",
         })
     try:
         session = _get_session()
@@ -751,7 +751,7 @@ def session_summary() -> str:
         return json.dumps({
             "num_experiments": 0,
             "results": [],
-            "note": "No session available (open-synth-miner not installed)",
+            "note": "No session available (osa not installed)",
         })
     try:
         session = _get_session()
