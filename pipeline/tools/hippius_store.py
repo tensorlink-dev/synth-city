@@ -495,7 +495,7 @@ def load_hippius_history(limit: int = 50) -> str:
                 "total_stored": 0, "returned": 0, "experiments": [],
             }, indent=2)
 
-        experiments = []
+        experiments: list[dict[str, Any]] = []
         consecutive_failures = 0
         max_consecutive_failures = 3
         for key in keys:

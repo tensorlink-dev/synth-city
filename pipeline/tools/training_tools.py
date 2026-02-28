@@ -513,9 +513,9 @@ def setup_basilica_pod(
         else:
             # Deduplicate consecutive identical errors for readability
             deduped: list[str] = []
-            for e in ssh_errors:
-                if not deduped or e != deduped[-1]:
-                    deduped.append(e)
+            for err in ssh_errors:
+                if not deduped or err != deduped[-1]:
+                    deduped.append(err)
 
             # Add diagnostic info about key mismatch
             key_info = "unknown"
@@ -1559,18 +1559,18 @@ def create_training_deployment(
             or "internal server error" in err_str
             or "connection" in err_str
         )
-        result: dict[str, Any] = {
+        err_result: dict[str, Any] = {
             "error": f"{type(exc).__name__}: {exc}",
         }
         if is_infra:
-            result["error_type"] = "infrastructure"
-            result["recoverable"] = True
-            result["hint"] = (
+            err_result["error_type"] = "infrastructure"
+            err_result["recoverable"] = True
+            err_result["hint"] = (
                 "Deployment creation failed due to a server-side error. "
                 "This is likely a transient Basilica infrastructure issue. "
                 "Wait a moment and try again."
             )
-        return json.dumps(result)
+        return json.dumps(err_result)
 
 
 @tool(

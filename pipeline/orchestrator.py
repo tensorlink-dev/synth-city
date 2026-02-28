@@ -18,6 +18,7 @@ import logging
 import uuid
 from typing import Any
 
+from pipeline.agents.base import BaseAgentWrapper
 from pipeline.agents.code_checker import CodeCheckerAgent
 from pipeline.agents.debugger import DebuggerAgent
 from pipeline.agents.planner import PlannerAgent
@@ -41,7 +42,7 @@ _CORE_AGENTS: dict[str, type] = {
 }
 
 
-def resolve_agent(agent_name: str) -> type | None:
+def resolve_agent(agent_name: str) -> type[BaseAgentWrapper] | None:
     """Resolve an agent class by name.
 
     Checks the core agent dict first, then falls back to dynamic import

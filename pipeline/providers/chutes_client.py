@@ -14,6 +14,7 @@ from functools import lru_cache
 
 import httpx
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 
 from config import CHUTES_API_KEY, CHUTES_BASE_URL
 
@@ -46,7 +47,7 @@ def chat_completion_with_backoff(
     max_retries: int = 4,
     base_delay: float = 2.0,
     **kwargs,
-) -> object:
+) -> ChatCompletion:
     """Call ``client.chat.completions.create`` with exponential backoff.
 
     This wraps the OpenAI SDK's built-in retry with an additional outer retry

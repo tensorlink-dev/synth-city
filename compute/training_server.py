@@ -418,7 +418,7 @@ async def _wait_and_persist(
 ) -> None:
     """Background: wait for training to complete after stream drop, then cache result."""
     train_result = None
-    train_error: Exception | None = None
+    train_error: BaseException | None = None
 
     try:
         train_result = await asyncio.wait_for(task, timeout=timeout)
@@ -439,9 +439,9 @@ async def _wait_and_persist(
 
     # If task finished but we didn't capture the result above
     if train_error is None and train_result is None and task.done() and not task.cancelled():
-        exc = task.exception()
-        if exc is not None:
-            train_error = exc
+        task_exc = task.exception()
+        if task_exc is not None:
+            train_error = task_exc
         else:
             train_result = task.result()
 

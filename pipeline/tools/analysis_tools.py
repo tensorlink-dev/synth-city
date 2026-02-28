@@ -60,7 +60,7 @@ def fetch_experiment_runs(limit: int = 20, order: str = "best") -> str:
         if not keys:
             return json.dumps({"total": 0, "order": order, "runs": []}, indent=2)
 
-        experiments = []
+        experiments: list[dict[str, Any]] = []
         consecutive_failures = 0
         max_consecutive_failures = 3
         for key in keys:
@@ -226,7 +226,7 @@ def analyze_experiment_trends(limit: int = 50) -> str:
 
         keys = _hs._list_keys("experiments/", max_keys=2000)
 
-        entries = []
+        entries: list[dict[str, Any]] = []
         consecutive_failures = 0
         for key in keys:
             if _hs._endpoint_unreachable:
