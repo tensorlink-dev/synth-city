@@ -68,14 +68,23 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
 
     bootstrap_all()
 
-    task: dict = {"channel": args.channel}
-    orchestrator = PipelineOrchestrator(
-        max_retries=args.retries,
-        base_temperature=args.temperature,
-        publish=args.publish,
-    )
-    result = orchestrator.run(task)
-    print(json.dumps(result, indent=2, default=str))
+    loops = getattr(args, "loops", 1)
+    for loop_num in range(1, loops + 1):
+        if loops > 1:
+            logger.info("=== Pipeline loop %d/%d ===", loop_num, loops)
+        task: dict = {"channel": args.channel}
+        orchestrator = PipelineOrchestrator(
+            max_retries=args.retries,
+            base_temperature=args.temperature,
+            publish=args.publish,
+        )
+        result = orchestrator.run(task)
+        print(json.dumps(result, indent=2, default=str))
+        if loops > 1:
+            logger.info(
+                "Loop %d/%d finished: success=%s",
+                loop_num, loops, result.get("success", False),
+            )
 
 
 def cmd_sweep(args: argparse.Namespace) -> None:
@@ -361,6 +370,10 @@ def main() -> None:
     p_pipe.add_argument("--retries", type=int, default=5, help="Max retries per stage")
     p_pipe.add_argument("--temperature", type=float, default=0.1, help="Base LLM temperature")
     p_pipe.add_argument("--publish", action="store_true", help="Publish best model to HF Hub")
+    p_pipe.add_argument(
+        "--loops", type=int, default=1,
+        help="Number of pipeline runs (each gets a fresh orchestrator and run ID)",
+    )
 
     # sweep
     p_sweep = subparsers.add_parser("sweep", help="Run a preset sweep")
