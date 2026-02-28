@@ -44,8 +44,8 @@ logger = logging.getLogger(__name__)
 # Approximate parameter multipliers relative to d_model^2.
 # These are rough estimates based on typical layer implementations.
 _BLOCK_PARAM_FACTORS: dict[str, float] = {
-    "RevIN": 0.01,             # 2 * d_model (affine params only)
-    "LayerNormBlock": 0.01,    # 2 * d_model
+    "RevIN": 2.0,              # 2 * d_model (affine scale + bias)
+    "LayerNormBlock": 2.0,     # 2 * d_model (affine scale + bias)
     "DLinearBlock": 1.0,       # ~d_model * d_model (linear decomposition)
     "RNNBlock": 4.0,           # ~4 * d_model^2 (input, hidden, bias)
     "ResConvBlock": 3.0,       # conv kernels + residual projection
@@ -99,7 +99,7 @@ def _estimate_block_params(block_name: str, d_model: int) -> int:
     return int(factor * d_model * d_model)
 
 
-def _estimate_head_params(head_name: str, d_model: int, horizon: int, n_paths: int) -> int:
+def _estimate_head_params(head_name: str, d_model: int, horizon: int) -> int:
     """Estimate parameter count for a head."""
     factor = _HEAD_PARAM_FACTORS.get(head_name, 6.0)
     base = int(factor * d_model * d_model)
@@ -114,6 +114,9 @@ def _relative_flops(
 ) -> float:
     """Estimate relative FLOPs (arbitrary units, useful for comparison only)."""
     total = 0.0
+    # Input projection: feature_dim -> d_model, applied per timestep
+    input_proj_params = RESEARCH_FEATURE_DIM * d_model + d_model
+    total += input_proj_params * seq_len
     for block in blocks:
         params = _estimate_block_params(block, d_model)
         scaling = _BLOCK_FLOP_SCALING.get(block, "constant")
@@ -126,7 +129,7 @@ def _relative_flops(
         elif scaling == "quadratic":
             total += params * seq_len + d_model * seq_len * seq_len
     # Head FLOPs
-    head_params = _estimate_head_params(head, d_model, horizon, 100)
+    head_params = _estimate_head_params(head, d_model, horizon)
     total += head_params * horizon
     return total
 
@@ -179,7 +182,7 @@ def estimate_params(
             breakdown.append({"layer": block_name, "params": params})
             total_params += params
 
-        head_params = _estimate_head_params(head, d_model, horizon, n_paths)
+        head_params = _estimate_head_params(head, d_model, horizon)
         breakdown.append({"layer": head, "params": head_params})
         total_params += head_params
 
@@ -260,7 +263,7 @@ def estimate_flops(architectures: str) -> str:
 
             flops = _relative_flops(blocks, head, d_model, seq_len, horizon)
             params = sum(_estimate_block_params(b, d_model) for b in blocks)
-            params += _estimate_head_params(head, d_model, horizon, RESEARCH_N_PATHS)
+            params += _estimate_head_params(head, d_model, horizon)
 
             results.append({
                 "index": i,
@@ -363,7 +366,7 @@ def generate_ablation_configs(
             "batch_size": RESEARCH_BATCH_SIZE,
             "estimated_params": (
                 sum(_estimate_block_params(b, baseline_d_model) for b in blocks)
-                + _estimate_head_params(baseline_head, baseline_d_model, horizon, RESEARCH_N_PATHS)
+                + _estimate_head_params(baseline_head, baseline_d_model, horizon)
             ),
         }
         configs.append(baseline)
@@ -377,7 +380,7 @@ def generate_ablation_configs(
                     params = (
                         sum(_estimate_block_params(b, baseline_d_model) for b in ablated)
                         + _estimate_head_params(
-                            baseline_head, baseline_d_model, horizon, RESEARCH_N_PATHS
+                            baseline_head, baseline_d_model, horizon
                         )
                     )
                     configs.append({
@@ -401,7 +404,7 @@ def generate_ablation_configs(
                 if head != baseline_head:
                     params = (
                         sum(_estimate_block_params(b, baseline_d_model) for b in blocks)
-                        + _estimate_head_params(head, baseline_d_model, horizon, RESEARCH_N_PATHS)
+                        + _estimate_head_params(head, baseline_d_model, horizon)
                     )
                     configs.append({
                         "name": f"ablation_head_{head}",
@@ -423,7 +426,7 @@ def generate_ablation_configs(
                 if dm != baseline_d_model:
                     params = (
                         sum(_estimate_block_params(b, dm) for b in blocks)
-                        + _estimate_head_params(baseline_head, dm, horizon, RESEARCH_N_PATHS)
+                        + _estimate_head_params(baseline_head, dm, horizon)
                     )
                     configs.append({
                         "name": f"ablation_d_model_{dm}",
@@ -465,7 +468,7 @@ def generate_ablation_configs(
                         params = (
                             sum(_estimate_block_params(b, baseline_d_model) for b in swapped)
                             + _estimate_head_params(
-                                baseline_head, baseline_d_model, horizon, RESEARCH_N_PATHS
+                                baseline_head, baseline_d_model, horizon
                             )
                         )
                         configs.append({
@@ -572,7 +575,7 @@ def sweep_configs(
         for dm, lr, np_ in grid:
             params = (
                 sum(_estimate_block_params(b, dm) for b in block_list)
-                + _estimate_head_params(head, dm, horizon, np_)
+                + _estimate_head_params(head, dm, horizon)
             )
             configs.append({
                 "blocks": block_list,
@@ -712,9 +715,10 @@ def probe_architecture(
 @tool(
     description=(
         "Run probes on multiple architecture configs in a single call. "
-        "Sends each config to the deployment's /probe endpoint and returns "
-        "a comparison table ranked by initial loss. "
-        "Use this to quickly screen 5-20 configs before full training."
+        "Sends each config to the deployment's /probe endpoint sequentially "
+        "and returns a comparison table ranked by initial loss. "
+        "Expect ~5-10s per config. Use this to screen candidates before "
+        "full training."
     ),
     parameters_schema={
         "type": "object",

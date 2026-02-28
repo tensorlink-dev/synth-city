@@ -629,15 +629,17 @@ async def probe(request: Request):
             "status": "ok",
             "valid": true,
             "param_count": 12345,
-            "forward_pass_ms": 42.3,
-            "backward_pass_ms": 18.7,
             "initial_loss": 1.234,
-            "output_shape": [4, 288, 100],
+            "initial_metrics": {"crps": 1.234, ...},
             "has_nan": false,
             "has_inf": false,
-            "gradient_norms": { "backbone.blocks.0": 0.12, ... },
+            "forward_backward_status": "ok",
             "gradient_health": "ok",
-            "memory_allocated_mb": 45.2
+            "total_probe_ms": 4500.0,
+            "memory_allocated_mb": 45.2,
+            "memory_reserved_mb": 128.0,
+            "validation": { ... },
+            "description": { ... }
         }
     """
     try:
@@ -698,26 +700,9 @@ def _run_probe_sync(experiment: dict, input_len: int, pred_len: int) -> dict:
     except Exception as exc:
         result["describe_error"] = f"{type(exc).__name__}: {exc}"
 
-    # Step 4: Forward pass with random data
+    # Step 4: Forward + backward pass via micro-training
     try:
-        # Extract model config
-        backbone_cfg = experiment.get("model", {}).get("backbone", {})
-        d_model = backbone_cfg.get("d_model", 32)
-        feature_dim = backbone_cfg.get("feature_dim", 4)
-        seq_len = backbone_cfg.get("seq_len", input_len)
-        training_cfg = experiment.get("training", {})
-        batch_size = training_cfg.get("batch_size", 4)
-        n_paths = training_cfg.get("n_paths", 100)
-        horizon = training_cfg.get("horizon", pred_len)
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Try to instantiate the model directly for forward/backward probing
-        _probe_forward_backward(
-            session, experiment, device,
-            batch_size, seq_len, feature_dim, d_model,
-            horizon, n_paths, result,
-        )
+        _probe_forward_backward(session, experiment, result)
     except Exception as exc:
         result["probe_error"] = f"{type(exc).__name__}: {exc}"
         result["probe_traceback"] = traceback.format_exc()
@@ -742,13 +727,6 @@ def _run_probe_sync(experiment: dict, input_len: int, pred_len: int) -> dict:
 def _probe_forward_backward(
     session: Any,
     experiment: dict,
-    device: Any,
-    batch_size: int,
-    seq_len: int,
-    feature_dim: int,
-    d_model: int,
-    horizon: int,
-    n_paths: int,
     result: dict,
 ) -> None:
     """Attempt a forward+backward pass using ResearchSession internals."""
