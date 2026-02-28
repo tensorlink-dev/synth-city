@@ -263,7 +263,7 @@ class SimpleAgent:
             messages.append(assistant_msg)
 
             for tc in choice.message.tool_calls:
-                result = self._execute_tool_call(tc)
+                result = self._execute_tool_call(tc)  # type: ignore[arg-type]
                 messages.append({
                     "role": "tool",
                     "tool_call_id": result.tool_call_id,

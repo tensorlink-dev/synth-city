@@ -336,8 +336,8 @@ def list_hf_models(repo_id: str = "") -> str:
         result: dict[str, Any] = {
             "repo_id": target_repo,
             "last_modified": str(info.last_modified) if info.last_modified else None,
-            "downloads": info.downloads,
-            "likes": info.likes,
+            "downloads": getattr(info, "downloads", None),
+            "likes": getattr(info, "likes", None),
             "tags": list(info.tags) if info.tags else [],
             "files": file_list,
             "branches": branches,
@@ -373,7 +373,7 @@ def fetch_hf_model_card(repo_id: str = "", revision: str = "main") -> str:
         if not target_repo:
             return json.dumps({"error": "No HF_REPO_ID configured"})
 
-        card = ModelCard.load(target_repo, revision=revision, token=HF_TOKEN or None)
+        card = ModelCard.load(target_repo, token=HF_TOKEN or None)  # type: ignore[call-arg]
         card_data = card.data.to_dict() if card.data else {}
 
         # Try to load config.json if it exists
