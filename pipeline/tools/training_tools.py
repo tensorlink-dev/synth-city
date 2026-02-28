@@ -929,11 +929,21 @@ def _probe_deployment_health(url: str, share_token: str = "") -> tuple[bool, str
         except Exception as read_exc:
             logger.debug("Could not read HTTP error body: %s", read_exc)
         if exc.code == 503:
-            # Server is up but ResearchSession is broken — not healthy
-            return False, f"HTTP 503: server up but unhealthy ({body})"
+            # Server is up but ResearchSession is broken — not healthy.
+            # Tag as [server] so the caller can distinguish from proxy errors.
+            return False, f"HTTP 503: server up but unhealthy [server] ({body})"
         if exc.code == 500:
-            # Server is up but /health crashed — not healthy
-            return False, f"HTTP 500: Internal Server Error ({body})"
+            # Distinguish reverse-proxy 500 from training server 500.
+            # Our global exception handler returns JSON with an "error" key;
+            # a bare proxy 500 is typically HTML or has an empty body
+            # (ingress returns 500 when no backend pod is ready yet).
+            if not body.strip() or "<html" in body.lower():
+                return False, f"HTTP 500: Internal Server Error [reverse-proxy] ({body})"
+            return False, f"HTTP 500: Internal Server Error [server] ({body})"
+        if exc.code in (502, 504):
+            # 502 Bad Gateway / 504 Gateway Timeout — reverse proxy can't
+            # reach the backend container (still starting or crashed).
+            return False, f"HTTP {exc.code}: {exc.reason} [reverse-proxy] ({body})"
         # Other 4xx — server is responsive, /health just isn't mapped (older image?)
         if 400 <= exc.code < 500:
             return True, f"HTTP {exc.code} (server responsive)"
@@ -1267,11 +1277,12 @@ def wait_for_deployment_ready(
                 "detail": detail,
             })
 
-        # Distinguish proxy errors (empty body → container still starting)
-        # from app errors (non-empty body → Flask responded but broken).
-        is_server_error = detail.startswith("HTTP 5")
-        has_app_body = is_server_error and not detail.endswith("()")
-        if has_app_body:
+        # Track consecutive errors from the *actual server process* (tagged
+        # ``[server]`` by ``_probe_deployment_health``).  Reverse-proxy errors
+        # (``[reverse-proxy]``) mean the container isn't ready yet — those are
+        # transient and should be waited through, not trigger early abort.
+        is_server_error = "[server]" in detail
+        if is_server_error:
             consecutive_server_errors += 1
         else:
             consecutive_server_errors = 0
@@ -1487,6 +1498,7 @@ def create_training_deployment(
     env: str = "",
 ) -> str:
     """Create a Basilica deployment with the synth-city GPU training image."""
+    global _deployment_failure_count
     try:
         client = _get_gpu_client()
         deploy_name = name or _DEPLOYMENT_NAME_PREFIX
@@ -1518,7 +1530,12 @@ def create_training_deployment(
             env=env_dict,
             health_check=health_check,
         )
-        return json.dumps({
+        # Reset the consecutive-failure counter on successful deployment
+        # creation so a previous string of failures doesn't permanently
+        # block new attempts after the underlying issue is fixed.
+        prev_failures = _deployment_failure_count
+        _deployment_failure_count = 0
+        result: dict[str, Any] = {
             "status": "created",
             "instance_name": resp.instance_name,
             "url": resp.url,
@@ -1526,7 +1543,13 @@ def create_training_deployment(
             "share_url": getattr(resp, "share_url", None),
             "share_token": getattr(resp, "share_token", None),
             "image": deploy_image,
-        }, indent=2)
+        }
+        if prev_failures:
+            result["note"] = (
+                f"Reset consecutive deployment failure counter "
+                f"(was {prev_failures})."
+            )
+        return json.dumps(result, indent=2)
     except Exception as exc:
         err_str = str(exc).lower()
         is_infra = (
@@ -1697,6 +1720,121 @@ def delete_training_deployment(name: str) -> str:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
 
 
+def _poll_job_result(
+    deployment_url: str,
+    job_id: str,
+    share_token: str = "",
+    max_polls: int = 40,
+    poll_interval: float = 30.0,
+) -> dict | None:
+    """Poll GET /job-result/{job_id} to recover a result after stream drop.
+
+    The training server caches completed results in memory.  If the NDJSON
+    stream was severed by a reverse proxy before the final result line, the
+    client can recover it here.
+
+    Returns the result dict, or None if the job is unknown or still running
+    after *max_polls* attempts.
+    """
+    import urllib.error
+    import urllib.request
+
+    url = deployment_url.rstrip("/") + f"/job-result/{job_id}"
+    if share_token:
+        url += f"?token={share_token}"
+
+    logger.info(
+        "Stream may have been severed — polling %s for job result "
+        "(up to %d attempts, %ds interval)",
+        url, max_polls, poll_interval,
+    )
+
+    for attempt in range(max_polls):
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = json.loads(resp.read().decode())
+                # Remove streaming metadata
+                body.pop("type", None)
+                body.pop("_pad", None)
+                logger.info(
+                    "Recovered job result for %s on poll %d/%d",
+                    job_id, attempt + 1, max_polls,
+                )
+                return body
+        except urllib.error.HTTPError as exc:
+            if exc.code == 202:
+                # Job still training — keep polling
+                logger.debug(
+                    "Job %s still training (poll %d/%d)",
+                    job_id, attempt + 1, max_polls,
+                )
+            elif exc.code == 404:
+                # Job unknown — server may be old (no /job-result endpoint)
+                # or pod restarted (cache lost).
+                logger.warning(
+                    "Job %s not found on server (poll %d/%d) — "
+                    "server may not support job recovery",
+                    job_id, attempt + 1, max_polls,
+                )
+                return None
+            else:
+                logger.warning(
+                    "Job result poll HTTP %d for %s (poll %d/%d)",
+                    exc.code, job_id, attempt + 1, max_polls,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Job result poll failed for %s (poll %d/%d): %s",
+                job_id, attempt + 1, max_polls, exc,
+            )
+
+        if attempt < max_polls - 1:
+            time.sleep(poll_interval)
+
+    logger.warning("Job result recovery timed out for %s after %d polls", job_id, max_polls)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Custom component code collection
+# ---------------------------------------------------------------------------
+
+_CUSTOM_COMPONENTS_DIR = os.path.join(os.getcwd(), "src", "models", "components")
+
+
+def _collect_custom_component_code() -> str:
+    """Read all .py files from src/models/components/ and concatenate them.
+
+    Returns the combined source as a single string that the training server
+    can write to disk and import.  Returns an empty string when the directory
+    doesn't exist or contains no Python files.
+    """
+    if not os.path.isdir(_CUSTOM_COMPONENTS_DIR):
+        return ""
+
+    parts: list[str] = []
+    for fname in sorted(os.listdir(_CUSTOM_COMPONENTS_DIR)):
+        if not fname.endswith(".py"):
+            continue
+        fpath = os.path.join(_CUSTOM_COMPONENTS_DIR, fname)
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                content = f.read()
+            if content.strip():
+                parts.append(f"# --- {fname} ---\n{content}")
+        except Exception as exc:
+            logger.warning("Could not read component %s: %s", fpath, exc)
+
+    combined = "\n\n".join(parts)
+    if combined:
+        logger.info(
+            "Collected %d custom component file(s) (%d bytes) from %s",
+            len(parts), len(combined), _CUSTOM_COMPONENTS_DIR,
+        )
+    return combined
+
+
 @tool(
     description=(
         "Run an experiment on a Basilica training deployment via HTTP. "
@@ -1793,6 +1931,15 @@ def run_experiment_on_deployment(
             for hf_name in SN50_TO_HF_ASSET.values()
         }
 
+        import uuid as _uuid
+
+        job_id = _uuid.uuid4().hex
+
+        # Collect custom component source code (if any) to send to the
+        # training server so it can load components not baked into the
+        # Docker image.
+        model_code_content = _collect_custom_component_code()
+
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
@@ -1801,6 +1948,8 @@ def run_experiment_on_deployment(
             "asset_files": asset_files,
             "input_len": int(tf_cfg["input_len"]),
             "pred_len": int(tf_cfg["pred_len"]),
+            "job_id": job_id,
+            "model_code_content": model_code_content,
         }
 
         # Build the /train URL
@@ -1811,6 +1960,15 @@ def run_experiment_on_deployment(
             url += "/train"
 
         body = json.dumps(payload).encode()
+        logger.debug(
+            "POST %s — payload keys: %s, experiment keys: %s, "
+            "model_code_content length: %d, job_id: %s",
+            url,
+            list(payload.keys()),
+            list(exp_dict.keys()) if isinstance(exp_dict, dict) else "N/A",
+            len(model_code_content),
+            job_id,
+        )
 
         # --- Retry loop for transient HTTP 5xx errors ---
         last_http_error: urllib.error.HTTPError | None = None
@@ -1831,7 +1989,17 @@ def run_experiment_on_deployment(
 
             except urllib.error.HTTPError as exc:
                 if exc.code < 500:
-                    # Client error (4xx) — not retryable
+                    # Client error (4xx) — not retryable, log details
+                    _err_body = ""
+                    try:
+                        _err_body = exc.read().decode()[:2000]
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "Deployment returned HTTP %d (not retryable). "
+                        "URL: %s | Response: %s | Payload keys: %s",
+                        exc.code, url, _err_body, list(payload.keys()),
+                    )
                     raise
                 # Server error (5xx) — retryable
                 last_http_error = exc
@@ -1911,18 +2079,63 @@ def run_experiment_on_deployment(
                 ),
             })
 
-        # Parse the result
-        try:
-            result = json.loads(result_text)
-        except json.JSONDecodeError:
+        # Parse the result — supports both NDJSON streams (new FastAPI server)
+        # and plain JSON (legacy Flask server).
+        #
+        # NDJSON format: multiple JSON lines, each with a "type" field:
+        #   {"type": "heartbeat", ...}   (keepalive, ignored)
+        #   {"type": "result", ...}      (final training result)
+        #   {"type": "error", ...}       (training failed)
+        #
+        # The client reads the *last* result/error line.  Heartbeat lines
+        # are discarded.  If no typed lines are found, fall back to parsing
+        # the entire response as a single JSON object (backward compat).
+        result = None
+        lines = result_text.strip().split("\n")
+        if len(lines) > 1:
+            # Multi-line → NDJSON stream
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    line_type = parsed.get("type", "")
+                    if line_type in ("result", "error"):
+                        result = parsed
+                        # Remove streaming metadata before returning to agent
+                        result.pop("type", None)
+                        result.pop("_pad", None)
+                except json.JSONDecodeError:
+                    continue
+        if result is None:
+            # Single-line or no typed lines → plain JSON (backward compat)
+            try:
+                result = json.loads(result_text)
+            except json.JSONDecodeError:
+                pass
+
+        # If we still have no result (stream severed before final line),
+        # try to recover via the job-result endpoint.
+        if result is None and job_id:
+            result = _poll_job_result(deployment_url, job_id, share_token)
+
+        if result is None:
             _mon.emit(
                 "system", "error",
                 message="Could not parse JSON from training server",
             )
             return json.dumps({
                 "status": "error",
-                "error": "Could not parse JSON from training server",
+                "error": "Could not parse result from training server "
+                "(stream may have been severed by reverse proxy)",
                 "raw_output": result_text[:15000],
+                "job_id": job_id,
+                "hint": (
+                    "The NDJSON stream was cut before the result line. "
+                    "The server may still be training. Try polling "
+                    f"GET /job-result/{job_id} on the deployment URL."
+                ),
             })
 
         # --- Result tracking (mirrors run_experiment in research_tools) ---
