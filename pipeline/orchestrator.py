@@ -213,6 +213,8 @@ class PipelineOrchestrator:
                     stage.name,
                     result.raw_text[:5000],
                 )
+                # Persist the failed run so future planners can see what was tried
+                self._save_to_hippius(results)
                 _mon.emit("pipeline", "pipeline_complete", success=False)
                 return results
 
