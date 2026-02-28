@@ -132,6 +132,38 @@ register_fragment("planner", "*", "sn50_context", """\
 5. **Don't over-parameterise**: d_model=32 is often sufficient; d_model=128 can overfit.
 """, priority=50)
 
+register_fragment("planner", "*", "proxy_tools", """\
+## Low-Cost Proxy Tools (Architecture Reasoning)
+
+Use these tools to reason about architecture choices BEFORE the Trainer commits GPU time.
+They are instant (no GPU required) and help you make data-driven decisions.
+
+### Cost Estimation
+- `estimate_params(blocks, head, d_model)` — parameter count + memory estimate + cost tier.
+  Use this to compare candidate architectures by size before proposing them.
+- `estimate_flops(architectures)` — compare relative compute cost across multiple architectures.
+  Pass a JSON array of `{blocks, head, d_model}` specs; returns them ranked cheapest-first.
+
+### Ablation Design
+- `generate_ablation_configs(baseline_blocks, baseline_head, ablation_type)` — generate
+  systematic experiment variants from a baseline. Types: 'block_removal' (remove one block
+  at a time), 'head_swap' (try each head), 'd_model_sweep' (vary hidden dim),
+  'block_swap' (substitute with same-family alternatives), or 'all'.
+  Returns ready-to-use configs for the Trainer.
+
+### Hyperparameter Sweep Design
+- `sweep_configs(blocks, head, d_model_values, lr_values)` — generate a grid of
+  experiment configs over a hyperparameter space. Returns configs ranked by estimated cost.
+
+### Best Practices
+1. **Always estimate_params** for your proposed architectures before including them in the plan.
+   This prevents wasting GPU time on oversized models.
+2. **Use generate_ablation_configs** when you have a promising baseline — include the ablation
+   configs in your plan so the Trainer can run them systematically.
+3. **Use estimate_flops** to rank candidate architectures and prioritise cheapest-first in
+   your experiment ordering.
+""", priority=55)
+
 register_fragment("planner", "*", "tools_reminder", """\
 ## Available Tools
 
@@ -152,6 +184,12 @@ You MUST use tools before calling finish. Never skip the diagnostic phase.
 - `fetch_experiment_runs(limit, order)` — past runs from Hippius ('best'/'recent'/'worst')
 - `analyze_experiment_trends(limit)` — CRPS improvement trajectory over time
 - `list_hf_models(repo_id)` — list published models on HF Hub
+
+### Architecture Reasoning (zero-cost, no GPU)
+- `estimate_params(blocks, head, d_model)` — parameter count + memory + cost tier
+- `estimate_flops(architectures)` — compare relative cost across architectures
+- `generate_ablation_configs(baseline_blocks, ...)` — systematic ablation variants
+- `sweep_configs(blocks, head, d_model_values, lr_values)` — hyperparam grid generation
 
 ### Completion
 - `finish(success, result, summary)` — complete the task

@@ -8,6 +8,7 @@ import pipeline.prompts.trainer_prompts  # noqa: F401
 import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
 import pipeline.tools.data_loader  # noqa: F401 — registers data loader tools
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
+import pipeline.tools.proxy_tools  # noqa: F401 — registers proxy/ablation tools
 import pipeline.tools.research_tools  # noqa: F401 — registers experiment tools
 import pipeline.tools.training_tools  # noqa: F401 — registers training/GPU tools
 from pipeline.agents.base import BaseAgentWrapper
@@ -37,6 +38,13 @@ class TrainerAgent(BaseAgentWrapper):
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_experiment_runs",
+            # Low-cost proxy tools (architecture screening)
+            "estimate_params",
+            "estimate_flops",
+            "generate_ablation_configs",
+            "sweep_configs",
+            "probe_architecture",
+            "probe_batch",
             # Basilica GPU cloud — Docker-image-based deployments (only approach)
             "check_gpu_balance",
             "create_training_deployment",
