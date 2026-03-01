@@ -135,7 +135,7 @@ class PromptRecord:
         self.t0_prices = t0_prices
         self.predictions = predictions  # asset -> (num_paths, num_steps)
         self.model_name = model_name
-        self.scores: dict[str, dict[str, float]] = {}  # asset -> {crps_5min: ..., ...}
+        self.scores: dict[str, dict[str, Any]] = {}  # asset -> {crps_5min: ..., ...} or {"error": ...}
         self.weighted_crps: float | None = None
         # Price snapshots collected over time: asset -> {step_idx: price}
         self.price_snapshots: dict[str, dict[int, float]] = defaultdict(dict)
