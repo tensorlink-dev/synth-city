@@ -478,8 +478,8 @@ def _fingerprint(experiment: dict) -> str:
     training = experiment.get("training", {})
 
     blocks = backbone.get("blocks", [])
-    if isinstance(blocks, list):
-        blocks = sorted(blocks)
+    if not isinstance(blocks, list):
+        blocks = []
 
     head_cfg = model.get("head", {})
     head_name = head_cfg.get("_target_", "") if isinstance(head_cfg, dict) else str(head_cfg)
@@ -526,11 +526,18 @@ def _build_scan_result(experiments: list[dict[str, Any]]) -> dict[str, Any]:
     if not experiments:
         return {
             "total_experiments": 0,
+            "successful": 0,
+            "failed": 0,
             "lessons": "No prior experiments found. Start fresh.",
             "top_configs": [],
+            "block_stats": {},
+            "head_stats": {},
             "failure_patterns": [],
-            "untried_combinations": [],
-            "fingerprints": {},
+            "untried_blocks": list(_ALL_BLOCKS),
+            "untried_heads": list(_ALL_HEADS),
+            "untried_block_head_pairs": [],
+            "duplicates": {},
+            "duplicate_count": 0,
         }
 
     # ------------------------------------------------------------------
@@ -581,26 +588,22 @@ def _build_scan_result(experiments: list[dict[str, Any]]) -> dict[str, Any]:
     # ------------------------------------------------------------------
     failures = [p for p in parsed if p["status"] == "error" or p.get("error")]
     error_counter: Counter[str] = Counter()
-    failed_block_combos: Counter[str] = Counter()
     for f in failures:
         err_text = f["error"]
+        err_lower = err_text.lower()
         # Categorise the error
         if "d_model" in err_text and "divisible" in err_text:
             error_counter["d_model not divisible by nhead"] += 1
-        elif "OOM" in err_text or "out of memory" in err_text.lower():
+        elif "oom" in err_lower or "out of memory" in err_lower:
             error_counter["out of memory"] += 1
-        elif "NaN" in err_text or "nan" in err_text:
+        elif "nan" in err_lower:
             error_counter["NaN loss / degenerate output"] += 1
         elif "Unknown block" in err_text or "Unknown head" in err_text:
             error_counter["unknown component name"] += 1
         elif err_text:
-            # Truncate to a short key
             error_counter[err_text[:80]] += 1
         else:
             error_counter["unspecified error"] += 1
-        blocks_key = "+".join(f.get("blocks", []))
-        if blocks_key:
-            failed_block_combos[blocks_key] += 1
 
     failure_patterns = [
         {"error": err, "count": cnt}
@@ -612,14 +615,11 @@ def _build_scan_result(experiments: list[dict[str, Any]]) -> dict[str, Any]:
     # ------------------------------------------------------------------
     block_crps: dict[str, list[float]] = defaultdict(list)
     head_crps: dict[str, list[float]] = defaultdict(list)
-    combo_crps: dict[str, list[float]] = defaultdict(list)
 
     for p in successful:
         for block in p.get("blocks", []):
             block_crps[block].append(p["crps"])
         head_crps[p.get("head", "unknown")].append(p["crps"])
-        combo_key = "+".join(p.get("blocks", [])) + " → " + p.get("head", "unknown")
-        combo_crps[combo_key].append(p["crps"])
 
     block_stats = {
         b: {"mean_crps": round(sum(v) / len(v), 6), "best_crps": round(min(v), 6), "count": len(v)}
@@ -708,12 +708,11 @@ def _build_scan_result(experiments: list[dict[str, Any]]) -> dict[str, Any]:
         )
 
     if len(successful) >= 3:
-        d_models_tried = [p.get("d_model") for p in successful if p.get("d_model")]
-        if d_models_tried:
-            d_model_crps: dict[int, list[float]] = defaultdict(list)
-            for p in successful:
-                if p.get("d_model"):
-                    d_model_crps[p["d_model"]].append(p["crps"])
+        d_model_crps: dict[int, list[float]] = defaultdict(list)
+        for p in successful:
+            if p.get("d_model"):
+                d_model_crps[p["d_model"]].append(p["crps"])
+        if d_model_crps:
             best_dm = min(d_model_crps.items(), key=lambda kv: min(kv[1]))
             lessons.append(
                 f"Best d_model so far: {best_dm[0]} (best CRPS {min(best_dm[1]):.6f} "
@@ -814,6 +813,73 @@ def scan_experiment_history(limit: int = 100) -> str:
         })
 
 
+# ---------------------------------------------------------------------------
+# Fingerprint cache — avoids re-downloading all experiments on every
+# check_experiment_novelty call.  Populated lazily, refreshed every 5 min.
+# ---------------------------------------------------------------------------
+_fp_cache: dict[str, list[dict[str, Any]]] = {}  # fingerprint → [{name, run_id, crps, ...}]
+_fp_cache_ts: float = 0.0
+_FP_CACHE_TTL: float = 300.0  # seconds
+
+
+def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
+    """Rebuild the fingerprint cache from Hippius.
+
+    Downloads all experiment records once, fingerprints each, and stores the
+    results in a module-level dict.  Subsequent calls to check_experiment_novelty
+    do a simple dict lookup instead of a full S3 scan.
+    """
+    import time as _time
+
+    global _fp_cache, _fp_cache_ts
+    now = _time.monotonic()
+    if _fp_cache and (now - _fp_cache_ts) < _FP_CACHE_TTL:
+        return _fp_cache
+
+    from pipeline.tools import hippius_store as _hs
+
+    if _hs._endpoint_unreachable:
+        return _fp_cache  # return stale cache if any
+
+    keys = _hs._list_keys("experiments/", max_keys=2000)
+    new_cache: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    consecutive_failures = 0
+
+    for key in keys:
+        if _hs._endpoint_unreachable:
+            break
+        exp = _hs._get_json(key)
+        if exp is None:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                break
+            continue
+        consecutive_failures = 0
+        if not isinstance(exp, dict):
+            continue
+
+        config = exp.get("experiment", exp.get("config", {}))
+        if not isinstance(config, dict):
+            continue
+        fp = _fingerprint(config)
+        result = exp.get("result", {})
+        metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        new_cache[fp].append({
+            "name": exp.get("name", "unknown"),
+            "run_id": exp.get("run_id", "unknown"),
+            "timestamp": exp.get("timestamp", ""),
+            "crps": metrics.get("crps") if isinstance(metrics, dict) else None,
+            "status": (
+                result.get("status", "unknown")
+                if isinstance(result, dict) else "unknown"
+            ),
+        })
+
+    _fp_cache = dict(new_cache)
+    _fp_cache_ts = now
+    return _fp_cache
+
+
 @tool(
     description=(
         "Check if an experiment config has already been tried before. "
@@ -841,47 +907,15 @@ def check_experiment_novelty(experiment: str) -> str:
 
         from pipeline.tools import hippius_store as _hs
 
-        if _hs._endpoint_unreachable:
+        if _hs._endpoint_unreachable and not _fp_cache:
             return json.dumps({
                 "fingerprint": target_fp,
                 "is_novel": True,
                 "note": "Cannot verify — Hippius unreachable. Proceeding as novel.",
             })
 
-        keys = _hs._list_keys("experiments/", max_keys=2000)
-        matches: list[dict[str, Any]] = []
-        consecutive_failures = 0
-
-        for key in keys:
-            if _hs._endpoint_unreachable:
-                break
-            exp = _hs._get_json(key)
-            if exp is None:
-                consecutive_failures += 1
-                if consecutive_failures >= 3:
-                    break
-                continue
-            consecutive_failures = 0
-
-            if not isinstance(exp, dict):
-                continue
-            config = exp.get("experiment", exp.get("config", {}))
-            if not isinstance(config, dict):
-                continue
-            fp = _fingerprint(config)
-            if fp == target_fp:
-                result = exp.get("result", {})
-                metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
-                matches.append({
-                    "name": exp.get("name", "unknown"),
-                    "run_id": exp.get("run_id", "unknown"),
-                    "timestamp": exp.get("timestamp", ""),
-                    "crps": metrics.get("crps") if isinstance(metrics, dict) else None,
-                    "status": (
-                        result.get("status", "unknown")
-                        if isinstance(result, dict) else "unknown"
-                    ),
-                })
+        cache = _refresh_fp_cache()
+        matches = cache.get(target_fp, [])
 
         is_novel = len(matches) == 0
         response: dict[str, Any] = {
@@ -891,12 +925,13 @@ def check_experiment_novelty(experiment: str) -> str:
         }
 
         if matches:
-            matches.sort(
-                key=lambda m: m["crps"] if m["crps"] is not None else float("inf")
+            sorted_matches = sorted(
+                matches,
+                key=lambda m: m["crps"] if m["crps"] is not None else float("inf"),
             )
-            response["prior_runs"] = matches
-            response["best_prior_crps"] = matches[0]["crps"]
-            response["times_tried"] = len(matches)
+            response["prior_runs"] = sorted_matches
+            response["best_prior_crps"] = sorted_matches[0]["crps"]
+            response["times_tried"] = len(sorted_matches)
             response["recommendation"] = (
                 "This exact config has been tried before. "
                 "Consider changing blocks, head, d_model, or lr to explore new territory."
