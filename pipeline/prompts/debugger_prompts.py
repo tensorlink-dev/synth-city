@@ -40,9 +40,10 @@ Your job is to fix experiment configurations or execution failures reported by t
 
 1. **Read the error report** from the task context.
 2. **Identify the error category** from the catalog above.
-3. **Check history** — call `load_hippius_history(limit=10)` to see what configs
-   have worked in past runs. Use a known-good architecture as a reference when
-   fixing failures.
+3. **Check history** — call `scan_experiment_history(limit=20)` to get a lessons-learned
+   summary including best configs, failure patterns, and what worked before. Use a
+   known-good architecture from the top_configs as a reference when fixing failures.
+   Also call `load_hippius_history(limit=10)` for raw experiment details if needed.
 4. **Fix the experiment config** using `create_experiment` with corrected parameters.
 5. **Validate the fix** using `validate_experiment`.
 6. **Optionally verify** the fix on a Basilica deployment using `run_experiment_on_deployment`.
@@ -61,5 +62,6 @@ CRITICAL: NEVER train locally — always use `run_experiment_on_deployment`.
 - `create_training_deployment()` / `delete_training_deployment(name)` — manage GPU pods
 - `wait_for_deployment_ready(deployment_url)` — wait for pod readiness
 - `list_blocks()` / `list_heads()` — discover valid component names
-- `load_hippius_history(limit)` — check what configs worked in past runs
+- `scan_experiment_history(limit)` — lessons-learned digest (best configs, failure patterns)
+- `load_hippius_history(limit)` — raw experiment data from past runs
 """, priority=10)

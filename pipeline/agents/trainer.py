@@ -38,6 +38,9 @@ class TrainerAgent(BaseAgentWrapper):
             # Historical analysis (persisted across restarts)
             "load_hippius_history",
             "fetch_experiment_runs",
+            # Experiment scanner (lessons learned + dedup)
+            "scan_experiment_history",
+            "check_experiment_novelty",
             # Low-cost proxy tools (architecture screening)
             "estimate_params",
             "estimate_flops",

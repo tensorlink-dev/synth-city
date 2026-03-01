@@ -4,13 +4,16 @@ Analysis tools — read back from Hippius and HF Hub for historical experiment a
 These tools let agents query past results from persistent storage:
   - Hippius: fetch runs, compare CRPS trends, find best historical configs
   - HF Hub: list published models, read model cards, compare versions
+  - Experiment scanner: lessons-learned summaries + deduplication fingerprints
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import traceback
+from collections import Counter, defaultdict
 from typing import Any
 
 from config import HF_REPO_ID, HF_TOKEN
@@ -443,5 +446,464 @@ def fetch_hf_artifact(filename: str, repo_id: str = "", revision: str = "main") 
             return json.dumps({"filename": filename, "data": data}, indent=2, default=str)
         except json.JSONDecodeError:
             return json.dumps({"filename": filename, "content": content[:5000]})
+    except Exception as exc:
+        return json.dumps({"error": f"{type(exc).__name__}: {exc}"})
+
+
+# ---------------------------------------------------------------------------
+# Experiment history scanner — lessons learned + deduplication
+# ---------------------------------------------------------------------------
+
+# All known blocks and heads (mirrored from research_tools fallback data).
+_ALL_BLOCKS = [
+    "RevIN", "LayerNormBlock", "DLinearBlock", "RNNBlock", "ResConvBlock",
+    "BiTCNBlock", "SDEEvolutionBlock", "GRUBlock", "LSTMBlock", "FourierBlock",
+    "TransformerBlock", "TimeMixerBlock", "Unet1DBlock", "TransformerEncoder",
+    "TimesNetBlock",
+]
+_ALL_HEADS = [
+    "GBMHead", "SDEHead", "SimpleHorizonHead", "HorizonHead",
+    "NeuralBridgeHead", "NeuralSDEHead",
+]
+
+
+def _fingerprint(experiment: dict) -> str:
+    """Compute a stable fingerprint for an experiment config.
+
+    Captures architecture (blocks + head + d_model) and key hyperparameters
+    (lr, horizon, seq_len) so that near-identical experiments can be detected.
+    """
+    model = experiment.get("model", {})
+    backbone = model.get("backbone", {})
+    training = experiment.get("training", {})
+
+    blocks = backbone.get("blocks", [])
+    if isinstance(blocks, list):
+        blocks = sorted(blocks)
+
+    head_cfg = model.get("head", {})
+    head_name = head_cfg.get("_target_", "") if isinstance(head_cfg, dict) else str(head_cfg)
+    if "." in head_name:
+        head_name = head_name.rsplit(".", 1)[-1]
+
+    parts = [
+        "|".join(blocks),
+        head_name,
+        str(backbone.get("d_model", "")),
+        str(training.get("lr", "")),
+        str(training.get("horizon", "")),
+        str(backbone.get("seq_len", "")),
+    ]
+    raw = "::".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _extract_config_features(experiment: dict) -> dict[str, Any]:
+    """Extract the architecturally relevant fields from an experiment config."""
+    model = experiment.get("model", {})
+    backbone = model.get("backbone", {})
+    training = experiment.get("training", {})
+    head_cfg = model.get("head", {})
+    head_name = head_cfg.get("_target_", "unknown") if isinstance(head_cfg, dict) else str(head_cfg)
+    if "." in head_name:
+        head_name = head_name.rsplit(".", 1)[-1]
+    return {
+        "blocks": backbone.get("blocks", []),
+        "head": head_name,
+        "d_model": backbone.get("d_model"),
+        "lr": training.get("lr"),
+        "horizon": training.get("horizon"),
+        "seq_len": backbone.get("seq_len"),
+    }
+
+
+def _build_scan_result(experiments: list[dict[str, Any]]) -> dict[str, Any]:
+    """Analyse a list of loaded experiment records and produce a structured summary.
+
+    Each record is expected to have: name, experiment (config dict), result (dict
+    with metrics), timestamp, run_id.
+    """
+    if not experiments:
+        return {
+            "total_experiments": 0,
+            "lessons": "No prior experiments found. Start fresh.",
+            "top_configs": [],
+            "failure_patterns": [],
+            "untried_combinations": [],
+            "fingerprints": {},
+        }
+
+    # ------------------------------------------------------------------
+    # 1. Parse all experiments into a normalised form
+    # ------------------------------------------------------------------
+    parsed: list[dict[str, Any]] = []
+    fingerprints: dict[str, list[str]] = defaultdict(list)  # fp → [names]
+
+    for rec in experiments:
+        config = rec.get("experiment", rec.get("config", {}))
+        if not isinstance(config, dict):
+            continue
+        result = rec.get("result", {})
+        if not isinstance(result, dict):
+            result = {}
+        metrics = result.get("metrics", {})
+        if not isinstance(metrics, dict):
+            metrics = {}
+
+        crps = metrics.get("crps")
+        status = result.get("status", "unknown")
+        error = result.get("error", "")
+        features = _extract_config_features(config)
+        fp = _fingerprint(config)
+        name = rec.get("name", "unknown")
+
+        fingerprints[fp].append(name)
+        parsed.append({
+            "name": name,
+            "run_id": rec.get("run_id", "unknown"),
+            "timestamp": rec.get("timestamp", ""),
+            "crps": crps,
+            "status": status,
+            "error": str(error)[:200] if error else "",
+            "fingerprint": fp,
+            **features,
+        })
+
+    # ------------------------------------------------------------------
+    # 2. Top configs (best CRPS)
+    # ------------------------------------------------------------------
+    successful = [p for p in parsed if p["crps"] is not None and p["status"] != "error"]
+    successful.sort(key=lambda e: e["crps"])
+    top_configs = successful[:5]
+
+    # ------------------------------------------------------------------
+    # 3. Failure patterns
+    # ------------------------------------------------------------------
+    failures = [p for p in parsed if p["status"] == "error" or p.get("error")]
+    error_counter: Counter[str] = Counter()
+    failed_block_combos: Counter[str] = Counter()
+    for f in failures:
+        err_text = f["error"]
+        # Categorise the error
+        if "d_model" in err_text and "divisible" in err_text:
+            error_counter["d_model not divisible by nhead"] += 1
+        elif "OOM" in err_text or "out of memory" in err_text.lower():
+            error_counter["out of memory"] += 1
+        elif "NaN" in err_text or "nan" in err_text:
+            error_counter["NaN loss / degenerate output"] += 1
+        elif "Unknown block" in err_text or "Unknown head" in err_text:
+            error_counter["unknown component name"] += 1
+        elif err_text:
+            # Truncate to a short key
+            error_counter[err_text[:80]] += 1
+        else:
+            error_counter["unspecified error"] += 1
+        blocks_key = "+".join(f.get("blocks", []))
+        if blocks_key:
+            failed_block_combos[blocks_key] += 1
+
+    failure_patterns = [
+        {"error": err, "count": cnt}
+        for err, cnt in error_counter.most_common(10)
+    ]
+
+    # ------------------------------------------------------------------
+    # 4. Block & head performance stats
+    # ------------------------------------------------------------------
+    block_crps: dict[str, list[float]] = defaultdict(list)
+    head_crps: dict[str, list[float]] = defaultdict(list)
+    combo_crps: dict[str, list[float]] = defaultdict(list)
+
+    for p in successful:
+        for block in p.get("blocks", []):
+            block_crps[block].append(p["crps"])
+        head_crps[p.get("head", "unknown")].append(p["crps"])
+        combo_key = "+".join(p.get("blocks", [])) + " → " + p.get("head", "unknown")
+        combo_crps[combo_key].append(p["crps"])
+
+    block_stats = {
+        b: {"mean_crps": round(sum(v) / len(v), 6), "best_crps": round(min(v), 6), "count": len(v)}
+        for b, v in sorted(block_crps.items(), key=lambda kv: min(kv[1]))
+    }
+    head_stats = {
+        h: {"mean_crps": round(sum(v) / len(v), 6), "best_crps": round(min(v), 6), "count": len(v)}
+        for h, v in sorted(head_crps.items(), key=lambda kv: min(kv[1]))
+    }
+
+    # ------------------------------------------------------------------
+    # 5. Untried combinations
+    # ------------------------------------------------------------------
+    tried_blocks = set()
+    tried_heads = set()
+    tried_pairs: set[tuple[str, str]] = set()
+    for p in parsed:
+        for block in p.get("blocks", []):
+            tried_blocks.add(block)
+            tried_pairs.add((block, p.get("head", "unknown")))
+        tried_heads.add(p.get("head", "unknown"))
+
+    untried_blocks = [b for b in _ALL_BLOCKS if b not in tried_blocks]
+    untried_heads = [h for h in _ALL_HEADS if h not in tried_heads]
+
+    # Find block+head pairs never tried (only for blocks/heads that have each
+    # been tried individually, to avoid a combinatorial explosion).
+    untried_pairs = []
+    for block in sorted(tried_blocks):
+        for head in sorted(tried_heads):
+            if (block, head) not in tried_pairs:
+                untried_pairs.append({"block": block, "head": head})
+
+    # ------------------------------------------------------------------
+    # 6. Duplicate detection
+    # ------------------------------------------------------------------
+    duplicates = {
+        fp: names for fp, names in fingerprints.items() if len(names) > 1
+    }
+
+    # ------------------------------------------------------------------
+    # 7. Synthesise lessons
+    # ------------------------------------------------------------------
+    lessons: list[str] = []
+
+    if top_configs:
+        best = top_configs[0]
+        lessons.append(
+            f"Best CRPS so far: {best['crps']} using "
+            f"{'+'.join(best.get('blocks', []))} → {best.get('head', '?')} "
+            f"(d_model={best.get('d_model')}, lr={best.get('lr')})."
+        )
+
+    if head_stats:
+        best_head = min(head_stats.items(), key=lambda kv: kv[1]["best_crps"])
+        worst_head = max(head_stats.items(), key=lambda kv: kv[1]["mean_crps"])
+        lessons.append(
+            f"Best head: {best_head[0]} (best CRPS {best_head[1]['best_crps']}). "
+            f"Weakest head: {worst_head[0]} (mean CRPS {worst_head[1]['mean_crps']})."
+        )
+
+    if block_stats:
+        best_block = min(block_stats.items(), key=lambda kv: kv[1]["best_crps"])
+        lessons.append(
+            f"Best-performing block: {best_block[0]} "
+            f"(best CRPS {best_block[1]['best_crps']}, used in {best_block[1]['count']} exps)."
+        )
+
+    if failure_patterns:
+        top_err = failure_patterns[0]
+        lessons.append(
+            f"Most common failure: \"{top_err['error']}\" ({top_err['count']}x). "
+            f"Avoid configs that trigger this."
+        )
+
+    if untried_blocks:
+        lessons.append(f"Untried blocks: {', '.join(untried_blocks)}. Consider exploring these.")
+
+    if untried_heads:
+        lessons.append(f"Untried heads: {', '.join(untried_heads)}. Consider exploring these.")
+
+    if duplicates:
+        lessons.append(
+            f"{len(duplicates)} experiment config(s) were run more than once "
+            f"(same architecture + hyperparams). Avoid re-running these."
+        )
+
+    if len(successful) >= 3:
+        d_models_tried = [p.get("d_model") for p in successful if p.get("d_model")]
+        if d_models_tried:
+            d_model_crps: dict[int, list[float]] = defaultdict(list)
+            for p in successful:
+                if p.get("d_model"):
+                    d_model_crps[p["d_model"]].append(p["crps"])
+            best_dm = min(d_model_crps.items(), key=lambda kv: min(kv[1]))
+            lessons.append(
+                f"Best d_model so far: {best_dm[0]} (best CRPS {min(best_dm[1]):.6f} "
+                f"across {len(best_dm[1])} experiments)."
+            )
+
+    return {
+        "total_experiments": len(parsed),
+        "successful": len(successful),
+        "failed": len(failures),
+        "lessons": "\n".join(f"- {line}" for line in lessons) if lessons else "Insufficient data.",
+        "top_configs": [
+            {
+                "name": c["name"],
+                "crps": c["crps"],
+                "blocks": c.get("blocks", []),
+                "head": c.get("head"),
+                "d_model": c.get("d_model"),
+                "lr": c.get("lr"),
+                "fingerprint": c["fingerprint"],
+            }
+            for c in top_configs
+        ],
+        "block_stats": block_stats,
+        "head_stats": head_stats,
+        "failure_patterns": failure_patterns,
+        "untried_blocks": untried_blocks,
+        "untried_heads": untried_heads,
+        "untried_block_head_pairs": untried_pairs[:20],
+        "duplicates": {fp: names for fp, names in list(duplicates.items())[:10]},
+        "duplicate_count": len(duplicates),
+    }
+
+
+@tool(
+    description=(
+        "Scan ALL prior experiments and produce a structured lessons-learned summary. "
+        "Returns: best configs, failure patterns, block/head performance stats, "
+        "untried combinations, and duplicate detection. "
+        "Call this BEFORE planning new experiments to avoid repeating mistakes. "
+        "limit: max experiments to scan (default 100)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Max experiments to scan (default 100)",
+            },
+        },
+        "required": [],
+    },
+)
+def scan_experiment_history(limit: int = 100) -> str:
+    """Scan all prior experiments and return a lessons-learned summary."""
+    try:
+        from pipeline.tools import hippius_store as _hs
+
+        if _hs._endpoint_unreachable:
+            return json.dumps({
+                "error": "Hippius endpoint unreachable",
+                "error_type": "transient",
+                "recoverable": False,
+            })
+
+        keys = _hs._list_keys("experiments/", max_keys=2000)
+        if not keys:
+            return json.dumps(_build_scan_result([]), indent=2)
+
+        experiments: list[dict[str, Any]] = []
+        consecutive_failures = 0
+        for key in keys:
+            if _hs._endpoint_unreachable:
+                break
+            exp = _hs._get_json(key)
+            if exp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    logger.warning(
+                        "scan_experiment_history: stopping early after %d "
+                        "consecutive failures (%d/%d keys fetched)",
+                        consecutive_failures, len(experiments), len(keys),
+                    )
+                    break
+                continue
+            consecutive_failures = 0
+            if isinstance(exp, dict):
+                experiments.append(exp)
+            if len(experiments) >= limit:
+                break
+
+        result = _build_scan_result(experiments)
+        return json.dumps(result, indent=2, default=str)
+    except Exception as exc:
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
+
+
+@tool(
+    description=(
+        "Check if an experiment config has already been tried before. "
+        "Returns the fingerprint and any matching prior experiments with their CRPS. "
+        "Use this before running a new experiment to avoid duplicates. "
+        "experiment: the experiment config as a JSON string."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "experiment": {
+                "type": "string",
+                "description": "Experiment config JSON to check",
+            },
+        },
+        "required": ["experiment"],
+    },
+)
+def check_experiment_novelty(experiment: str) -> str:
+    """Check whether an experiment config has been tried before."""
+    try:
+        exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
+        target_fp = _fingerprint(exp_dict)
+        target_features = _extract_config_features(exp_dict)
+
+        from pipeline.tools import hippius_store as _hs
+
+        if _hs._endpoint_unreachable:
+            return json.dumps({
+                "fingerprint": target_fp,
+                "is_novel": True,
+                "note": "Cannot verify — Hippius unreachable. Proceeding as novel.",
+            })
+
+        keys = _hs._list_keys("experiments/", max_keys=2000)
+        matches: list[dict[str, Any]] = []
+        consecutive_failures = 0
+
+        for key in keys:
+            if _hs._endpoint_unreachable:
+                break
+            exp = _hs._get_json(key)
+            if exp is None:
+                consecutive_failures += 1
+                if consecutive_failures >= 3:
+                    break
+                continue
+            consecutive_failures = 0
+
+            if not isinstance(exp, dict):
+                continue
+            config = exp.get("experiment", exp.get("config", {}))
+            if not isinstance(config, dict):
+                continue
+            fp = _fingerprint(config)
+            if fp == target_fp:
+                result = exp.get("result", {})
+                metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+                matches.append({
+                    "name": exp.get("name", "unknown"),
+                    "run_id": exp.get("run_id", "unknown"),
+                    "timestamp": exp.get("timestamp", ""),
+                    "crps": metrics.get("crps") if isinstance(metrics, dict) else None,
+                    "status": (
+                        result.get("status", "unknown")
+                        if isinstance(result, dict) else "unknown"
+                    ),
+                })
+
+        is_novel = len(matches) == 0
+        response: dict[str, Any] = {
+            "fingerprint": target_fp,
+            "is_novel": is_novel,
+            "architecture": target_features,
+        }
+
+        if matches:
+            matches.sort(
+                key=lambda m: m["crps"] if m["crps"] is not None else float("inf")
+            )
+            response["prior_runs"] = matches
+            response["best_prior_crps"] = matches[0]["crps"]
+            response["times_tried"] = len(matches)
+            response["recommendation"] = (
+                "This exact config has been tried before. "
+                "Consider changing blocks, head, d_model, or lr to explore new territory."
+            )
+        else:
+            response["recommendation"] = "Novel config — proceed with training."
+
+        return json.dumps(response, indent=2, default=str)
     except Exception as exc:
         return json.dumps({"error": f"{type(exc).__name__}: {exc}"})

@@ -28,13 +28,18 @@ Before proposing any architecture, you MUST:
 2. **Review presets** — call `list_presets` to see the 10 ready-to-run combinations.
 3. **Check prior results** — call `session_summary` to see if there are existing results
    to build on. If there are results, call `compare_results` to see the current ranking.
-4. **Review historical data** — call `load_hippius_history` to see experiment results
+4. **Scan experiment history** — call `scan_experiment_history` FIRST. This gives you a
+   complete lessons-learned digest: best configs, failure patterns, block/head performance
+   stats, untried combinations, and duplicate detection. This single call replaces the need
+   to manually review raw history.
+5. **Review historical data** — call `load_hippius_history` to see experiment results
    from ALL past pipeline runs (persisted across restarts). Also call `analyze_experiment_trends`
    to see CRPS improvement over time, and `fetch_experiment_runs` to review the best historical
    configs. Use `list_hf_models` to check what has already been published to HF Hub.
-5. **Identify gaps** — which block families (recurrent, convolutional, attention,
+6. **Identify gaps** — which block families (recurrent, convolutional, attention,
    decomposition) haven't been tried? Which heads beyond GBMHead? What architectures
-   from past runs showed the most promise but weren't fully explored?
+   from past runs showed the most promise but weren't fully explored? The scan results
+   list untried blocks, heads, and block+head pairs to guide exploration.
 
 Summarise your diagnostic findings before moving to Phase 2.
 """, priority=20)
@@ -177,6 +182,12 @@ You MUST use tools before calling finish. Never skip the diagnostic phase.
 ### Current Session
 - `session_summary()` — check existing results in this session
 - `compare_results()` — rank existing results by CRPS
+
+### Experiment Scanner (call FIRST — avoids repeating mistakes)
+- `scan_experiment_history(limit)` — lessons-learned digest: best configs, failure patterns,
+  block/head stats, untried combos, duplicate detection. START HERE.
+- `check_experiment_novelty(experiment)` — check if a specific config has been tried before.
+  Call this for each proposed experiment before including it in your plan.
 
 ### Historical Analysis (past runs persisted across restarts)
 - `load_hippius_history(limit)` — load all past experiments from Hippius storage, ranked by CRPS
