@@ -174,10 +174,18 @@ def print_daily_summary(summary: dict[str, Any]) -> None:
         lines.append("\n")
         lines.append("  Mean CRPS:       ", style="bold white")
         lines.append(f"{wc['mean']:.4f}\n", style="bold magenta")
+        best = wc.get("best")
         lines.append("  Best CRPS:       ", style="bold white")
-        lines.append(f"{wc.get('best', 'N/A'):.4f}\n", style="bold green")
+        lines.append(
+            f"{best:.4f}\n" if isinstance(best, (int, float)) else "--\n",
+            style="bold green",
+        )
+        worst = wc.get("worst")
         lines.append("  Worst CRPS:      ", style="bold white")
-        lines.append(f"{wc.get('worst', 'N/A'):.4f}\n", style="bold red")
+        lines.append(
+            f"{worst:.4f}\n" if isinstance(worst, (int, float)) else "--\n",
+            style="bold red",
+        )
 
     panel = Panel(lines, title="[bold cyan]Daily Scoring[/bold cyan]", border_style="cyan")
     console.print(panel)
@@ -232,10 +240,18 @@ def print_leaderboard(lb: dict[str, Any]) -> None:
         lines.append("\n")
         lines.append("  Rolling mean:    ", style="bold white")
         lines.append(f"{wc['rolling_mean']:.4f}\n", style="bold magenta")
+        rb = wc.get("rolling_best")
         lines.append("  Rolling best:    ", style="bold white")
-        lines.append(f"{wc.get('rolling_best', 'N/A'):.4f}\n", style="bold green")
+        lines.append(
+            f"{rb:.4f}\n" if isinstance(rb, (int, float)) else "--\n",
+            style="bold green",
+        )
+        rw = wc.get("rolling_worst")
         lines.append("  Rolling worst:   ", style="bold white")
-        lines.append(f"{wc.get('rolling_worst', 'N/A'):.4f}\n", style="bold red")
+        lines.append(
+            f"{rw:.4f}\n" if isinstance(rw, (int, float)) else "--\n",
+            style="bold red",
+        )
 
     panel = Panel(lines, title="[bold cyan]Leaderboard[/bold cyan]", border_style="cyan")
     console.print(panel)

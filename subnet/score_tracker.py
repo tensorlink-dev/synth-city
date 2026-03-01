@@ -36,16 +36,19 @@ import threading
 import time
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
 
 from config import SN50_ASSETS, SN50_STEP_MINUTES
 from subnet.config import CRPS_EVAL_INCREMENTS, LEADERBOARD_WINDOW_DAYS
-from subnet.validator import crps_basis_points, evaluate_prediction
+from subnet.validator import evaluate_prediction
 
 logger = logging.getLogger(__name__)
+
+# Cap on in-memory completed records to prevent unbounded growth.
+_MAX_COMPLETED: int = 500
 
 # ---------------------------------------------------------------------------
 # Hippius helpers (reuse the storage layer)
@@ -134,7 +137,8 @@ class PromptRecord:
         self.model_name = model_name
         self.scores: dict[str, dict[str, float]] = {}  # asset -> {crps_5min: ..., ...}
         self.weighted_crps: float | None = None
-        self.scored_increments: dict[str, list[int]] = defaultdict(list)  # asset -> scored minutes
+        # Price snapshots collected over time: asset -> {step_idx: price}
+        self.price_snapshots: dict[str, dict[int, float]] = defaultdict(dict)
         self.status: str = "pending"  # pending | partial | scored | error
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +167,9 @@ class PromptRecord:
             "status": self.status,
             "assets_predicted": list(self.predictions.keys()),
             "assets_scored": list(self.scores.keys()),
+            "snapshots_collected": {
+                asset: len(steps) for asset, steps in self.price_snapshots.items()
+            },
         }
 
 
@@ -203,7 +210,7 @@ class ScoreTracker:
 
         Returns the prompt_id.
         """
-        ts = timestamp or time.time()
+        ts = timestamp if timestamp is not None else time.time()
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         prompt_id = f"{dt.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:8]}"
 
@@ -267,81 +274,100 @@ class ScoreTracker:
         else:
             record.status = "error"
 
-    def score_prompt_incremental(
+    def collect_price_snapshot(
         self,
         record: PromptRecord,
         current_prices: dict[str, float],
-    ) -> bool:
-        """Score any newly-matured time increments for a pending prompt.
+    ) -> None:
+        """Capture a price snapshot for the current elapsed step.
 
-        Checks how many minutes have elapsed since the prompt was issued, then
-        scores any CRPS increments that have matured but haven't been scored.
-
-        Returns True if any new increments were scored.
+        Stores the price at the appropriate 5-minute step index so that
+        when the full horizon elapses, we have the correct realised price
+        at each evaluation increment.
         """
         elapsed_minutes = (time.time() - record.timestamp) / 60.0
-        any_scored = False
+        current_step = int(elapsed_minutes) // SN50_STEP_MINUTES
 
         for asset in record.predictions:
-            if asset not in current_prices or asset not in record.t0_prices:
+            if asset not in current_prices:
+                continue
+            # Store price for this step if we haven't already
+            if current_step not in record.price_snapshots[asset]:
+                record.price_snapshots[asset][current_step] = current_prices[asset]
+
+    def score_prompt_deferred(self, record: PromptRecord) -> bool:
+        """Score a prompt once the full 24h horizon has elapsed.
+
+        Uses the collected price snapshots to build the realised price
+        array and scores with ``evaluate_prediction`` — the same function
+        the SN50 validator uses.
+
+        Returns True if the prompt was scored in this call.
+        """
+        elapsed_minutes = (time.time() - record.timestamp) / 60.0
+        max_increment = CRPS_EVAL_INCREMENTS[-1]  # 1440 min = 24h
+
+        if elapsed_minutes < max_increment:
+            # Mark as partial if we have any snapshots
+            for asset in record.predictions:
+                if record.price_snapshots.get(asset):
+                    record.status = "partial"
+                    break
+            return False
+
+        # Build realised price arrays from snapshots
+        weighted_sum = 0.0
+        total_weight = 0.0
+
+        for asset, weight in SN50_ASSETS.items():
+            if asset not in record.predictions:
                 continue
 
             paths = record.predictions[asset]
-            t0_price = record.t0_prices[asset]
-            current_price = current_prices[asset]
+            num_steps = paths.shape[1]
+            snapshots = record.price_snapshots.get(asset, {})
 
-            for minutes in CRPS_EVAL_INCREMENTS:
-                if minutes > elapsed_minutes:
-                    break
-                if minutes in record.scored_increments[asset]:
-                    continue
+            if not snapshots:
+                continue
 
-                step_idx = minutes // SN50_STEP_MINUTES
-                if step_idx >= paths.shape[1]:
-                    continue
+            # Build the realised price array from snapshots, forward-filling gaps
+            realized = np.empty(num_steps)
+            last_price = record.t0_prices.get(asset, 0.0)
+            realized[0] = last_price
 
-                try:
-                    crps = crps_basis_points(
-                        paths[:, step_idx],
-                        current_price,
-                        t0_price,
-                    )
-                    key = f"crps_{minutes}min"
-                    if asset not in record.scores:
-                        record.scores[asset] = {}
-                    record.scores[asset][key] = crps
-                    record.scored_increments[asset].append(minutes)
-                    any_scored = True
-                except Exception as exc:
-                    logger.warning(
-                        "Incremental scoring failed for %s/%dmin in prompt %s: %s",
-                        asset, minutes, record.prompt_id, exc,
-                    )
+            for step in range(1, num_steps):
+                if step in snapshots:
+                    last_price = snapshots[step]
+                realized[step] = last_price
 
-        # Check if fully scored (all increments for all assets)
-        max_increment = CRPS_EVAL_INCREMENTS[-1]  # 1440 min = 24h
-        if elapsed_minutes >= max_increment:
-            # Calculate weighted CRPS from available scores
-            weighted_sum = 0.0
-            for asset, weight in SN50_ASSETS.items():
-                if asset in record.scores and isinstance(record.scores[asset], dict):
-                    asset_sum = sum(
-                        v for k, v in record.scores[asset].items()
-                        if k.startswith("crps_") and isinstance(v, (int, float))
-                    )
-                    weighted_sum += asset_sum * weight
+            try:
+                scores = evaluate_prediction(paths, realized, step_minutes=SN50_STEP_MINUTES)
+                record.scores[asset] = scores
+                weighted_sum += scores["crps_sum"] * weight
+                total_weight += weight
+            except Exception as exc:
+                logger.warning(
+                    "Deferred scoring failed for %s in prompt %s: %s",
+                    asset, record.prompt_id, exc,
+                )
+                record.scores[asset] = {"error": str(exc)}
+
+        if total_weight > 0:
             record.weighted_crps = weighted_sum
             record.status = "scored"
+        else:
+            record.status = "error"
 
-        elif any_scored:
-            record.status = "partial"
-
-        return any_scored
+        return record.status == "scored"
 
     def score_pending(self) -> int:
         """Score all pending/partial prompts using current prices.
 
-        Returns the number of prompts that had new scores.
+        Collects price snapshots for all pending prompts, then attempts
+        deferred scoring for any prompts that have reached the full 24h
+        horizon.
+
+        Returns the number of prompts that were fully scored.
         """
         current_prices = _fetch_all_prices()
         if not current_prices:
@@ -352,9 +378,14 @@ class ScoreTracker:
         newly_completed: list[PromptRecord] = []
 
         with self._lock:
+            # Collect price snapshots for all pending prompts
+            for record in self._pending:
+                self.collect_price_snapshot(record, current_prices)
+
+            # Attempt deferred scoring for mature prompts
             still_pending: list[PromptRecord] = []
             for record in self._pending:
-                scored = self.score_prompt_incremental(record, current_prices)
+                scored = self.score_prompt_deferred(record)
                 if scored:
                     scored_count += 1
 
@@ -377,15 +408,13 @@ class ScoreTracker:
 
             self._pending = still_pending
 
-        # Persist completed prompts to Hippius
+            # Trim completed to prevent unbounded memory growth
+            if len(self._completed) > _MAX_COMPLETED:
+                self._completed = self._completed[-_MAX_COMPLETED:]
+
+        # Persist completed prompts to Hippius (outside lock — I/O is slow)
         for record in newly_completed:
             self._save_prompt(record)
-
-        # Also persist partial scores periodically
-        with self._lock:
-            for record in self._pending:
-                if record.status == "partial":
-                    self._save_prompt(record)
 
         return scored_count
 
@@ -492,7 +521,6 @@ class ScoreTracker:
         daily_summaries: list[dict[str, Any]] = []
 
         for days_ago in range(LEADERBOARD_WINDOW_DAYS):
-            from datetime import timedelta
             date_str = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
             summary = _hippius_get(f"scores/daily/{date_str}.json")
             if summary:
