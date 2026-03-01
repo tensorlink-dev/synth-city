@@ -380,6 +380,13 @@ def cmd_score(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_display(args: argparse.Namespace) -> None:
+    """Display historical experiment results in a terminal dashboard."""
+    from cli.history_dashboard import run_display
+
+    run_display(limit=args.limit)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Run the pipeline with a live Rich dashboard, or monitor a remote bridge."""
     if args.remote:
@@ -571,6 +578,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
     p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
 
+    # display
+    p_display = subparsers.add_parser(
+        "display", help="Display historical experiment results dashboard"
+    )
+    p_display.add_argument(
+        "--limit", type=int, default=50,
+        help="Max experiments to fetch from storage (default 50)",
+    )
+
     # dashboard
     p_dash = subparsers.add_parser(
         "dashboard", help="Run pipeline with live monitoring dashboard"
@@ -607,6 +623,7 @@ _CMD_MAP = {
     "client": cmd_client,
     "data": cmd_data,
     "score": cmd_score,
+    "display": cmd_display,
     "dashboard": cmd_dashboard,
     "agent": cmd_agent,
 }

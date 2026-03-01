@@ -303,6 +303,13 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_display(args: argparse.Namespace) -> None:
+    """Display historical experiment results in a terminal dashboard."""
+    from cli.history_dashboard import run_display
+
+    run_display(limit=args.limit)
+
+
 def cmd_score(args: argparse.Namespace) -> None:
     """Scoring emulator — local replica of SN50 validator scoring."""
     action = args.action
@@ -491,6 +498,15 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # display
+    p_display = subparsers.add_parser(
+        "display", help="Display historical experiment results dashboard"
+    )
+    p_display.add_argument(
+        "--limit", type=int, default=50,
+        help="Max experiments to fetch from storage (default 50)",
+    )
+
     # score
     p_score = subparsers.add_parser(
         "score", help="Scoring emulator — local replica of SN50 validator scoring"
@@ -517,6 +533,7 @@ def main() -> None:
         "experiment": cmd_experiment,
         "quick": cmd_quick,
         "history": cmd_history,
+        "display": cmd_display,
         "bridge": cmd_bridge,
         "client": cmd_client,
         "score": cmd_score,
