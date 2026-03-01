@@ -377,6 +377,23 @@ synth-city/
 
 ---
 
+## Documentation
+
+Detailed documentation lives in the [`docs/`](docs/) directory:
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/architecture.md) | System design, data flow, component interactions, and design decisions |
+| [API Reference](docs/api-reference.md) | Every public module, class, and function with signatures and examples |
+| [Configuration](docs/configuration.md) | All environment variables, flags, and defaults |
+| [Development](docs/development.md) | Dev environment setup, testing, linting, CI/CD, and contributing |
+| [Deployment](docs/deployment.md) | Docker builds, GPU deployments, infrastructure, and mining setup |
+| [Troubleshooting](docs/troubleshooting.md) | Common errors, diagnostics, and fixes |
+| [Philosophy](docs/PHILOSOPHY.md) | Design philosophy and architectural rationale |
+| [Setup Guide](docs/SETUP_GUIDE.md) | Step-by-step installation and configuration |
+
+---
+
 ## Development
 
 ```bash
@@ -385,6 +402,8 @@ ruff check .            # lint
 mypy .                  # type check
 pytest                  # test
 ```
+
+See the [Development Guide](docs/development.md) for full details on contributing, code style, and CI.
 
 ---
 
