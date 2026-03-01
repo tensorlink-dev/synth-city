@@ -135,8 +135,12 @@ call `flush_session(keep_top_n=10)` to save to Hippius and free memory.
 
 ## Historical Context
 
+- `scan_experiment_history(limit=50)` — lessons-learned digest: best configs, failure
+  patterns, block/head stats, untried combos, duplicate detection. Call this first.
+- `check_experiment_novelty(experiment)` — check if a config has been tried before.
+  Call this before running each experiment to avoid wasting GPU time on duplicates.
 - `load_hippius_history(limit=20)` — all past experiments ranked by CRPS
-- `fetch_experiment_runs(limit=10, order="best")` — best experiments from W&B
+- `fetch_experiment_runs(limit=10, order="best")` — best experiments from Hippius
 
 ## Key Constraints
 - CRPS is the ONLY metric that matters for SN50 ranking.

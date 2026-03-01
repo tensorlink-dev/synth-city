@@ -33,6 +33,9 @@ class PlannerAgent(BaseAgentWrapper):
             "fetch_experiment_runs",
             "analyze_experiment_trends",
             "list_hf_models",
+            # Experiment scanner (lessons learned + dedup)
+            "scan_experiment_history",
+            "check_experiment_novelty",
             # Low-cost proxy tools (architecture reasoning without GPU)
             "estimate_params",
             "estimate_flops",
