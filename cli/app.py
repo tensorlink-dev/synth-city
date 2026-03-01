@@ -333,6 +333,53 @@ def cmd_data(args: argparse.Namespace) -> None:
     console.print("[bold green]Done.[/bold green] Data is cached for future pipeline runs.")
 
 
+def cmd_score(args: argparse.Namespace) -> None:
+    """Scoring emulator — local replica of SN50 validator scoring."""
+    from cli.score_dashboard import (
+        print_daily_summary,
+        print_leaderboard,
+        print_prompt_results,
+        print_score_status,
+        run_score_dashboard,
+    )
+
+    action = args.action
+
+    if action == "status":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        print_score_status(tracker.get_status())
+
+    elif action == "results":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        date = getattr(args, "date", None)
+        results = tracker.load_prompt_history(date_str=date, limit=args.limit)
+        print_prompt_results(results, date=date)
+
+    elif action == "daily":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        date = getattr(args, "date", None)
+        summary = tracker.save_daily_summary(date_str=date)
+        print_daily_summary(summary)
+
+    elif action == "leaderboard":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        lb = tracker.load_leaderboard()
+        print_leaderboard(lb)
+
+    elif action == "run":
+        interval = getattr(args, "interval", 5)
+        run_score_dashboard(interval_minutes=interval)
+
+    else:
+        print_error(f"Unknown action: {action}")
+        console.print("[muted]Available: run, status, results, daily, leaderboard[/muted]")
+        sys.exit(1)
+
+
 def cmd_dashboard(args: argparse.Namespace) -> None:
     """Run the pipeline with a live Rich dashboard, or monitor a remote bridge."""
     if args.remote:
@@ -511,6 +558,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Candle timeframe to download: '5m', '1m', or 'all' (default: 5m)",
     )
 
+    # score
+    p_score = subparsers.add_parser(
+        "score", help="Scoring emulator — local replica of SN50 validator scoring"
+    )
+    p_score.add_argument(
+        "action",
+        choices=["run", "status", "results", "daily", "leaderboard"],
+        help="Action: run (start daemon with dashboard), status, results, daily, leaderboard",
+    )
+    p_score.add_argument("--interval", type=int, default=5, help="Prompt interval in minutes")
+    p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
+    p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
+
     # dashboard
     p_dash = subparsers.add_parser(
         "dashboard", help="Run pipeline with live monitoring dashboard"
@@ -546,6 +606,7 @@ _CMD_MAP = {
     "bridge": cmd_bridge,
     "client": cmd_client,
     "data": cmd_data,
+    "score": cmd_score,
     "dashboard": cmd_dashboard,
     "agent": cmd_agent,
 }

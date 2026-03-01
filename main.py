@@ -303,6 +303,58 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_score(args: argparse.Namespace) -> None:
+    """Scoring emulator — local replica of SN50 validator scoring."""
+    action = args.action
+
+    if action == "status":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        status = tracker.get_status()
+        print(json.dumps(status, indent=2, default=str))
+
+    elif action == "results":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        date = getattr(args, "date", None)
+        results = tracker.load_prompt_history(date_str=date, limit=args.limit)
+        print(json.dumps(results, indent=2, default=str))
+
+    elif action == "daily":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        date = getattr(args, "date", None)
+        summary = tracker.save_daily_summary(date_str=date)
+        print(json.dumps(summary, indent=2, default=str))
+
+    elif action == "leaderboard":
+        from subnet.score_tracker import ScoreTracker
+        tracker = ScoreTracker()
+        lb = tracker.load_leaderboard()
+        print(json.dumps(lb, indent=2, default=str))
+
+    elif action == "run":
+        from subnet.score_tracker import ScoreTracker, ScoringDaemon
+        tracker = ScoreTracker()
+        interval = getattr(args, "interval", 5)
+        daemon = ScoringDaemon(tracker, interval_minutes=interval)
+        logger.info("Starting scoring daemon (interval=%dmin)...", interval)
+        logger.info("Press Ctrl+C to stop.")
+        daemon.start()
+        try:
+            while daemon.running:
+                import time as _t
+                _t.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Stopping scoring daemon...")
+            daemon.stop()
+
+    else:
+        print(f"Unknown action: {action}")
+        print("Available: run, status, results, daily, leaderboard")
+        sys.exit(1)
+
+
 def cmd_agent(args: argparse.Namespace) -> None:
     """Run a single agent for debugging/testing."""
     from pipeline.bootstrap import bootstrap_dirs
@@ -439,6 +491,19 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # score
+    p_score = subparsers.add_parser(
+        "score", help="Scoring emulator — local replica of SN50 validator scoring"
+    )
+    p_score.add_argument(
+        "action",
+        choices=["run", "status", "results", "daily", "leaderboard"],
+        help="Action: run (start daemon), status, results, daily, leaderboard",
+    )
+    p_score.add_argument("--interval", type=int, default=5, help="Prompt interval in minutes")
+    p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
+    p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
+
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
     p_agent.add_argument("--name", required=True, help="Agent name")
@@ -454,6 +519,7 @@ def main() -> None:
         "history": cmd_history,
         "bridge": cmd_bridge,
         "client": cmd_client,
+        "score": cmd_score,
         "agent": cmd_agent,
     }
     cmd_map[args.command](args)
