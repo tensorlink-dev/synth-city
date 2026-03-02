@@ -27,6 +27,8 @@ class PublisherAgent(BaseAgentWrapper):
             "log_to_trackio",
             # Hippius persistence
             "save_to_hippius",
+            # Public results sharing (HF Hub Dataset)
+            "share_results",
             # Historical analysis (for comparing against past published models)
             "fetch_experiment_runs",
             "list_hf_models",

@@ -303,6 +303,25 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_results(args: argparse.Namespace) -> None:
+    """Share experiment results publicly as a HF Hub Dataset."""
+    from pipeline.tools.publish_tools import share_results
+
+    print("Uploading experiment results to HF Hub Dataset…")
+    result_json = share_results(repo_id=args.repo_id or "", limit=args.limit)
+    data = json.loads(result_json)
+    print(json.dumps(data, indent=2, default=str))
+
+    if data.get("status") == "shared":
+        print(f"\nShared {data['experiments']} experiments.")
+        print(f"URL: {data['url']}")
+        print("\nOthers can now consume your results:")
+        print('  from datasets import load_dataset')
+        print(f'  ds = load_dataset("{data["repo_id"]}")')
+    elif data.get("error"):
+        print(f"\nError: {data['error']}")
+
+
 def cmd_display(args: argparse.Namespace) -> None:
     """Display historical experiment results in a terminal dashboard."""
     from cli.history_dashboard import run_display
@@ -498,6 +517,20 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # results (public sharing)
+    p_results = subparsers.add_parser(
+        "results",
+        help="Share experiment results publicly as a HF Hub Dataset",
+    )
+    p_results.add_argument(
+        "--repo-id", default=None,
+        help="HF dataset repo ID (default from HF_RESULTS_REPO_ID env var)",
+    )
+    p_results.add_argument(
+        "--limit", type=int, default=200,
+        help="Max experiments to include (default 200)",
+    )
+
     # display
     p_display = subparsers.add_parser(
         "display", help="Display historical experiment results dashboard"
@@ -533,6 +566,7 @@ def main() -> None:
         "experiment": cmd_experiment,
         "quick": cmd_quick,
         "history": cmd_history,
+        "results": cmd_results,
         "display": cmd_display,
         "bridge": cmd_bridge,
         "client": cmd_client,

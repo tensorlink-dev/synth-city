@@ -380,6 +380,30 @@ def cmd_score(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_results(args: argparse.Namespace) -> None:
+    """Share experiment results publicly as a HF Hub Dataset."""
+    from pipeline.tools.publish_tools import share_results
+
+    section_header("Share Results")
+    console.print(
+        "[bold]Uploading experiment results to HF Hub Dataset…[/bold]"
+    )
+    result_json = share_results(repo_id=args.repo_id or "", limit=args.limit)
+    data = json.loads(result_json)
+    print_json(data)
+
+    if data.get("status") == "shared":
+        console.print()
+        console.print(f"[bold green]Shared {data['experiments']} experiments.[/bold green]")
+        console.print(f"[bold]URL:[/bold] {data['url']}")
+        console.print()
+        console.print("[dim]Others can now consume your results:[/dim]")
+        console.print('[cyan]  from datasets import load_dataset[/cyan]')
+        console.print(f'[cyan]  ds = load_dataset("{data["repo_id"]}")[/cyan]')
+    elif data.get("error"):
+        print_error(data["error"])
+
+
 def cmd_display(args: argparse.Namespace) -> None:
     """Display historical experiment results in a terminal dashboard."""
     from cli.history_dashboard import run_display
@@ -578,6 +602,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
     p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
 
+    # results (public sharing)
+    p_results = subparsers.add_parser(
+        "results",
+        help="Share experiment results publicly as a HF Hub Dataset",
+    )
+    p_results.add_argument(
+        "--repo-id", default=None,
+        help="HF dataset repo ID (default from HF_RESULTS_REPO_ID env var). "
+             "E.g. --repo-id myorg/synth-city-results",
+    )
+    p_results.add_argument(
+        "--limit", type=int, default=200,
+        help="Max experiments to include in the dataset (default 200)",
+    )
+
     # display
     p_display = subparsers.add_parser(
         "display", help="Display historical experiment results dashboard"
@@ -622,6 +661,7 @@ _CMD_MAP = {
     "bridge": cmd_bridge,
     "client": cmd_client,
     "data": cmd_data,
+    "results": cmd_results,
     "score": cmd_score,
     "display": cmd_display,
     "dashboard": cmd_dashboard,
