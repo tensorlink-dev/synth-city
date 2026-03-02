@@ -375,6 +375,8 @@ def _run_training_sync(
     asset_files: dict[str, str],
     input_len: int,
     pred_len: int,
+    early_stopping: bool = True,
+    patience: int = 3,
 ) -> dict:
     """Execute training synchronously.  Called from a thread via asyncio."""
     session_cls = _get_session_class()
@@ -385,6 +387,9 @@ def _run_training_sync(
         loader = _build_data_loader(hf_repo, asset_files, input_len, pred_len)
 
     run_kwargs: dict = {"epochs": epochs}
+    if early_stopping:
+        run_kwargs["early_stopping"] = True
+        run_kwargs["patience"] = patience
     if loader is not None:
         run_kwargs["data_loader"] = loader
 
@@ -392,7 +397,9 @@ def _run_training_sync(
         result = session.run(experiment, **run_kwargs)
     except TypeError:
         run_kwargs.pop("data_loader", None)
-        logger.warning("session.run() rejected data_loader kwarg, retrying without")
+        run_kwargs.pop("early_stopping", None)
+        run_kwargs.pop("patience", None)
+        logger.warning("session.run() rejected optional kwargs, retrying with epochs only")
         result = session.run(experiment, **run_kwargs)
 
     return result
@@ -807,7 +814,9 @@ async def train(request: Request):
     if not experiment:
         raise HTTPException(status_code=400, detail="Missing 'experiment' field")
 
-    epochs = body.get("epochs", 1)
+    epochs = body.get("epochs", 10)
+    early_stopping = body.get("early_stopping", True)
+    patience = body.get("patience", 3)
     hf_repo = body.get("hf_repo", "")
     asset_files = body.get("asset_files", {})
     input_len = body.get("input_len", 288)
@@ -856,6 +865,8 @@ async def train(request: Request):
                 asset_files,
                 input_len,
                 pred_len,
+                early_stopping,
+                patience,
             )
         )
 

@@ -115,7 +115,16 @@ def cmd_experiment(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     # Run
-    result = session.run(experiment, epochs=args.epochs)
+    run_kwargs: dict = {"epochs": args.epochs}
+    if args.early_stopping:
+        run_kwargs["early_stopping"] = True
+        run_kwargs["patience"] = args.patience
+    try:
+        result = session.run(experiment, **run_kwargs)
+    except TypeError:
+        run_kwargs.pop("early_stopping", None)
+        run_kwargs.pop("patience", None)
+        result = session.run(experiment, **run_kwargs)
     print_json(result)
 
     if result.get("status") == "ok":
@@ -550,7 +559,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument(
         "--presets", default=None, help="Comma-separated preset names (all if omitted)"
     )
-    p_sweep.add_argument("--epochs", type=int, default=1, help="Epochs per preset")
+    p_sweep.add_argument("--epochs", type=int, default=10, help="Epochs per preset")
+    p_sweep.add_argument(
+        "--early-stopping", action="store_true", default=True,
+        help="Enable early stopping (default: true)",
+    )
+    p_sweep.add_argument(
+        "--no-early-stopping", dest="early_stopping",
+        action="store_false", help="Disable early stopping",
+    )
+    p_sweep.add_argument("--patience", type=int, default=3, help="Early stopping patience")
 
     # experiment
     p_exp = subparsers.add_parser("experiment", help="Run a single experiment")
@@ -560,7 +578,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_exp.add_argument("--horizon", type=int, default=12, help="Prediction steps")
     p_exp.add_argument("--n-paths", type=int, default=100, help="Monte Carlo paths")
     p_exp.add_argument("--lr", type=float, default=0.001, help="Learning rate")
-    p_exp.add_argument("--epochs", type=int, default=1, help="Training epochs")
+    p_exp.add_argument("--epochs", type=int, default=10, help="Training epochs")
+    p_exp.add_argument(
+        "--early-stopping", action="store_true", default=True,
+        help="Enable early stopping (default: true)",
+    )
+    p_exp.add_argument(
+        "--no-early-stopping", dest="early_stopping",
+        action="store_false", help="Disable early stopping",
+    )
+    p_exp.add_argument("--patience", type=int, default=3, help="Early stopping patience")
 
     # quick
     p_quick = subparsers.add_parser("quick", help="One-liner convenience experiment")
