@@ -544,7 +544,9 @@ def ingest_results(repo_id: str, limit: int = 200) -> str:
         except Exception:
             pass  # analysis.json is optional
 
-        crps_values = [r.get("crps") for r in records if r.get("crps") is not None]
+        crps_values: list[float] = [
+            float(r["crps"]) for r in records if r.get("crps") is not None
+        ]
         return json.dumps({
             "status": "ingested",
             "source": repo_id,
