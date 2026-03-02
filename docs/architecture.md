@@ -292,7 +292,7 @@ Fragments support `{variable}` substitution from the task context. This means pr
 
 ## Data Persistence
 
-### Hippius Storage (SN30)
+### Hippius Storage (SN75)
 
 Experiment results are persisted to Hippius, an S3-compatible decentralized storage network, with this layout:
 

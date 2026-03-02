@@ -384,7 +384,7 @@ The OpenClaw skill reads these environment variables:
 |---------|----------|---------|
 | Chutes AI (SN64) | Yes | LLM inference for agent reasoning |
 | Basilica (SN39) | Recommended | Remote GPU training |
-| Hippius (SN30) | Recommended | Persistent experiment storage |
+| Hippius (SN75) | Recommended | Persistent experiment storage |
 | HuggingFace Hub | Optional | Model publishing |
 | Weights & Biases | Optional | Experiment tracking |
 
