@@ -149,6 +149,37 @@ def log_to_trackio(experiment_name: str, metrics: str, config: str = "") -> str:
 # Public results sharing — HF Hub Dataset
 # ---------------------------------------------------------------------------
 
+def _load_raw_experiments(limit: int = 200) -> list[dict]:
+    """Load raw experiment records from Hippius in the format _build_scan_result expects.
+
+    Returns dicts with keys: name, experiment, result, timestamp, run_id.
+    """
+    from pipeline.tools import hippius_store as _hs
+
+    keys = _hs._list_keys("experiments/", max_keys=2000)
+    if not keys:
+        return []
+
+    experiments: list[dict] = []
+    consecutive_failures = 0
+    for key in keys:
+        if _hs._endpoint_unreachable:
+            break
+        exp = _hs._get_json(key)
+        if exp is None:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                break
+            continue
+        consecutive_failures = 0
+        if isinstance(exp, dict):
+            experiments.append(exp)
+        if len(experiments) >= limit:
+            break
+
+    return experiments
+
+
 def _build_results_payload(limit: int = 200) -> list[dict]:
     """Collect experiment results from Hippius into a flat list of records.
 
@@ -282,6 +313,9 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
                 "error": "No experiment results found in Hippius storage.",
             })
 
+        # Also fetch raw experiment records for the historical analysis
+        raw_experiments = _load_raw_experiments(limit=limit)
+
         # Build JSONL content
         jsonl_lines = [json.dumps(r, default=str) for r in records]
         jsonl_content = "\n".join(jsonl_lines) + "\n"
@@ -305,8 +339,15 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
         }
         summary_content = json.dumps(summary, indent=2, default=str)
 
+        # Build historical analysis (successes, failures, block/head stats, etc.)
+        from pipeline.tools.analysis_tools import _build_scan_result
+
+        analysis = _build_scan_result(raw_experiments)
+        analysis["generated_at"] = datetime.now(timezone.utc).isoformat()
+        analysis_content = json.dumps(analysis, indent=2, default=str)
+
         # Build README
-        readme = _build_dataset_readme(target_repo, summary)
+        readme = _build_dataset_readme(target_repo, summary, analysis)
 
         # Upload to HF Hub
         api = HfApi(token=HF_TOKEN or None)
@@ -334,6 +375,13 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
             commit_message=f"Update summary ({len(records)} experiments)",
         )
         api.upload_file(
+            path_or_fileobj=analysis_content.encode(),
+            path_in_repo="analysis.json",
+            repo_id=target_repo,
+            repo_type="dataset",
+            commit_message=f"Update analysis ({len(records)} experiments)",
+        )
+        api.upload_file(
             path_or_fileobj=readme.encode(),
             path_in_repo="README.md",
             repo_id=target_repo,
@@ -347,6 +395,7 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
             "url": f"https://huggingface.co/datasets/{target_repo}",
             "experiments": len(records),
             "best_crps": summary["best_crps"],
+            "analysis_keys": list(analysis.keys()),
             "usage": (
                 f'from datasets import load_dataset\n'
                 f'ds = load_dataset("{target_repo}")'
@@ -360,12 +409,98 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
         })
 
 
-def _build_dataset_readme(repo_id: str, summary: dict) -> str:
+def _build_dataset_readme(
+    repo_id: str, summary: dict, analysis: dict | None = None,
+) -> str:
     """Generate a HF dataset card README with schema docs and usage examples."""
     best = summary.get("best_crps", "N/A")
     total = summary.get("total_experiments", 0)
     blocks = ", ".join(summary.get("unique_blocks", []))
     heads = ", ".join(summary.get("unique_heads", []))
+
+    # Build lessons-learned section from the analysis
+    analysis_section = ""
+    if analysis:
+        lessons = analysis.get("lessons", "")
+        top_configs = analysis.get("top_configs", [])
+        block_stats = analysis.get("block_stats", {})
+        head_stats = analysis.get("head_stats", {})
+        failure_patterns = analysis.get("failure_patterns", [])
+        untried_blocks = analysis.get("untried_blocks", [])
+        untried_heads = analysis.get("untried_heads", [])
+
+        parts: list[str] = []
+        parts.append("## Historical analysis")
+        parts.append("")
+        parts.append(
+            "Pre-computed analysis from `analysis.json` — "
+            "block/head performance, failure patterns, and gaps."
+        )
+        parts.append("")
+
+        if lessons:
+            parts.append("### Lessons learned")
+            parts.append("")
+            parts.append(lessons)
+            parts.append("")
+
+        if top_configs:
+            parts.append("### Top configs (by CRPS)")
+            parts.append("")
+            parts.append("| Rank | Blocks | Head | d_model | lr | CRPS |")
+            parts.append("|------|--------|------|---------|-----|------|")
+            for i, cfg in enumerate(top_configs[:5], 1):
+                blk = "+".join(cfg.get("blocks", []))
+                parts.append(
+                    f"| {i} | {blk} | {cfg.get('head', '?')} "
+                    f"| {cfg.get('d_model', '?')} | {cfg.get('lr', '?')} "
+                    f"| {cfg.get('crps', '?')} |"
+                )
+            parts.append("")
+
+        if block_stats:
+            parts.append("### Block performance")
+            parts.append("")
+            parts.append("| Block | Best CRPS | Mean CRPS | Experiments |")
+            parts.append("|-------|-----------|-----------|-------------|")
+            for block, stats in block_stats.items():
+                parts.append(
+                    f"| {block} | {stats.get('best_crps', '?')} "
+                    f"| {stats.get('mean_crps', '?')} "
+                    f"| {stats.get('count', '?')} |"
+                )
+            parts.append("")
+
+        if head_stats:
+            parts.append("### Head performance")
+            parts.append("")
+            parts.append("| Head | Best CRPS | Mean CRPS | Experiments |")
+            parts.append("|------|-----------|-----------|-------------|")
+            for head, stats in head_stats.items():
+                parts.append(
+                    f"| {head} | {stats.get('best_crps', '?')} "
+                    f"| {stats.get('mean_crps', '?')} "
+                    f"| {stats.get('count', '?')} |"
+                )
+            parts.append("")
+
+        if failure_patterns:
+            parts.append("### Common failure patterns")
+            parts.append("")
+            for fp in failure_patterns[:5]:
+                parts.append(f"- **{fp.get('error', '?')}** ({fp.get('count', '?')}x)")
+            parts.append("")
+
+        if untried_blocks or untried_heads:
+            parts.append("### Unexplored territory")
+            parts.append("")
+            if untried_blocks:
+                parts.append(f"- **Untried blocks:** {', '.join(untried_blocks)}")
+            if untried_heads:
+                parts.append(f"- **Untried heads:** {', '.join(untried_heads)}")
+            parts.append("")
+
+        analysis_section = "\n".join(parts)
 
     return f"""\
 ---
@@ -397,6 +532,15 @@ autonomous research pipeline for Bittensor Subnet 50 (Synth).
 | Heads explored | {heads} |
 | Last updated | {summary.get("generated_at", "N/A")} |
 
+{analysis_section}
+## Files
+
+| File | Description |
+|------|-------------|
+| `results.jsonl` | All experiment results (one JSON object per line, sorted by CRPS) |
+| `summary.json` | Aggregate stats (counts, best CRPS, unique blocks/heads) |
+| `analysis.json` | Historical analysis: block/head stats, failure patterns, top configs |
+
 ## Usage
 
 ### Python (datasets library)
@@ -426,26 +570,35 @@ best = min(experiments, key=lambda e: e["crps"] or float("inf"))
 print(best["blocks"], best["head"], best["crps"])
 ```
 
-### Build on top of these results
+### Bootstrap your pipeline with the analysis
 
 ```python
 from huggingface_hub import hf_hub_download
 import json
 
-path = hf_hub_download("{repo_id}", "results.jsonl", repo_type="dataset")
+# Load the pre-computed analysis
+path = hf_hub_download("{repo_id}", "analysis.json", repo_type="dataset")
 with open(path) as f:
-    experiments = [json.loads(line) for line in f]
+    analysis = json.load(f)
 
-# Find best block combinations
-from collections import defaultdict
-block_scores = defaultdict(list)
-for exp in experiments:
-    if exp["crps"] is not None:
-        for block in exp["blocks"]:
-            block_scores[block].append(exp["crps"])
+# What worked best?
+print(analysis["lessons"])
 
-for block, scores in sorted(block_scores.items(), key=lambda kv: min(kv[1])):
-    print(f"  {{block}}: best={{min(scores):.6f}}  mean={{sum(scores)/len(scores):.6f}}")
+# Block-level performance stats
+for block, stats in analysis["block_stats"].items():
+    print(f"  {{block}}: best={{stats['best_crps']}}  mean={{stats['mean_crps']}}")
+
+# What failed and why?
+for pattern in analysis["failure_patterns"]:
+    print(f"  {{pattern['error']}} ({{pattern['count']}}x)")
+
+# What hasn't been tried yet?
+print("Untried blocks:", analysis["untried_blocks"])
+print("Untried heads:", analysis["untried_heads"])
+
+# Top 5 configs to replicate or build on
+for cfg in analysis["top_configs"]:
+    print(f"  {{cfg['blocks']}} -> {{cfg['head']}}  CRPS={{cfg['crps']}}")
 ```
 
 ## Schema
@@ -472,6 +625,23 @@ Each row in `results.jsonl` contains:
 | `param_count` | int | Model parameter count |
 | `status` | string | `"ok"` or `"error"` |
 | `experiment_config` | object | Full experiment config for reproducibility |
+
+### analysis.json schema
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `lessons` | string | Human-readable lessons learned (markdown bullets) |
+| `top_configs` | list | Top 5 experiment configs by CRPS |
+| `block_stats` | object | Per-block mean/best CRPS and experiment count |
+| `head_stats` | object | Per-head mean/best CRPS and experiment count |
+| `failure_patterns` | list | Most common error categories with counts |
+| `untried_blocks` | list[str] | Block types never tested |
+| `untried_heads` | list[str] | Head types never tested |
+| `untried_block_head_pairs` | list | Block+head combos never tried together |
+| `duplicates` | object | Configs run more than once (fingerprint -> names) |
+| `total_experiments` | int | Total experiments analysed |
+| `successful` | int | Experiments that completed successfully |
+| `failed` | int | Experiments that errored |
 
 ## About CRPS
 
