@@ -233,7 +233,7 @@ wandb login                 # Weights & Biases (optional)
 
 ---
 
-## Hippius Decentralized Storage (SN30)
+## Hippius Decentralized Storage (SN75)
 
 S3-compatible storage for persisting experiment history across runs. Any S3-compatible endpoint works (Hippius, Cloudflare R2, MinIO, AWS S3).
 

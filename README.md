@@ -73,7 +73,7 @@ The entire mining operation runs on Bittensor infrastructure. synth-city uses fo
 | **SN50** | **Synth** | Target competition | The price forecasting subnet we're mining. Miners submit Monte Carlo price paths scored by CRPS. |
 | **SN39** | **Basilica** | GPU compute | Decentralized GPU marketplace. Rents V100, A4000, A6000 GPUs for remote model training with budget caps and automatic pod management. |
 | **SN64** | **Chutes AI** | LLM inference | OpenAI-compatible inference API. Powers all agent reasoning — every planning decision, code review, and debug analysis runs through Chutes. |
-| **SN30** | **Hippius** | Decentralized storage | S3-compatible decentralized storage. Persists experiment results, model checkpoints, and pipeline history across runs. The planner loads past results from Hippius to inform future experiments. |
+| **SN75** | **Hippius** | Decentralized storage | S3-compatible decentralized storage. Persists experiment results, model checkpoints, and pipeline history across runs. The planner loads past results from Hippius to inform future experiments. |
 
 ### SN50 — Synth (the target)
 
@@ -113,10 +113,10 @@ synth-city treats mining as a continuous research loop. A chain of AI agents col
  surveys        runs           validates          fixes            publishes
  components     experiments    against SN50       failures         to HF Hub
  + Hippius      on Basilica    specs              + retries        + Hippius
- history        GPUs (SN39)                                        (SN30)
+ history        GPUs (SN39)                                        (SN75)
 ```
 
-**Planner** — Reviews available backbone blocks, prediction heads, and past experiment history from Hippius (SN30). Designs the next experiment based on what's worked and what hasn't.
+**Planner** — Reviews available backbone blocks, prediction heads, and past experiment history from Hippius (SN75). Designs the next experiment based on what's worked and what hasn't.
 
 **Trainer** — Executes the plan using open-synth-miner's `ResearchSession` API. Trains on decentralized GPUs via Basilica (SN39) or locally.
 
@@ -124,7 +124,7 @@ synth-city treats mining as a continuous research loop. A chain of AI agents col
 
 **Debugger** — If training fails or validation doesn't pass, the debugger analyzes the error, patches the config, and retries with temperature escalation and stall detection to avoid loops.
 
-**Publisher** — Pushes the winning model to Hugging Face Hub, logs metrics to Weights & Biases, and persists everything to Hippius (SN30) for the next pipeline run.
+**Publisher** — Pushes the winning model to Hugging Face Hub, logs metrics to Weights & Biases, and persists everything to Hippius (SN75) for the next pipeline run.
 
 All agent reasoning runs through Chutes AI (SN64). The orchestrator chains agents with retry logic and temperature escalation so the full cycle runs hands-off.
 
@@ -139,7 +139,7 @@ synth-city is the R&D engine. OpenClaw bots are the operators. They connect via 
 Bots direct the research process through conversation:
 - Run the full autonomous pipeline or kick off individual experiments
 - Choose which backbone blocks and prediction heads to try
-- Review past results from Hippius (SN30) and guide the planner toward promising architectures
+- Review past results from Hippius (SN75) and guide the planner toward promising architectures
 - Compare experiment rankings across all active bot sessions
 - Query live market prices and historical data
 
@@ -164,7 +164,7 @@ Bots can extend synth-city itself:
 When a bot is happy with results, it publishes:
 - Push winning models to **Hugging Face Hub** for production mining
 - Log metrics to **Weights & Biases** for tracking
-- Persist full experiment history to **Hippius (SN30)** for future pipeline runs
+- Persist full experiment history to **Hippius (SN75)** for future pipeline runs
 
 ### Multi-bot concurrency
 
@@ -214,7 +214,7 @@ cp .env.example .env
 # Edit .env with your API keys:
 #   CHUTES_API_KEY     — LLM inference (SN64)
 #   BASILICA_API_TOKEN — GPU compute (SN39)
-#   HIPPIUS_ACCESS_KEY — decentralized storage (SN30)
+#   HIPPIUS_ACCESS_KEY — decentralized storage (SN75)
 #   HIPPIUS_SECRET_KEY
 #   BT_WALLET_NAME     — Bittensor wallet
 #   BT_HOTKEY_NAME
@@ -245,7 +245,7 @@ synth-city experiment --blocks TransformerBlock,LSTMBlock --head SDEHead --epoch
 # One-liner convenience experiment
 synth-city quick --blocks TransformerBlock --head GBMHead
 
-# Experiment history from Hippius (SN30)
+# Experiment history from Hippius (SN75)
 synth-city history hippius
 synth-city history hippius --run-id latest
 synth-city history trackio --trends
@@ -297,7 +297,7 @@ BASILICA_API_TOKEN=your-token-here
 BASILICA_MAX_HOURLY_RATE=0.44
 BASILICA_ALLOWED_GPU_TYPES=TESLA V100,RTX-A4000,RTX-A6000
 
-# Hippius — decentralized storage (SN30)
+# Hippius — decentralized storage (SN75)
 HIPPIUS_ENDPOINT=https://s3.hippius.network
 HIPPIUS_ACCESS_KEY=your-access-key
 HIPPIUS_SECRET_KEY=your-secret-key
@@ -355,7 +355,7 @@ synth-city/
 │   ├── tools/                  Tool registry + implementations
 │   │   ├── research_tools.py   ResearchSession API
 │   │   ├── training_tools.py   Local + Basilica GPU training (SN39)
-│   │   ├── hippius_store.py    Decentralized storage (SN30)
+│   │   ├── hippius_store.py    Decentralized storage (SN75)
 │   │   ├── market_data.py      Pyth Network price feeds
 │   │   ├── check_shapes.py     SN50 shape validation
 │   │   └── ...
