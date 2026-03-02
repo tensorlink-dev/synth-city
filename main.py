@@ -431,13 +431,13 @@ def cmd_score(args: argparse.Namespace) -> None:
             max_prompts=getattr(args, "max_prompts", 50),
             num_paths=getattr(args, "num_paths", 100),
         )
-        results = bt.run()
+        bt_results = bt.run()
 
-        if "error" in results:
-            print(f"Backtest error: {results['error']}")
+        if "error" in bt_results:
+            print(f"Backtest error: {bt_results['error']}")
             sys.exit(1)
 
-        summary = results["summary"]
+        summary = bt_results["summary"]
         wc = summary["weighted_crps"]
 
         print("\n=== VALIDATOR BACKTEST RESULTS ===")
