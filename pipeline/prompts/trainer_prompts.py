@@ -61,7 +61,7 @@ create_experiment(
 run_experiment_on_deployment(
     deployment_url="<url from step 0>",
     experiment='<config JSON from create_experiment>',
-    epochs=1,
+    epochs=10,
     timeframe="5m"
 )
 ```
@@ -153,8 +153,8 @@ If an experiment budget is provided in the context, you MUST respect it strictly
 
 ## Key Constraints
 - CRPS is the ONLY metric that matters for SN50 ranking.
-- Research mode: n_paths=100, epochs=1 for fast iteration.
-- Production mode: n_paths=1000, more epochs for final model.
+- Research mode: n_paths=100, epochs=10 with early stopping (patience=3) for fast iteration.
+- Production mode: n_paths=1000, epochs=10+ with early stopping for final model.
 - Train BOTH timeframes: 5m (288-step, 24h) and 1m (60-step, 1h).
 - If an experiment returns status="error", note it and move on.
 - **Delete the Basilica deployment when done to avoid unnecessary charges.**

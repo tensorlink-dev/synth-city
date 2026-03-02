@@ -22,6 +22,8 @@ import traceback
 from config import (
     RESEARCH_BATCH_SIZE,
     RESEARCH_D_MODEL,
+    RESEARCH_EARLY_STOPPING,
+    RESEARCH_EARLY_STOPPING_PATIENCE,
     RESEARCH_EPOCHS,
     RESEARCH_FEATURE_DIM,
     RESEARCH_HORIZON,
@@ -568,6 +570,8 @@ def describe_experiment(experiment: str) -> str:
         "Run an experiment: train the model and return metrics including CRPS. "
         "experiment: the experiment config as a JSON string. "
         "epochs: number of training epochs (default from config). "
+        "early_stopping: stop training early when validation loss stops improving. "
+        "patience: number of epochs with no improvement before stopping. "
         "Experiments never raise — errors come back in the result dict."
     ),
     parameters_schema={
@@ -575,12 +579,26 @@ def describe_experiment(experiment: str) -> str:
         "properties": {
             "experiment": {"type": "string", "description": "Experiment config JSON"},
             "epochs": {"type": "integer", "description": "Training epochs (default: config)"},
+            "early_stopping": {
+                "type": "boolean",
+                "description": "Enable early stopping (default: config)",
+            },
+            "patience": {
+                "type": "integer",
+                "description": "Early stopping patience in epochs (default: config)",
+            },
             "name": {"type": "string", "description": "Optional experiment name"},
         },
         "required": ["experiment"],
     },
 )
-def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "") -> str:
+def run_experiment(
+    experiment: str,
+    epochs: int = RESEARCH_EPOCHS,
+    early_stopping: bool = RESEARCH_EARLY_STOPPING,
+    patience: int = RESEARCH_EARLY_STOPPING_PATIENCE,
+    name: str = "",
+) -> str:
     """Run an experiment and return metrics."""
     env_err = _check_env()
     if env_err:
@@ -592,6 +610,9 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
 
         # If the experiment was tagged with a timeframe, attach the data loader
         run_kwargs: dict = {"epochs": epochs}
+        if early_stopping:
+            run_kwargs["early_stopping"] = True
+            run_kwargs["patience"] = patience
         if name:
             run_kwargs["name"] = name
         timeframe = exp.pop("timeframe", None)
@@ -606,9 +627,14 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
         try:
             result = session.run(exp, **run_kwargs)
         except TypeError:
-            # ResearchSession.run() may not accept data_loader yet — retry without it
+            # ResearchSession.run() may not accept newer kwargs yet — strip
+            # optional ones and retry with just the basics.
             run_kwargs.pop("data_loader", None)
-            logger.warning("session.run() rejected data_loader kwarg, retrying without it")
+            run_kwargs.pop("early_stopping", None)
+            run_kwargs.pop("patience", None)
+            logger.warning(
+                "session.run() rejected optional kwargs, retrying with epochs only"
+            )
             result = session.run(exp, **run_kwargs)
 
         # Restore timeframe tag for provenance before persisting
@@ -655,12 +681,26 @@ def run_experiment(experiment: str, epochs: int = RESEARCH_EPOCHS, name: str = "
         "properties": {
             "preset_name": {"type": "string", "description": "Preset name"},
             "epochs": {"type": "integer", "description": "Training epochs"},
+            "early_stopping": {
+                "type": "boolean",
+                "description": "Enable early stopping (default: config)",
+            },
+            "patience": {
+                "type": "integer",
+                "description": "Early stopping patience in epochs (default: config)",
+            },
             "overrides": {"type": "string", "description": "Overrides as JSON dict"},
         },
         "required": ["preset_name"],
     },
 )
-def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str = "") -> str:
+def run_preset(
+    preset_name: str,
+    epochs: int = RESEARCH_EPOCHS,
+    early_stopping: bool = RESEARCH_EARLY_STOPPING,
+    patience: int = RESEARCH_EARLY_STOPPING_PATIENCE,
+    overrides: str = "",
+) -> str:
     """Run a preset experiment."""
     env_err = _check_env()
     if env_err:
@@ -670,7 +710,17 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
         ov = json.loads(overrides) if isinstance(overrides, str) and overrides else (
             overrides if isinstance(overrides, (dict, list)) else None
         )
-        result = session.run_preset(preset_name, epochs=epochs, overrides=ov)
+        run_kwargs: dict = {"epochs": epochs, "overrides": ov}
+        if early_stopping:
+            run_kwargs["early_stopping"] = True
+            run_kwargs["patience"] = patience
+        try:
+            result = session.run_preset(preset_name, **run_kwargs)
+        except TypeError:
+            run_kwargs.pop("early_stopping", None)
+            run_kwargs.pop("patience", None)
+            logger.warning("session.run_preset() rejected early stopping kwargs, retrying without")
+            result = session.run_preset(preset_name, **run_kwargs)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
         return json.dumps({
@@ -692,11 +742,24 @@ def run_preset(preset_name: str, epochs: int = RESEARCH_EPOCHS, overrides: str =
                 "description": "JSON array of preset names (empty = all)",
             },
             "epochs": {"type": "integer", "description": "Epochs per preset"},
+            "early_stopping": {
+                "type": "boolean",
+                "description": "Enable early stopping (default: config)",
+            },
+            "patience": {
+                "type": "integer",
+                "description": "Early stopping patience in epochs (default: config)",
+            },
         },
         "required": [],
     },
 )
-def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
+def sweep_presets(
+    preset_names: str = "",
+    epochs: int = RESEARCH_EPOCHS,
+    early_stopping: bool = RESEARCH_EARLY_STOPPING,
+    patience: int = RESEARCH_EARLY_STOPPING_PATIENCE,
+) -> str:
     """Sweep presets and return ranked comparison."""
     env_err = _check_env()
     if env_err:
@@ -707,7 +770,17 @@ def sweep_presets(preset_names: str = "", epochs: int = RESEARCH_EPOCHS) -> str:
             names = preset_names
         else:
             names = json.loads(preset_names) if preset_names else None
-        result = session.sweep(preset_names=names, epochs=epochs)
+        sweep_kwargs: dict = {"preset_names": names, "epochs": epochs}
+        if early_stopping:
+            sweep_kwargs["early_stopping"] = True
+            sweep_kwargs["patience"] = patience
+        try:
+            result = session.sweep(**sweep_kwargs)
+        except TypeError:
+            sweep_kwargs.pop("early_stopping", None)
+            sweep_kwargs.pop("patience", None)
+            logger.warning("session.sweep() rejected early stopping kwargs, retrying without")
+            result = session.sweep(**sweep_kwargs)
         return json.dumps(result, indent=2, default=str)
     except Exception as exc:
         return json.dumps({

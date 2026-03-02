@@ -151,7 +151,11 @@ RESEARCH_SEQ_LEN: int = int(os.getenv("RESEARCH_SEQ_LEN", "32"))
 RESEARCH_FEATURE_DIM: int = int(os.getenv("RESEARCH_FEATURE_DIM", "4"))
 RESEARCH_BATCH_SIZE: int = int(os.getenv("RESEARCH_BATCH_SIZE", "4"))
 RESEARCH_LR: float = float(os.getenv("RESEARCH_LR", "0.001"))
-RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "1"))
+RESEARCH_EPOCHS: int = int(os.getenv("RESEARCH_EPOCHS", "10"))
+RESEARCH_EARLY_STOPPING: bool = (
+    os.getenv("RESEARCH_EARLY_STOPPING", "true").lower() in ("1", "true", "yes")
+)
+RESEARCH_EARLY_STOPPING_PATIENCE: int = int(os.getenv("RESEARCH_EARLY_STOPPING_PATIENCE", "3"))
 
 # ---------------------------------------------------------------------------
 # Publishing (HF Hub + W&B + Trackio)

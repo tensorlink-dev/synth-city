@@ -626,6 +626,8 @@ def setup_basilica_pod(
         "rental_id: Basilica rental (must have been set up with setup_basilica_pod). "
         "experiment: experiment config JSON from create_experiment. "
         "epochs: training epochs. "
+        "early_stopping: stop training early when validation loss stops improving. "
+        "patience: number of epochs with no improvement before stopping. "
         "timeframe: '5m' or '1m' — selects HF dataset and prediction horizon. "
         "ssh_key_path: path to SSH private key (default: ~/.ssh/id_ed25519)."
     ),
@@ -634,7 +636,15 @@ def setup_basilica_pod(
         "properties": {
             "rental_id": {"type": "string", "description": "Basilica rental ID"},
             "experiment": {"type": "string", "description": "Experiment config JSON"},
-            "epochs": {"type": "integer", "description": "Training epochs (default: 1)"},
+            "epochs": {"type": "integer", "description": "Training epochs (default: 10)"},
+            "early_stopping": {
+                "type": "boolean",
+                "description": "Enable early stopping (default: true)",
+            },
+            "patience": {
+                "type": "integer",
+                "description": "Early stopping patience in epochs (default: 3)",
+            },
             "timeframe": {
                 "type": "string",
                 "enum": ["5m", "1m"],
@@ -651,7 +661,9 @@ def setup_basilica_pod(
 def run_experiment_on_basilica(
     rental_id: str,
     experiment: str,
-    epochs: int = 1,
+    epochs: int = 10,
+    early_stopping: bool = True,
+    patience: int = 3,
     timeframe: str = "5m",
     ssh_key_path: str = "",
 ) -> str:
@@ -680,6 +692,8 @@ os.environ.setdefault("HF_TOKEN", {HF_TOKEN!r})
 
 experiment = {json.dumps(exp_dict)}
 epochs     = {epochs}
+early_stopping = {early_stopping}
+patience   = {patience}
 hf_repo    = {HF_TRAINING_DATA_REPO!r}
 asset_files = {json.dumps(asset_files)}
 input_len  = {int(tf_cfg["input_len"])}
@@ -724,10 +738,21 @@ try:
             gap_handling="ffill",
             stride=12,
         )
-        result = session.run(experiment, epochs=epochs, data_loader=loader)
+        run_kwargs = dict(epochs=epochs, data_loader=loader)
+        if early_stopping:
+            run_kwargs["early_stopping"] = True
+            run_kwargs["patience"] = patience
+        result = session.run(experiment, **run_kwargs)
     except TypeError:
-        # ResearchSession.run() may not accept data_loader yet
-        result = session.run(experiment, epochs=epochs)
+        # ResearchSession.run() may not accept newer kwargs yet
+        try:
+            run_kwargs = dict(epochs=epochs)
+            if early_stopping:
+                run_kwargs["early_stopping"] = True
+                run_kwargs["patience"] = patience
+            result = session.run(experiment, **run_kwargs)
+        except TypeError:
+            result = session.run(experiment, epochs=epochs)
 
     print(json.dumps(result, default=str))
 
@@ -1843,6 +1868,8 @@ def _collect_custom_component_code() -> str:
         "deployment_url: the URL from create_training_deployment. "
         "experiment: experiment config JSON from create_experiment. "
         "epochs: training epochs. "
+        "early_stopping: stop training early when validation loss stops improving. "
+        "patience: number of epochs with no improvement before stopping. "
         "timeframe: '5m' or '1m'."
     ),
     parameters_schema={
@@ -1858,7 +1885,15 @@ def _collect_custom_component_code() -> str:
             },
             "epochs": {
                 "type": "integer",
-                "description": "Training epochs (default: 1)",
+                "description": "Training epochs (default: 10)",
+            },
+            "early_stopping": {
+                "type": "boolean",
+                "description": "Enable early stopping (default: true)",
+            },
+            "patience": {
+                "type": "integer",
+                "description": "Early stopping patience in epochs (default: 3)",
             },
             "timeframe": {
                 "type": "string",
@@ -1879,7 +1914,9 @@ def _collect_custom_component_code() -> str:
 def run_experiment_on_deployment(
     deployment_url: str,
     experiment: str,
-    epochs: int = 1,
+    epochs: int = 10,
+    early_stopping: bool = True,
+    patience: int = 3,
     timeframe: str = "5m",
     share_token: str = "",
 ) -> str:
@@ -1943,6 +1980,8 @@ def run_experiment_on_deployment(
         payload = {
             "experiment": exp_dict,
             "epochs": epochs,
+            "early_stopping": early_stopping,
+            "patience": patience,
             "timeframe": timeframe,
             "hf_repo": HF_TRAINING_DATA_REPO,
             "asset_files": asset_files,
