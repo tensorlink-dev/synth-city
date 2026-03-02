@@ -47,6 +47,7 @@ GET  /hf/models               → list models on HF Hub
 GET  /hf/model-card           → fetch model card from HF Hub
 GET  /hf/artifact             → download a JSON artifact from HF Hub
 POST /results/share           → share results publicly as HF Hub Dataset
+POST /results/ingest          → ingest shared results from a HF Hub Dataset
 GET  /history/runs            → list pipeline runs from Hippius
 GET  /history/run/:run_id     → load a specific run from Hippius
 GET  /history/experiments     → best experiments across all runs
@@ -889,7 +890,7 @@ class BridgeHandler(BaseHTTPRequestHandler):
                     _research_call("write_agent_prompt", filename=filename, code=code),
                 )
 
-        # ---- public results sharing
+        # ---- public results sharing / ingestion
         elif path == "/results/share":
             repo_id = body.get("repo_id", "")
             limit = body.get("limit", 200)
@@ -901,6 +902,25 @@ class BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     _research_call(
                         "share_results", repo_id=repo_id, limit=limit_v,
+                    ),
+                )
+
+        elif path == "/results/ingest":
+            repo_id = body.get("repo_id", "")
+            if not repo_id:
+                self._send_json(
+                    {"error": "Missing required field: 'repo_id'"}, status=400,
+                )
+                return
+            limit = body.get("limit", 200)
+            limit_v, limit_err = _validate_positive_int(limit, "limit")
+            if limit_err:
+                self._send_json({"error": limit_err}, status=400)
+                return
+            if self._load_tools_or_fail():
+                self._send_json(
+                    _research_call(
+                        "ingest_results", repo_id=repo_id, limit=limit_v,
                     ),
                 )
 

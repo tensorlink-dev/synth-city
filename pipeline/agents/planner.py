@@ -8,6 +8,7 @@ import pipeline.prompts.planner_prompts  # noqa: F401 — registers fragments
 import pipeline.tools.analysis_tools  # noqa: F401 — registers analysis tools
 import pipeline.tools.hippius_store  # noqa: F401 — registers hippius tools
 import pipeline.tools.proxy_tools  # noqa: F401 — registers proxy/ablation tools
+import pipeline.tools.publish_tools  # noqa: F401 — registers share/ingest tools
 import pipeline.tools.research_tools  # noqa: F401 — registers experiment tools
 from pipeline.agents.base import BaseAgentWrapper
 from pipeline.prompts.fragments import assemble_prompt
@@ -36,6 +37,8 @@ class PlannerAgent(BaseAgentWrapper):
             # Experiment scanner (lessons learned + dedup)
             "scan_experiment_history",
             "check_experiment_novelty",
+            # Public results ingestion
+            "ingest_results",
             # Low-cost proxy tools (architecture reasoning without GPU)
             "estimate_params",
             "estimate_flops",

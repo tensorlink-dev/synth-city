@@ -409,6 +409,151 @@ def share_results(repo_id: str = "", limit: int = 200) -> str:
         })
 
 
+@tool(
+    description=(
+        "Ingest publicly shared experiment results from a HF Hub Dataset into "
+        "your local Hippius storage. After ingestion the planner's "
+        "scan_experiment_history tool will automatically include them — so your "
+        "pipeline learns from someone else's successes and failures. "
+        "repo_id: the HF dataset repo to pull from. "
+        "limit: max experiments to ingest (default 200)."
+    ),
+    parameters_schema={
+        "type": "object",
+        "properties": {
+            "repo_id": {
+                "type": "string",
+                "description": "HF dataset repo ID (e.g. 'tensorlink-dev/synth-city-results')",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max experiments to ingest (default 200)",
+            },
+        },
+        "required": ["repo_id"],
+    },
+)
+def ingest_results(repo_id: str, limit: int = 200) -> str:
+    """Download a shared HF Dataset and save experiments into Hippius.
+
+    Experiments are stored under a synthetic run ID
+    ``ingested-{repo_slug}-{date}`` so they appear alongside local
+    experiments in ``scan_experiment_history`` and ``load_hippius_history``.
+    """
+    try:
+        from datetime import datetime, timezone
+
+        from huggingface_hub import hf_hub_download
+
+        from pipeline.tools import hippius_store as _hs
+
+        if not repo_id:
+            return json.dumps({
+                "error": "repo_id is required (e.g. 'tensorlink-dev/synth-city-results')",
+            })
+
+        # Download results.jsonl
+        try:
+            path = hf_hub_download(
+                repo_id, "results.jsonl", repo_type="dataset",
+            )
+        except Exception as exc:
+            return json.dumps({
+                "error": f"Failed to download results.jsonl from {repo_id}: {exc}",
+            })
+
+        # Parse experiments
+        records: list[dict] = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+                if len(records) >= limit:
+                    break
+
+        if not records:
+            return json.dumps({
+                "error": f"No experiments found in {repo_id}/results.jsonl",
+            })
+
+        # Synthetic run_id for ingested data
+        slug = repo_id.replace("/", "-").replace(".", "-")
+        date_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
+        run_id = f"ingested-{slug}-{date_tag}"
+
+        # Save each experiment into Hippius
+        saved = 0
+        skipped = 0
+        for rec in records:
+            name = rec.get("name", f"exp-{saved}")
+            config = rec.get("experiment_config", {})
+            status = rec.get("status", "unknown")
+
+            # Rebuild the result dict matching Hippius schema
+            metrics: dict = {}
+            for m in ("crps", "sharpness", "log_likelihood", "param_count"):
+                if rec.get(m) is not None:
+                    metrics[m] = rec[m]
+
+            result = {"status": status, "metrics": metrics}
+
+            key = f"experiments/{run_id}/{name}.json"
+            payload = {
+                "run_id": run_id,
+                "name": name,
+                "timestamp": rec.get("timestamp", ""),
+                "experiment": config,
+                "result": result,
+                "source_repo": repo_id,
+            }
+
+            if _hs._put_json(key, payload):
+                saved += 1
+            else:
+                skipped += 1
+
+        # Also try to download and save analysis.json
+        analysis_saved = False
+        try:
+            analysis_path = hf_hub_download(
+                repo_id, "analysis.json", repo_type="dataset",
+            )
+            with open(analysis_path) as f:
+                analysis = json.load(f)
+            analysis_key = f"pipeline_runs/{run_id}/analysis.json"
+            analysis["source_repo"] = repo_id
+            if _hs._put_json(analysis_key, analysis):
+                analysis_saved = True
+        except Exception:
+            pass  # analysis.json is optional
+
+        crps_values = [r.get("crps") for r in records if r.get("crps") is not None]
+        return json.dumps({
+            "status": "ingested",
+            "source": repo_id,
+            "run_id": run_id,
+            "experiments_saved": saved,
+            "experiments_skipped": skipped,
+            "analysis_saved": analysis_saved,
+            "best_crps": min(crps_values) if crps_values else None,
+            "note": (
+                "Ingested experiments will now appear in "
+                "scan_experiment_history and load_hippius_history."
+            ),
+        }, indent=2)
+
+    except Exception as exc:
+        return json.dumps({
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        })
+
+
 def _build_dataset_readme(
     repo_id: str, summary: dict, analysis: dict | None = None,
 ) -> str:
