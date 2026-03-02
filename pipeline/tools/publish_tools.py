@@ -481,16 +481,28 @@ def ingest_results(repo_id: str, limit: int = 200) -> str:
                 "error": f"No experiments found in {repo_id}/results.jsonl",
             })
 
-        # Synthetic run_id for ingested data
+        # Stable run_id per source repo — re-running ingest is idempotent.
+        # Same repo always maps to the same run_id, so keys are overwritten
+        # rather than duplicated.
         slug = repo_id.replace("/", "-").replace(".", "-")
-        date_tag = datetime.now(timezone.utc).strftime("%Y%m%d")
-        run_id = f"ingested-{slug}-{date_tag}"
+        run_id = f"ingested-{slug}"
 
-        # Save each experiment into Hippius
+        # Check which experiments already exist for this source
+        existing_keys = set(
+            _hs._list_keys(f"experiments/{run_id}/", max_keys=2000)
+        )
+
+        # Save each experiment into Hippius (skip if already present)
         saved = 0
         skipped = 0
-        for rec in records:
-            name = rec.get("name", f"exp-{saved}")
+        for idx, rec in enumerate(records):
+            name = rec.get("name", f"exp-{idx}")
+            key = f"experiments/{run_id}/{name}.json"
+
+            if key in existing_keys:
+                skipped += 1
+                continue
+
             config = rec.get("experiment_config", {})
             status = rec.get("status", "unknown")
 
@@ -502,7 +514,6 @@ def ingest_results(repo_id: str, limit: int = 200) -> str:
 
             result = {"status": status, "metrics": metrics}
 
-            key = f"experiments/{run_id}/{name}.json"
             payload = {
                 "run_id": run_id,
                 "name": name,
@@ -527,6 +538,7 @@ def ingest_results(repo_id: str, limit: int = 200) -> str:
                 analysis = json.load(f)
             analysis_key = f"pipeline_runs/{run_id}/analysis.json"
             analysis["source_repo"] = repo_id
+            analysis["ingested_at"] = datetime.now(timezone.utc).isoformat()
             if _hs._put_json(analysis_key, analysis):
                 analysis_saved = True
         except Exception:
@@ -543,7 +555,8 @@ def ingest_results(repo_id: str, limit: int = 200) -> str:
             "best_crps": min(crps_values) if crps_values else None,
             "note": (
                 "Ingested experiments will now appear in "
-                "scan_experiment_history and load_hippius_history."
+                "scan_experiment_history and load_hippius_history. "
+                "Re-running ingest is safe — existing experiments are skipped."
             ),
         }, indent=2)
 
