@@ -380,6 +380,75 @@ def cmd_score(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_results(args: argparse.Namespace) -> None:
+    """Share or ingest experiment results via HF Hub Datasets."""
+    action = args.action
+
+    if action == "share":
+        from pipeline.tools.publish_tools import share_results
+
+        section_header("Share Results")
+        console.print(
+            "[bold]Uploading experiment results to HF Hub Dataset…[/bold]"
+        )
+        result_json = share_results(repo_id=args.repo_id or "", limit=args.limit)
+        data = json.loads(result_json)
+        print_json(data)
+
+        if data.get("status") == "shared":
+            console.print()
+            console.print(
+                f"[bold green]Shared {data['experiments']} experiments.[/bold green]"
+            )
+            console.print(f"[bold]URL:[/bold] {data['url']}")
+            console.print()
+            console.print("[dim]Others can now consume your results:[/dim]")
+            console.print('[cyan]  from datasets import load_dataset[/cyan]')
+            console.print(f'[cyan]  ds = load_dataset("{data["repo_id"]}")[/cyan]')
+        elif data.get("error"):
+            print_error(data["error"])
+
+    elif action == "ingest":
+        from pipeline.tools.publish_tools import ingest_results
+
+        if not args.repo_id:
+            print_error(
+                "Usage: synth-city results ingest --repo-id ORG/REPO\n"
+                "  e.g. synth-city results ingest "
+                "--repo-id tensorlink-dev/synth-city-results"
+            )
+            sys.exit(1)
+
+        section_header("Ingest Results")
+        console.print(
+            f"[bold]Downloading results from {args.repo_id}…[/bold]"
+        )
+        result_json = ingest_results(repo_id=args.repo_id, limit=args.limit)
+        data = json.loads(result_json)
+        print_json(data)
+
+        if data.get("status") == "ingested":
+            console.print()
+            console.print(
+                f"[bold green]Ingested {data['experiments_saved']} experiments "
+                f"from {data['source']}[/bold green]"
+            )
+            if data.get("analysis_saved"):
+                console.print("[green]Analysis saved too.[/green]")
+            console.print()
+            console.print(
+                "[dim]These experiments will now appear in "
+                "scan_experiment_history and load_hippius_history.[/dim]"
+            )
+        elif data.get("error"):
+            print_error(data["error"])
+
+    else:
+        print_error(f"Unknown action: {action}")
+        console.print("[muted]Available: share, ingest[/muted]")
+        sys.exit(1)
+
+
 def cmd_display(args: argparse.Namespace) -> None:
     """Display historical experiment results in a terminal dashboard."""
     from cli.history_dashboard import run_display
@@ -578,6 +647,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
     p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
 
+    # results (public sharing / ingestion)
+    p_results = subparsers.add_parser(
+        "results",
+        help="Share or ingest experiment results via HF Hub Datasets",
+    )
+    p_results.add_argument(
+        "action", choices=["share", "ingest"],
+        help="'share' uploads your results, 'ingest' pulls someone else's",
+    )
+    p_results.add_argument(
+        "--repo-id", default=None,
+        help="HF dataset repo ID. Required for ingest, optional for share "
+             "(defaults to HF_RESULTS_REPO_ID env var). "
+             "E.g. --repo-id tensorlink-dev/synth-city-results",
+    )
+    p_results.add_argument(
+        "--limit", type=int, default=200,
+        help="Max experiments to include/ingest (default 200)",
+    )
+
     # display
     p_display = subparsers.add_parser(
         "display", help="Display historical experiment results dashboard"
@@ -622,6 +711,7 @@ _CMD_MAP = {
     "bridge": cmd_bridge,
     "client": cmd_client,
     "data": cmd_data,
+    "results": cmd_results,
     "score": cmd_score,
     "display": cmd_display,
     "dashboard": cmd_dashboard,

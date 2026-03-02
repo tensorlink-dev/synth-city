@@ -307,6 +307,57 @@ def cmd_history(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_results(args: argparse.Namespace) -> None:
+    """Share or ingest experiment results via HF Hub Datasets."""
+    action = args.action
+
+    if action == "share":
+        from pipeline.tools.publish_tools import share_results
+
+        print("Uploading experiment results to HF Hub Dataset…")
+        result_json = share_results(repo_id=args.repo_id or "", limit=args.limit)
+        data = json.loads(result_json)
+        print(json.dumps(data, indent=2, default=str))
+
+        if data.get("status") == "shared":
+            print(f"\nShared {data['experiments']} experiments.")
+            print(f"URL: {data['url']}")
+            print("\nOthers can now consume your results:")
+            print('  from datasets import load_dataset')
+            print(f'  ds = load_dataset("{data["repo_id"]}")')
+        elif data.get("error"):
+            print(f"\nError: {data['error']}")
+
+    elif action == "ingest":
+        from pipeline.tools.publish_tools import ingest_results
+
+        if not args.repo_id:
+            print("Error: --repo-id is required for ingest")
+            print("  e.g. synth-city results ingest "
+                  "--repo-id tensorlink-dev/synth-city-results")
+            sys.exit(1)
+
+        print(f"Downloading results from {args.repo_id}…")
+        result_json = ingest_results(repo_id=args.repo_id, limit=args.limit)
+        data = json.loads(result_json)
+        print(json.dumps(data, indent=2, default=str))
+
+        if data.get("status") == "ingested":
+            print(f"\nIngested {data['experiments_saved']} experiments "
+                  f"from {data['source']}")
+            if data.get("analysis_saved"):
+                print("Analysis saved too.")
+            print("\nThese will now appear in scan_experiment_history "
+                  "and load_hippius_history.")
+        elif data.get("error"):
+            print(f"\nError: {data['error']}")
+
+    else:
+        print(f"Unknown action: {action}")
+        print("Available: share, ingest")
+        sys.exit(1)
+
+
 def cmd_display(args: argparse.Namespace) -> None:
     """Display historical experiment results in a terminal dashboard."""
     from cli.history_dashboard import run_display
@@ -506,6 +557,24 @@ def main() -> None:
     )
     p_hist.add_argument("--repo-id", default=None, help="HF Hub repo ID override")
 
+    # results (public sharing / ingestion)
+    p_results = subparsers.add_parser(
+        "results",
+        help="Share or ingest experiment results via HF Hub Datasets",
+    )
+    p_results.add_argument(
+        "action", choices=["share", "ingest"],
+        help="'share' uploads your results, 'ingest' pulls someone else's",
+    )
+    p_results.add_argument(
+        "--repo-id", default=None,
+        help="HF dataset repo ID. Required for ingest, optional for share",
+    )
+    p_results.add_argument(
+        "--limit", type=int, default=200,
+        help="Max experiments to include/ingest (default 200)",
+    )
+
     # display
     p_display = subparsers.add_parser(
         "display", help="Display historical experiment results dashboard"
@@ -541,6 +610,7 @@ def main() -> None:
         "experiment": cmd_experiment,
         "quick": cmd_quick,
         "history": cmd_history,
+        "results": cmd_results,
         "display": cmd_display,
         "bridge": cmd_bridge,
         "client": cmd_client,
