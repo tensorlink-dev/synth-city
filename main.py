@@ -69,10 +69,14 @@ def cmd_pipeline(args: argparse.Namespace) -> None:
     bootstrap_all()
 
     loops = getattr(args, "loops", 1)
+    max_experiments = getattr(args, "max_experiments", 1)
     for loop_num in range(1, loops + 1):
         if loops > 1:
             logger.info("=== Pipeline loop %d/%d ===", loop_num, loops)
-        task: dict = {"channel": args.channel}
+        task: dict = {
+            "channel": args.channel,
+            "experiment_budget": max_experiments,
+        }
         orchestrator = PipelineOrchestrator(
             max_retries=args.retries,
             base_temperature=args.temperature,
@@ -432,6 +436,10 @@ def main() -> None:
     p_pipe.add_argument(
         "--loops", type=int, default=1,
         help="Number of pipeline runs (each gets a fresh orchestrator and run ID)",
+    )
+    p_pipe.add_argument(
+        "--max-experiments", type=int, default=1, dest="max_experiments",
+        help="Max experiments the trainer may run per pipeline loop (default: 1)",
     )
 
     # sweep
