@@ -67,4 +67,18 @@ class TrainerAgent(BaseAgentWrapper):
                 "role": "user",
                 "content": f"## Planner Output\n\n```json\n{task['plan']}\n```",
             })
+        budget = task.get("experiment_budget")
+        if budget and budget > 0:
+            context.append({
+                "role": "user",
+                "content": (
+                    f"## Experiment Budget\n\n"
+                    f"You have a budget of **{budget} experiment(s)**. "
+                    f"Run at most {budget} experiment(s) SEQUENTIALLY — one at a time. "
+                    f"Do NOT create multiple experiments in a single step. "
+                    f"Create one experiment, run it, observe the result, then move on to "
+                    f"the next. After running {budget} experiment(s), compare results "
+                    f"and call `finish`."
+                ),
+            })
         return context

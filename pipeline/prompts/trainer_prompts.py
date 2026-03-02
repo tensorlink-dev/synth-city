@@ -142,6 +142,15 @@ call `flush_session(keep_top_n=10)` to save to Hippius and free memory.
 - `load_hippius_history(limit=20)` — all past experiments ranked by CRPS
 - `fetch_experiment_runs(limit=10, order="best")` — best experiments from Hippius
 
+## Experiment Budget
+
+If an experiment budget is provided in the context, you MUST respect it strictly:
+- Run AT MOST the specified number of experiments.
+- Run experiments ONE AT A TIME — create one, run it, observe the result, then
+  create the next. Do NOT batch multiple `create_experiment` calls in a single step.
+- After completing the budgeted experiments, compare results and call `finish`.
+- If no budget is specified, use your judgement but still prefer sequential execution.
+
 ## Key Constraints
 - CRPS is the ONLY metric that matters for SN50 ranking.
 - Research mode: n_paths=100, epochs=1 for fast iteration.

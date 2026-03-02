@@ -59,4 +59,16 @@ class PlannerAgent(BaseAgentWrapper):
                     f"```json\n{task['prior_comparison']}\n```"
                 ),
             })
+        budget = task.get("experiment_budget")
+        if budget and budget > 0:
+            context.append({
+                "role": "user",
+                "content": (
+                    f"## Experiment Budget\n\n"
+                    f"The user has requested **{budget} experiment(s)** total. "
+                    f"Your plan MUST include exactly {budget} experiment(s), "
+                    f"prioritised from most promising to least. "
+                    f"Do NOT propose more than {budget}."
+                ),
+            })
         return context
