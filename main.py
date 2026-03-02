@@ -411,9 +411,66 @@ def cmd_score(args: argparse.Namespace) -> None:
             logger.info("Stopping scoring daemon...")
             daemon.stop()
 
+    elif action == "backtest":
+        from subnet.backtest import ValidatorBacktest, build_baseline_miner
+
+        asset_list: list[str] | None = None
+        if args.assets:
+            asset_list = [a.strip().upper() for a in args.assets.split(",")]
+
+        logger.info("Building GBM baseline miner for backtest...")
+        miner = build_baseline_miner(assets=asset_list)
+        if not miner.models:
+            print("Error: No models could be registered (no price data available)")
+            sys.exit(1)
+
+        bt = ValidatorBacktest(
+            miner=miner,
+            assets=asset_list,
+            interval_minutes=getattr(args, "interval", 60),
+            max_prompts=getattr(args, "max_prompts", 50),
+            num_paths=getattr(args, "num_paths", 100),
+        )
+        bt_results = bt.run()
+
+        if "error" in bt_results:
+            print(f"Backtest error: {bt_results['error']}")
+            sys.exit(1)
+
+        summary = bt_results["summary"]
+        wc = summary["weighted_crps"]
+
+        print("\n=== VALIDATOR BACKTEST RESULTS ===")
+        print(f"  Prompts: {summary['scored_prompts']}/{summary['total_prompts']} scored")
+        print(f"  Interval: {summary['interval_minutes']}min, Paths: {summary['num_paths']}")
+        print(f"  Elapsed: {summary['elapsed_seconds']:.1f}s")
+
+        if wc["mean"] is not None:
+            print("\n  Weighted CRPS (lower is better):")
+            print(f"    Mean:   {wc['mean']:.4f}")
+            print(f"    Median: {wc['median']:.4f}")
+            print(f"    Best:   {wc['best']:.4f}")
+            print(f"    Worst:  {wc['worst']:.4f}")
+            print(f"    Std:    {wc['std']:.4f}")
+
+        if summary["per_asset"]:
+            print("\n  Per-asset CRPS breakdown:")
+            print(f"    {'Asset':<10} {'Weight':<8} {'Mean':<12} {'Median':<12} {'Best':<12}")
+            print(f"    {'─' * 54}")
+            for asset, stats in sorted(summary["per_asset"].items()):
+                print(
+                    f"    {asset:<10} {stats['weight']:<8.2f} "
+                    f"{stats['mean_crps']:<12.4f} {stats['median_crps']:<12.4f} "
+                    f"{stats['best_crps']:<12.4f}"
+                )
+
+        # Also dump full JSON for programmatic use
+        print("\n--- Full JSON ---")
+        print(json.dumps(summary, indent=2, default=str))
+
     else:
         print(f"Unknown action: {action}")
-        print("Available: run, status, results, daily, leaderboard")
+        print("Available: run, status, results, daily, leaderboard, backtest")
         sys.exit(1)
 
 
@@ -590,12 +647,21 @@ def main() -> None:
     )
     p_score.add_argument(
         "action",
-        choices=["run", "status", "results", "daily", "leaderboard"],
-        help="Action: run (start daemon), status, results, daily, leaderboard",
+        choices=["run", "status", "results", "daily", "leaderboard", "backtest"],
+        help="Action: run (start daemon), status, results, daily, leaderboard, backtest",
     )
     p_score.add_argument("--interval", type=int, default=5, help="Prompt interval in minutes")
     p_score.add_argument("--date", default=None, help="Date filter (YYYY-MM-DD)")
     p_score.add_argument("--limit", type=int, default=20, help="Max results to return")
+    p_score.add_argument("--assets", default=None, help="Backtest: comma-separated asset list")
+    p_score.add_argument(
+        "--max-prompts", type=int, default=50, dest="max_prompts",
+        help="Backtest: max prompts to evaluate (default: 50)",
+    )
+    p_score.add_argument(
+        "--num-paths", type=int, default=100, dest="num_paths",
+        help="Backtest: Monte Carlo paths per prediction (default: 100)",
+    )
 
     # agent
     p_agent = subparsers.add_parser("agent", help="Run a single agent")
