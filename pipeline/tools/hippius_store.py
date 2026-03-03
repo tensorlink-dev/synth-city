@@ -255,7 +255,15 @@ def save_experiment_result(name: str, experiment: dict, result: dict) -> str | N
         "experiment": experiment,
         "result": result,
     }
-    return key if _put_json(key, payload) else None
+    saved_key = key if _put_json(key, payload) else None
+    if saved_key:
+        # Invalidate the novelty cache so the next check sees this result.
+        try:
+            from pipeline.tools.analysis_tools import invalidate_novelty_cache
+            invalidate_novelty_cache()
+        except Exception:  # noqa: BLE001
+            pass  # non-critical — cache will refresh on TTL anyway
+    return saved_key
 
 
 def save_pipeline_summary(summary: dict) -> str | None:

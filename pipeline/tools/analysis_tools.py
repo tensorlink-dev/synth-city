@@ -822,6 +822,16 @@ _fp_cache_ts: float = 0.0
 _FP_CACHE_TTL: float = 300.0  # seconds
 
 
+def invalidate_novelty_cache() -> None:
+    """Reset the fingerprint cache TTL so the next novelty check re-fetches.
+
+    Call this after uploading experiment results to Hippius so that
+    subsequent ``check_experiment_novelty`` calls see the latest data.
+    """
+    global _fp_cache_ts
+    _fp_cache_ts = 0.0
+
+
 def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
     """Rebuild the fingerprint cache from Hippius.
 
@@ -862,8 +872,12 @@ def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
         if not isinstance(config, dict):
             continue
         fp = _fingerprint(config)
+        features = _extract_config_features(config)
         result = exp.get("result", {})
         metrics = result.get("metrics", {}) if isinstance(result, dict) else {}
+        error_text = ""
+        if isinstance(result, dict):
+            error_text = str(result.get("error", ""))[:200]
         new_cache[fp].append({
             "name": exp.get("name", "unknown"),
             "run_id": exp.get("run_id", "unknown"),
@@ -873,6 +887,11 @@ def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
                 result.get("status", "unknown")
                 if isinstance(result, dict) else "unknown"
             ),
+            "blocks": features.get("blocks", []),
+            "head": features.get("head", "unknown"),
+            "d_model": features.get("d_model"),
+            "lr": features.get("lr"),
+            "error": error_text,
         })
 
     _fp_cache = dict(new_cache)
@@ -880,10 +899,108 @@ def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
     return _fp_cache
 
 
+def _categorize_error(error_text: str) -> str:
+    """Map a raw error string to a short human-readable category."""
+    if not error_text:
+        return ""
+    lower = error_text.lower()
+    if "d_model" in error_text and "divisible" in error_text:
+        return "d_model not divisible by nhead"
+    if "size of tensor" in lower or "shape mismatch" in lower or "must match the size" in lower:
+        return "tensor shape mismatch"
+    if "oom" in lower or "out of memory" in lower:
+        return "out of memory"
+    if "nan" in lower:
+        return "NaN loss / degenerate output"
+    if "unknown block" in lower or "unknown head" in lower:
+        return "unknown component name"
+    return error_text[:80]
+
+
+def _find_similar(
+    target_features: dict[str, Any],
+    cache: dict[str, list[dict[str, Any]]],
+    target_fp: str,
+) -> dict[str, Any]:
+    """Find experiments similar to the target config.
+
+    Searches the cache for experiments that share the same blocks or head
+    (but have a different fingerprint) and returns the most relevant matches
+    along with any failure warnings.
+    """
+    target_blocks = set(target_features.get("blocks") or [])
+    target_head = target_features.get("head", "")
+
+    similar: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    seen_warnings: set[str] = set()
+
+    for fp, entries in cache.items():
+        if fp == target_fp:
+            continue
+        for entry in entries:
+            entry_blocks = set(entry.get("blocks") or [])
+            entry_head = entry.get("head", "")
+
+            blocks_match = target_blocks and target_blocks == entry_blocks
+            head_match = target_head and target_head == entry_head
+
+            if not (blocks_match or head_match):
+                continue
+
+            if blocks_match and head_match:
+                match_type = "same_architecture"
+            elif blocks_match:
+                match_type = "same_blocks"
+            elif head_match:
+                match_type = "same_head"
+            else:
+                continue
+
+            similar.append({
+                "name": entry["name"],
+                "blocks": entry.get("blocks", []),
+                "head": entry_head,
+                "d_model": entry.get("d_model"),
+                "lr": entry.get("lr"),
+                "crps": entry.get("crps"),
+                "status": entry.get("status"),
+                "match_type": match_type,
+                "error": _categorize_error(entry.get("error", "")),
+            })
+
+            # Collect failure warnings
+            if entry.get("status") == "error" and entry.get("error"):
+                category = _categorize_error(entry["error"])
+                blocks_str = "+".join(entry.get("blocks", []))
+                warn = (
+                    f"{blocks_str} + {entry_head} "
+                    f"(d_model={entry.get('d_model')}) failed: {category}"
+                )
+                if warn not in seen_warnings:
+                    warnings.append(warn)
+                    seen_warnings.add(warn)
+
+    # Sort: same_architecture first, then same_blocks, then same_head;
+    # within each group, best CRPS first.
+    match_order = {"same_architecture": 0, "same_blocks": 1, "same_head": 2}
+    similar.sort(key=lambda s: (
+        match_order.get(s["match_type"], 9),
+        s["crps"] if s["crps"] is not None else float("inf"),
+    ))
+
+    return {
+        "similar": similar[:5],
+        "warnings": warnings[:3],
+        "total_similar": len(similar),
+    }
+
+
 @tool(
     description=(
         "Check if an experiment config has already been tried before. "
-        "Returns the fingerprint and any matching prior experiments with their CRPS. "
+        "Returns the fingerprint, any matching prior experiments with their CRPS, "
+        "and similar experiments (same blocks or head) with warnings about failures. "
         "Use this before running a new experiment to avoid duplicates. "
         "experiment: the experiment config as a JSON string."
     ),
@@ -899,7 +1016,11 @@ def _refresh_fp_cache() -> dict[str, list[dict[str, Any]]]:
     },
 )
 def check_experiment_novelty(experiment: str) -> str:
-    """Check whether an experiment config has been tried before."""
+    """Check whether an experiment config has been tried before.
+
+    Returns exact matches, similar experiments (shared blocks or head),
+    and warnings if similar architectures have failed before.
+    """
     try:
         exp_dict = json.loads(experiment) if isinstance(experiment, str) else experiment
         target_fp = _fingerprint(exp_dict)
@@ -936,8 +1057,42 @@ def check_experiment_novelty(experiment: str) -> str:
                 "This exact config has been tried before. "
                 "Consider changing blocks, head, d_model, or lr to explore new territory."
             )
-        else:
-            response["recommendation"] = "Novel config — proceed with training."
+
+        # --- Similar experiment search ---
+        sim = _find_similar(target_features, cache, target_fp)
+
+        if sim["warnings"]:
+            response["warnings"] = sim["warnings"]
+
+        if sim["similar"]:
+            response["similar_experiments"] = sim["similar"]
+            response["total_similar"] = sim["total_similar"]
+
+        # --- Build recommendation ---
+        if not matches:
+            if sim["warnings"]:
+                response["recommendation"] = (
+                    "Novel config, but similar architectures have failed. "
+                    "Review the warnings before proceeding."
+                )
+            elif sim["similar"]:
+                # Find best CRPS among successful similar experiments
+                best_similar = [
+                    s for s in sim["similar"]
+                    if s["crps"] is not None and s["status"] != "error"
+                ]
+                if best_similar:
+                    best = best_similar[0]
+                    response["recommendation"] = (
+                        f"Novel config. Similar experiment "
+                        f"({'+'.join(best.get('blocks', []))} + {best['head']}, "
+                        f"d_model={best.get('d_model')}) achieved "
+                        f"CRPS={best['crps']}."
+                    )
+                else:
+                    response["recommendation"] = "Novel config — proceed with training."
+            else:
+                response["recommendation"] = "Novel config — proceed with training."
 
         return json.dumps(response, indent=2, default=str)
     except Exception as exc:
