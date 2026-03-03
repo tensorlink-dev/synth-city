@@ -426,12 +426,14 @@ def create_experiment(
             block_kwargs if isinstance(block_kwargs, (dict, list)) else None
         )
 
-        # Apply timeframe defaults if specified
+        # Apply timeframe defaults if specified.
+        # Always enforce pred_len/input_len from the timeframe so the model's
+        # horizon and seq_len match what the data loader will produce.  A
+        # mismatch here causes crps_ensemble tensor shape errors at training
+        # time (e.g. "size of tensor a (12) must match size of tensor b (288)").
         if timeframe and timeframe in TIMEFRAME_CONFIGS:
             tf_cfg = TIMEFRAME_CONFIGS[timeframe]
-            # Only override if the caller used the global defaults
-            if horizon == RESEARCH_HORIZON:
-                horizon = int(tf_cfg["pred_len"])
+            horizon = int(tf_cfg["pred_len"])
             if seq_len == RESEARCH_SEQ_LEN:
                 seq_len = int(tf_cfg["input_len"])
 

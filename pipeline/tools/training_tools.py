@@ -678,6 +678,20 @@ def run_experiment_on_basilica(
         exp_dict.pop("timeframe", None)
 
         tf_cfg = TIMEFRAME_CONFIGS.get(timeframe, TIMEFRAME_CONFIGS["5m"])
+
+        # ── Enforce horizon matches the timeframe's pred_len ──
+        expected_horizon = int(tf_cfg["pred_len"])
+        training = exp_dict.setdefault("training", {})
+        actual_horizon = training.get("horizon")
+        if actual_horizon != expected_horizon:
+            if actual_horizon is not None:
+                logger.warning(
+                    "Correcting experiment horizon %s → %s to match "
+                    "timeframe %r pred_len",
+                    actual_horizon, expected_horizon, timeframe,
+                )
+            training["horizon"] = expected_horizon
+
         asset_files = {
             hf_name: f"data/{hf_name}/{tf_cfg['file_suffix']}"
             for hf_name in SN50_TO_HF_ASSET.values()
@@ -1963,6 +1977,37 @@ def run_experiment_on_deployment(
         _mon.emit("experiment", "experiment_start", name=f"deploy:{timeframe_tag}")
 
         tf_cfg = TIMEFRAME_CONFIGS.get(timeframe, TIMEFRAME_CONFIGS["5m"])
+
+        # ── Enforce horizon matches the timeframe's pred_len ──
+        # The data loader produces targets of length pred_len.  If the
+        # experiment's training.horizon disagrees, the head will output the
+        # wrong number of steps and crps_ensemble will crash with a tensor
+        # shape mismatch.  Fix it here so every experiment is safe regardless
+        # of how the config was constructed.
+        expected_horizon = int(tf_cfg["pred_len"])
+        training = exp_dict.setdefault("training", {})
+        actual_horizon = training.get("horizon")
+        if actual_horizon != expected_horizon:
+            if actual_horizon is not None:
+                logger.warning(
+                    "Correcting experiment horizon %s → %s to match "
+                    "timeframe %r pred_len",
+                    actual_horizon, expected_horizon, timeframe,
+                )
+            training["horizon"] = expected_horizon
+
+        # Also enforce seq_len on the backbone to match input_len
+        expected_input_len = int(tf_cfg["input_len"])
+        backbone = exp_dict.get("model", {}).get("backbone", {})
+        actual_seq_len = backbone.get("seq_len")
+        if actual_seq_len is not None and actual_seq_len != expected_input_len:
+            logger.warning(
+                "Correcting backbone seq_len %s → %s to match "
+                "timeframe %r input_len",
+                actual_seq_len, expected_input_len, timeframe,
+            )
+            backbone["seq_len"] = expected_input_len
+
         asset_files = {
             hf_name: f"data/{hf_name}/{tf_cfg['file_suffix']}"
             for hf_name in SN50_TO_HF_ASSET.values()
