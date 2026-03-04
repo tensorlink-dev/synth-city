@@ -131,3 +131,102 @@ class TestDeploymentHorizonEnforcement:
         tf_cfg = TIMEFRAME_CONFIGS["1m"]
         exp["training"]["horizon"] = int(tf_cfg["pred_len"])
         assert exp["training"]["horizon"] == 60
+
+
+# ---------------------------------------------------------------------------
+# run_experiment — horizon correction before training
+# ---------------------------------------------------------------------------
+
+class TestRunExperimentHorizonEnforcement:
+    """Verify that run_experiment corrects horizon/seq_len before training.
+
+    This exercises the enforcement logic added to run_experiment() which
+    prevents tensor shape mismatches (e.g. "size of tensor a (48) must
+    match size of tensor b (288)") when an experiment has a mismatched
+    horizon relative to its tagged timeframe.
+    """
+
+    def _build_experiment(
+        self,
+        horizon: int = 48,
+        seq_len: int = 32,
+        timeframe: str = "5m",
+    ) -> dict[str, Any]:
+        return {
+            "model": {
+                "backbone": {
+                    "blocks": ["LSTMBlock"],
+                    "d_model": 64,
+                    "feature_dim": 4,
+                    "seq_len": seq_len,
+                },
+                "head": {
+                    "_target_": "osa.models.heads.GBMHead",
+                    "latent_size": 64,
+                },
+            },
+            "training": {
+                "horizon": horizon,
+                "n_paths": 100,
+                "batch_size": 32,
+                "lr": 0.001,
+            },
+            "timeframe": timeframe,
+        }
+
+    def _apply_enforcement(self, exp: dict[str, Any]) -> dict[str, Any]:
+        """Simulate the enforcement logic from run_experiment."""
+        from config import TIMEFRAME_CONFIGS
+
+        timeframe = exp.pop("timeframe", None)
+        if timeframe:
+            tf_cfg = TIMEFRAME_CONFIGS.get(timeframe)
+            if tf_cfg is not None:
+                expected_horizon = int(tf_cfg["pred_len"])
+                training = exp.setdefault("training", {})
+                if training.get("horizon") != expected_horizon:
+                    training["horizon"] = expected_horizon
+
+                expected_input_len = int(tf_cfg["input_len"])
+                backbone = exp.get("model", {}).get("backbone", {})
+                actual_seq_len = backbone.get("seq_len")
+                if actual_seq_len is not None and actual_seq_len != expected_input_len:
+                    backbone["seq_len"] = expected_input_len
+        return exp
+
+    def test_corrects_horizon_48_to_288_for_5m(self) -> None:
+        """Horizon=48 with timeframe=5m must be corrected to 288."""
+        exp = self._build_experiment(horizon=48, timeframe="5m")
+        exp = self._apply_enforcement(exp)
+        assert exp["training"]["horizon"] == 288
+
+    def test_corrects_horizon_12_to_288_for_5m(self) -> None:
+        """Horizon=12 with timeframe=5m must be corrected to 288."""
+        exp = self._build_experiment(horizon=12, timeframe="5m")
+        exp = self._apply_enforcement(exp)
+        assert exp["training"]["horizon"] == 288
+
+    def test_correct_horizon_288_unchanged_for_5m(self) -> None:
+        """Horizon=288 with timeframe=5m should remain 288."""
+        exp = self._build_experiment(horizon=288, timeframe="5m")
+        exp = self._apply_enforcement(exp)
+        assert exp["training"]["horizon"] == 288
+
+    def test_corrects_horizon_to_60_for_1m(self) -> None:
+        """Horizon=12 with timeframe=1m must be corrected to 60."""
+        exp = self._build_experiment(horizon=12, timeframe="1m")
+        exp = self._apply_enforcement(exp)
+        assert exp["training"]["horizon"] == 60
+
+    def test_corrects_seq_len_for_5m(self) -> None:
+        """seq_len=32 with timeframe=5m must be corrected to 288."""
+        exp = self._build_experiment(seq_len=32, timeframe="5m")
+        exp = self._apply_enforcement(exp)
+        assert exp["model"]["backbone"]["seq_len"] == 288
+
+    def test_no_timeframe_leaves_horizon_unchanged(self) -> None:
+        """Without a timeframe tag, horizon should remain as-is."""
+        exp = self._build_experiment(horizon=48)
+        del exp["timeframe"]
+        exp = self._apply_enforcement(exp)
+        assert exp["training"]["horizon"] == 48

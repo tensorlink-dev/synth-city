@@ -619,6 +619,37 @@ def run_experiment(
             run_kwargs["name"] = name
         timeframe = exp.pop("timeframe", None)
         if timeframe:
+            # ── Enforce horizon/seq_len match the timeframe's pred_len/input_len ──
+            # The data loader produces targets of length pred_len.  If the
+            # experiment's training.horizon disagrees, the head will output the
+            # wrong number of steps and crps_ensemble will crash with a tensor
+            # shape mismatch (e.g. "size of tensor a (48) must match size of
+            # tensor b (288)").
+            tf_cfg = TIMEFRAME_CONFIGS.get(timeframe)
+            if tf_cfg is not None:
+                expected_horizon = int(tf_cfg["pred_len"])
+                training = exp.setdefault("training", {})
+                actual_horizon = training.get("horizon")
+                if actual_horizon != expected_horizon:
+                    if actual_horizon is not None:
+                        logger.warning(
+                            "Correcting experiment horizon %s → %s to match "
+                            "timeframe %r pred_len",
+                            actual_horizon, expected_horizon, timeframe,
+                        )
+                    training["horizon"] = expected_horizon
+
+                expected_input_len = int(tf_cfg["input_len"])
+                backbone = exp.get("model", {}).get("backbone", {})
+                actual_seq_len = backbone.get("seq_len")
+                if actual_seq_len is not None and actual_seq_len != expected_input_len:
+                    logger.warning(
+                        "Correcting backbone seq_len %s → %s to match "
+                        "timeframe %r input_len",
+                        actual_seq_len, expected_input_len, timeframe,
+                    )
+                    backbone["seq_len"] = expected_input_len
+
             try:
                 loader = _get_data_loader(timeframe)
                 run_kwargs["data_loader"] = loader
